@@ -619,6 +619,235 @@ public sealed class BundleRedactorTests
         Assert.Equal("{\"danaher\": 1} danaher.json by <user>\n", anonymizer.Apply("{\"danaher\": 1} danaher.json by danaher\n"));
     }
 
+    // ------------------------------------------------------------------ #812: identifiers are pseudonymized, not erased
+
+    private const string SessionId = "5649d0ff-7dee-435f-b28e-452624770dcb";
+    private const string ToolA = "call_Xq7Lk9Zp2Mw8Rt4VbN3c";
+    private const string ToolB = "toolu_01AbCdEfGhIjKlMnOpQrSt";
+
+    [Fact]
+    public void AToolCallStillPairsWithItsResultAndTheSessionReadsTheSameEverywhere()
+    {
+        // Two parallel tool calls and their results, shaped like a gateway stream.
+        string stream =
+            $"{{\"type\":\"assistant\",\"message\":{{\"id\":\"msg_26daf271-f996-4687-b049-460beb36e182\",\"content\":[" +
+            $"{{\"type\":\"tool_use\",\"id\":\"{ToolA}\",\"name\":\"Read\"}},{{\"type\":\"tool_use\",\"id\":\"{ToolB}\",\"name\":\"Grep\"}}]}}," +
+            $"\"parent_tool_use_id\":null,\"session_id\":\"{SessionId}\",\"uuid\":\"6d75676f-4366-4fc7-9b6f-d733771646b2\"}}\n" +
+            $"{{\"type\":\"user\",\"message\":{{\"content\":[{{\"tool_use_id\":\"{ToolB}\",\"type\":\"tool_result\"}}," +
+            $"{{\"tool_use_id\":\"{ToolA}\",\"type\":\"tool_result\"}}]}},\"session_id\":\"{SessionId}\"," +
+            $"\"parentUuid\":\"6d75676f-4366-4fc7-9b6f-d733771646b2\",\"request_id\":\"req_011CVxYzAbCdEfGh\"}}\n";
+
+        BundleRedactionResult result = Redact(stream);
+        string[] lines = result.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        using JsonDocument call = JsonDocument.Parse(lines[0]);
+        using JsonDocument reply = JsonDocument.Parse(lines[1]);
+
+        JsonElement uses = call.RootElement.GetProperty("message").GetProperty("content");
+        JsonElement results = reply.RootElement.GetProperty("message").GetProperty("content");
+        string a = uses[0].GetProperty("id").GetString()!;
+        string b = uses[1].GetProperty("id").GetString()!;
+        Assert.Matches(@"^\[id-\d+\]$", a);
+        Assert.NotEqual(a, b);
+        Assert.Equal(b, results[0].GetProperty("tool_use_id").GetString());
+        Assert.Equal(a, results[1].GetProperty("tool_use_id").GetString());
+        Assert.Equal(call.RootElement.GetProperty("session_id").GetString(), reply.RootElement.GetProperty("session_id").GetString());
+        Assert.Equal(call.RootElement.GetProperty("uuid").GetString(), reply.RootElement.GetProperty("parentUuid").GetString());
+        Assert.Matches(@"^\[id-\d+\]$", call.RootElement.GetProperty("message").GetProperty("id").GetString()!);
+        Assert.Matches(@"^\[id-\d+\]$", reply.RootElement.GetProperty("request_id").GetString()!);
+        foreach (string raw in new[] { SessionId, ToolA, ToolB, "req_011CVxYzAbCdEfGh", "msg_26daf271" })
+        {
+            Assert.DoesNotContain(raw, result.Text, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(BundleRedactor.PseudonymKind, result.Labels);
+        Assert.DoesNotContain("named-secret", result.Labels);
+        Assert.DoesNotContain("high-entropy", result.Labels);
+    }
+
+    [Theory]
+    [InlineData("{\"id\":\"sk-proj-AbCdEfGhIjKlMnOpQrSt12\"}", "sk-proj-AbCdEfGhIjKlMnOpQrSt12", "sk-key")]
+    [InlineData("{\"session_id\":\"ghp_AbCdEfGhIjKlMnOpQrStUv1234\"}", "ghp_AbCdEfGhIjKlMnOpQrStUv1234", "github-token")]
+    [InlineData("{\"tool_use_id\":\"Qx8QZ3kf9LmNpR2sT4vW6yB1dF5hJ7\"}", "Qx8QZ3kf9LmNpR2sT4vW6yB1dF5hJ7", "high-entropy")]
+    [InlineData("{\"model\":\"sk-proj-AbCdEfGhIjKlMnOpQrSt34\"}", "sk-proj-AbCdEfGhIjKlMnOpQrSt34", "sk-key")]
+    public void ASecretUnderAnIdentifierOrModelKeyIsStillScrubbed(string json, string secret, string kind)
+    {
+        BundleRedactionResult result = Redact(json);
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.Contains(kind, result.Labels);
+        Assert.DoesNotContain(BundleRedactor.PseudonymKind, result.Labels);
+    }
+
+    [Fact]
+    public void AKnownValueWinsOverAPseudonymAndOverAModelAllow()
+    {
+        var environment = new Dictionary<string, string>
+        {
+            ["QWEN_TOKEN"] = "toolu_01KnownSecretValue99",
+            ["MODEL_API_KEY"] = "Qwen3.6-KnownModelKey-7",
+        };
+        BundleRedactionResult result = Redact("{\"id\":\"toolu_01KnownSecretValue99\",\"model\":\"Qwen3.6-KnownModelKey-7\"}", environment);
+
+        Assert.Equal("{\"id\":\"[REDACTED:QWEN_TOKEN#1]\",\"model\":\"[REDACTED:MODEL_API_KEY#1]\"}", result.Text);
+    }
+
+    [Theory]
+    [InlineData("{\"model\":\"Qwen3.6-35B-A3B-MXFP4_MOE\"}")]
+    [InlineData("{\"model\":\"Qwen3.6-35B-A3B-MXFP4_MOE.gguf\"}")]
+    [InlineData("{\"model\":\"claude-sonnet-4-5-20250929\",\"requestedModel\":\"qwen-3.6-35b-mtp\"}")]
+    [InlineData("{\"model\":\"Qwen/Qwen3-Coder-30B-A3B-Instruct\"}")]
+    [InlineData("model: Qwen3.6-35B-A3B-MXFP4_MOE\nrequested model: qwen-3.6-35b-mtp\n")]
+    public void AModelNameSurvives(string text) => Assert.Equal(text, Redact(text).Text);
+
+    [Fact]
+    public void AModelFileBasenameSurvivesWhileItsPathIsAnonymizedOrJudged()
+    {
+        var context = new BundleRedactionContext("attempt-route.log", NoEnvironment)
+        {
+            Paths = new BundlePathAnonymizer("/Users/dana", null, null, "dana", [], caseInsensitive: false),
+        };
+        string route = "backend model: http://127.0.0.1:8080 /Users/dana/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf\n";
+        Assert.Equal("backend model: http://127.0.0.1:8080 ~/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf\n",
+            BundleRedactor.Redact(route, context).Text);
+
+        // A random directory before the basename is still judged, and the basename still survives.
+        string provenance = "{\"backendModel\":\"http://127.0.0.1:8080 /opt/Xq7Lk9Zp2Mw8Rt4VbN3cQ8/Qwen3.6-35B-A3B-MXFP4_MOE.gguf\"}";
+        BundleRedactionResult judged = Redact(provenance);
+        Assert.DoesNotContain("Xq7Lk9Zp2Mw8Rt4VbN3cQ8", judged.Text, StringComparison.Ordinal);
+        Assert.Contains("/Qwen3.6-35B-A3B-MXFP4_MOE.gguf\"}", judged.Text, StringComparison.Ordinal);
+        using JsonDocument _ = JsonDocument.Parse(judged.Text);
+    }
+
+    // ------------------------------------------------------------------ #813 DA review: the model allow never lets a secret through
+
+    private const string RandomToken = "Xk3mP9qR2vL7nB4tW8yZ1cF5hJ6";
+
+    [Theory]
+    [InlineData("{\"model\":\"" + RandomToken + "\"}", RandomToken)]
+    [InlineData("{\"backendModel\":\"Qwen/" + RandomToken + "\"}", RandomToken)]
+    [InlineData("{\"requestedModel\":\"" + RandomToken + "\"}", RandomToken)]
+    [InlineData("model: " + RandomToken + "\n", RandomToken)]
+    [InlineData("backend model: " + RandomToken + "\n", RandomToken)]
+    [InlineData("{\"cfg\":{\"model\":\"" + RandomToken + "\"}}", RandomToken)]
+    [InlineData("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"{\\\"model\\\":\\\"" + RandomToken + "\\\"}\"}]}}", RandomToken)]
+    [InlineData("loaded /models/" + RandomToken + ".gguf\n", RandomToken)]
+    [InlineData("loaded " + RandomToken + ".safetensors\n", RandomToken)]
+    [InlineData("{\"model\":\"password:Hunter2xyzLong\"}", "Hunter2xyzLong")]
+    public void DaRepro_ARandomTokenOrPairUnderAModelKeyIsStillScrubbed(string text, string secret)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.NotEmpty(result.Labels);
+    }
+
+    [Theory]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE.gguf")]
+    [InlineData("qwen-3.6-35b-mtp")]
+    [InlineData("claude-opus-5-5")]
+    [InlineData("qwen3.6-35b-a3b")]
+    [InlineData("Qwen/Qwen3.6-35B-A3B")]
+    public void RealModelNamesStillSurvive(string name)
+    {
+        foreach (string text in new[] { $"{{\"model\":\"{name}\"}}", $"{{\"backendModel\":\"{name}\"}}", $"model: {name}\n" })
+        {
+            Assert.Equal(text, Redact(text).Text);
+        }
+
+        Assert.True(BundleRedactor.IsModelName(name));
+    }
+
+    // A random token split into short pieces must not pass piece by piece (#813 DA re-check).
+    private const string SplitToken = "Xk3mP9qR2vL7nB4tW8yZ-1cF5hJ6aQ2wS3eD4rF5tG";
+
+    [Theory]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4tW8yZ-1cF5hJ6aQ2wS3eD4rF5tG-6yH7uJ8iK9oL0pZ1xC2\"}", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4tW8yZ.1cF5hJ6aQ2wS3eD4rF5tG.6yH7uJ8iK9oL0pZ1xC2\"}", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("model: " + SplitToken + "\n", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4t/W8yZ1cF5hJ6aQ2wS3e\"}", "W8yZ1cF5hJ6aQ2wS3e")]
+    [InlineData("loaded /m/" + SplitToken + ".gguf\n", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    public void DaRecheck_ARandomTokenSplitIntoShortPiecesIsStillScrubbed(string text, string piece)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(piece, result.Text, StringComparison.Ordinal);
+        Assert.Contains("high-entropy", result.Labels);
+    }
+
+    [Theory]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE")]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE.gguf")]
+    [InlineData("meta-llama/Llama-3.3-70B-Instruct-Turbo")]
+    [InlineData("claude-sonnet-4-5-20250929")]
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-GGUF")]
+    [InlineData("DeepSeek-R1-Distill-Qwen-32B")]
+    [InlineData("text-embedding-3-large")]
+    [InlineData("Meta-Llama-3.1-8B-Instruct-Q4_K_M")]
+    [InlineData("mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")]
+    [InlineData("gemini-2.5-flash-preview-05-20")]
+    [InlineData("qwen-3.6-35b-mtp")]
+    [InlineData("claude-opus-5-5")]
+    public void RealModelNamesFromTheWildSurvive(string name)
+    {
+        foreach (string text in new[] { $"{{\"model\":\"{name}\"}}", $"model: {name}\n" })
+        {
+            Assert.Equal(text, Redact(text).Text);
+        }
+    }
+
+    /// <summary>
+    /// A property check, deterministic by its fixed seed: 1,000 random base64url tokens of 64 characters, each under
+    /// <c>"model"</c>. The segment rule makes a token pass only when every piece between separators is at most 12
+    /// characters (or all digits or all lower case) — for a 64-character random token that is practically never.
+    /// </summary>
+    [Fact]
+    public void RandomLongTokensUnderAModelKeyPracticallyNeverPass()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var random = new Random(813);
+        int passed = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            string token = new([.. Enumerable.Range(0, 64).Select(_ => alphabet[random.Next(alphabet.Length)])]);
+            string text = $"{{\"model\":\"{token}\"}}";
+            if (Redact(text).Text.Contains(token, StringComparison.Ordinal))
+            {
+                passed++;
+            }
+        }
+
+        // Documented ceiling: at most 2 of 1,000 (the measured count under this seed is 1, matching CC1's 0.1%).
+        Assert.True(passed <= 2, $"{passed} of 1,000 random 64-character tokens passed as model names");
+    }
+
+    [Fact]
+    public void ATokenShapeInsideAnIdentifierKeepsTheSecretLabel()
+    {
+        BundleRedactionResult result = Redact("{\"id\":\"toolu_sk-ant-api03-AbCdEfGhIjKlMnOpQrSt\"}");
+
+        Assert.DoesNotContain("AbCdEfGhIjKlMnOpQrSt", result.Text, StringComparison.Ordinal);
+        Assert.Contains("sk-key", result.Labels);
+        Assert.DoesNotContain(BundleRedactor.PseudonymKind, result.Labels);
+    }
+
+    [Fact]
+    public void SessionIdCamelCaseIsAnIdentifierKeyToo()
+    {
+        const string session = "5649d0ff-7dee-435f-b28e-452624770dcb";
+        BundleRedactionResult result = Redact($"{{\"sessionId\":\"{session}\",\"session_id\":\"{session}\"}}");
+        Assert.Equal("{\"sessionId\":\"[id-1]\",\"session_id\":\"[id-1]\"}", result.Text);
+    }
+
+    [Fact]
+    public void PseudonymsAreStableWithinOneTableAndNumberedInFirstSeenOrder()
+    {
+        var table = new BundlePseudonyms();
+        var context = new BundleRedactionContext("x", NoEnvironment) { Pseudonyms = table };
+        string first = BundleRedactor.Redact($"{{\"id\":\"{ToolA}\"}}\n{{\"id\":\"{ToolB}\"}}\n", context).Text;
+        string second = BundleRedactor.Redact($"{{\"tool_use_id\":\"{ToolB}\"}}\n", context).Text;
+
+        Assert.Equal("{\"id\":\"[id-1]\"}\n{\"id\":\"[id-2]\"}\n", first);
+        Assert.Equal("{\"tool_use_id\":\"[id-2]\"}\n", second);
+        Assert.Equal(2, table.Count);
+    }
+
     [Fact]
     public void TheCannotCatchTextNamesEveryLimit()
     {

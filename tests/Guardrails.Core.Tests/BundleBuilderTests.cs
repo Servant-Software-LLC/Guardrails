@@ -948,6 +948,84 @@ public sealed class BundleBuilderTests : IDisposable
         }
     }
 
+    // ------------------------------------------------------------------ #812: identifiers and the served model
+
+    [Fact]
+    public void AnIdentifierReadsTheSameInEveryFileAndIsCountedInRedactionsMd()
+    {
+        StandardRun();
+        const string tool = "call_Xq7Lk9Zp2Mw8Rt4VbN3c";
+        const string session = "5649d0ff-7dee-435f-b28e-452624770dcb";
+        _fixture.Log("02-second/attempt-1/claude-stream.jsonl",
+            $"{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"{tool}\"}}]}},\"session_id\":\"{session}\"}}\n" +
+            $"{{\"type\":\"user\",\"message\":{{\"content\":[{{\"tool_use_id\":\"{tool}\",\"type\":\"tool_result\"}}]}},\"session_id\":\"{session}\"}}\n" +
+            $"{{\"type\":\"assistant\",\"text\":\"token {BundlePlanFixture.KnownToken} here\"}}\n");
+        _fixture.Log("claude-config/projects/proj-a/session-1.jsonl", $"{{\"sessionId\":\"x\",\"session_id\":\"{session}\",\"id\":\"{tool}\"}}\n");
+
+        BundleOutcome outcome = _fixture.Build();
+        string stream = outcome.Text("tasks/02-second/attempt-1/claude-stream.jsonl")!;
+        string sessionFile = outcome.Text("gateway/sessions/project-1/session-1.jsonl")!;
+
+        string toolToken = System.Text.RegularExpressions.Regex.Match(stream, "\"id\":\"(\\[id-\\d+\\])\"").Groups[1].Value;
+        string sessionToken = System.Text.RegularExpressions.Regex.Match(stream, "\"session_id\":\"(\\[id-\\d+\\])\"").Groups[1].Value;
+        Assert.NotEqual(toolToken, sessionToken);
+        Assert.Contains($"\"tool_use_id\":\"{toolToken}\"", stream, StringComparison.Ordinal);
+        Assert.Contains($"\"session_id\":\"{sessionToken}\"", sessionFile, StringComparison.Ordinal);
+        Assert.Contains($"\"id\":\"{toolToken}\"", sessionFile, StringComparison.Ordinal);
+        Assert.All(outcome.AllText(), t => Assert.DoesNotContain(tool, t, StringComparison.Ordinal));
+        Assert.All(outcome.AllText(), t => Assert.DoesNotContain(session, t, StringComparison.Ordinal));
+
+        string redactions = outcome.Text("REDACTIONS.md")!;
+        Assert.Contains($"| tasks/02-second/attempt-1/claude-stream.jsonl | {BundleRedactor.PseudonymKind} | 4 |", redactions, StringComparison.Ordinal);
+        Assert.Contains($"| gateway/sessions/project-1/session-1.jsonl | {BundleRedactor.PseudonymKind} | 2 |", redactions, StringComparison.Ordinal);
+
+        // Deterministic: the same input gives the same bytes, pseudonyms included.
+        Assert.Equal(outcome.Zip, _fixture.Build().Zip);
+    }
+
+    [Fact]
+    public void TheServedModelFileNameSurvivesInSummaryRouteLogJournalAndProvenance()
+    {
+        const string backend = "http://127.0.0.1:8080 /opt/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf";
+        _fixture.Plan = _fixture.Plan with
+        {
+            Config = _fixture.Plan.Config with
+            {
+                PromptRunners = new Dictionary<string, PromptRunnerConfig>
+                {
+                    ["claude"] = BundlePlanFixture.Runner("claude", baseUrl: "http://127.0.0.1:4000"),
+                },
+            },
+        };
+        AttemptRecord attempt = BundlePlanFixture.Attempt(1, AttemptOutcome.GuardrailFailed) with
+        {
+            Provenance = new AttemptProvenance
+            {
+                Model = "qwen-3.6-35b-mtp", Runner = "claude", Gateway = "http://127.0.0.1:4000", BackendModel = backend,
+            },
+        };
+        _fixture.WriteJournal(BundlePlanFixture.Journal(secondAttempts: [attempt]));
+        _fixture.PromptAttempt("02-second", 1, "x");
+        _fixture.Log("02-second/attempt-1/attempt-route.log", $"model: qwen-3.6-35b-mtp\nbackend model: {backend}\n");
+        _fixture.Log("02-second/attempt-1/attempt-provenance.json", $"{{\"model\":\"qwen-3.6-35b-mtp\",\"backendModel\":\"{backend}\"}}\n");
+        _fixture.Log("observer.jsonl", $"{{\"kind\":\"attempt-started\",\"backendModel\":\"{backend}\",\"model\":\"Qwen3.6-35B-A3B-MXFP4_MOE\"}}\n");
+
+        BundleOutcome outcome = _fixture.Build();
+
+        foreach (string path in new[]
+                 {
+                     "SUMMARY.md", "state/run.json", "tasks/02-second/attempt-1/attempt-route.log",
+                     "tasks/02-second/attempt-1/attempt-provenance.json", "run/observer.jsonl",
+                 })
+        {
+            string text = outcome.Text(path)!;
+            Assert.True(text.Contains("Qwen3.6-35B-A3B-MXFP4_MOE.gguf", StringComparison.Ordinal), $"{path} lost the served model file name");
+            Assert.DoesNotContain("[REDACTED:high-entropy]", text, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("verified: http://127.0.0.1:8080 /opt/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf", outcome.Text("SUMMARY.md"), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void TheProtectedLatestStreamIsNeverLostToTimingAlone()
     {

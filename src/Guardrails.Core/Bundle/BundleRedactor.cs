@@ -46,6 +46,12 @@ public sealed class BundleRedactionContext
     public BundlePathAnonymizer? Paths { get; init; }
 
     /// <summary>
+    /// The bundle's identifier pseudonyms (#812): one shared table per bundle, so a value maps to the same
+    /// <c>[id-N]</c> in every file. A context built for one artifact gets its own.
+    /// </summary>
+    public BundlePseudonyms Pseudonyms { get; init; } = new();
+
+    /// <summary>
     /// False for entry names and MANIFEST path cells: those get the known-value and pattern passes, not the entropy rule,
     /// which would scrub ordinary file names under a run-id path (§17.5).
     /// </summary>
@@ -87,7 +93,9 @@ public static partial class BundleRedactor
         "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
         "  token that happens to hold no digit. Also a numeric token or key value (`MAX_TOKENS=4096`), which is kept as a\n" +
         "  setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its\n" +
-        "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.\n" +
+        "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule. And a short\n" +
+        "  random value under a model key can pass as a model name (measured on random base64url values, 2.4% at 32\n" +
+        "  characters, 0.6% at 43, 0.1% at 64).\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
         "  header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,\n" +
         "  then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)\n" +
@@ -123,13 +131,16 @@ public static partial class BundleRedactor
 
         IReadOnlyList<RedactionView> views = Views(content);
         var hits = new List<Hit>();
+        var allowed = new List<(int Start, int End)>();
         foreach (RedactionView view in views)
         {
             FindKnownValues(view, context.Secrets, hits);
+            FindIdentifiers(view, context, hits);
+            FindAllowedModelValues(view, allowed);
             FindPatterns(view, context, hits);
         }
 
-        (string text, List<string> labels) = Apply(content, hits);
+        (string text, List<string> labels) = Apply(content, SuppressAllowed(hits, allowed));
         if (context.Paths is { } paths)
         {
             text = paths.Apply(text);
@@ -274,10 +285,24 @@ public static partial class BundleRedactor
             // A path run is judged on what follows its enumerated segments (`/var/folders/<random>/T/<plan>/x`): the
             // enumerated prefix is diagnostic, and a secret after it is still judged on its own.
             int skip = EnumeratedPrefixLength(match.Value, context);
-            string run = match.Value[skip..];
+
+            // #812: a model file's basename (`Qwen3.6-35B-A3B-MXFP4_MOE.gguf`) is the served model, which the gateway
+            // contract records; only the path before it is judged (and anonymized by pass 3).
+            int end = match.Length - ModelFileBasenameLength(match.Value);
+            if (end < match.Length && end > 0 && match.Value[end - 1] == '/')
+            {
+                end--; // the separator before the basename stays readable too
+            }
+
+            if (end <= skip)
+            {
+                continue;
+            }
+
+            string run = match.Value[skip..end];
             if (IsHighEntropy(run) && !IsExempt(run, context) && !IsIdentifier(run) && !IsExemptPath(run, context))
             {
-                hits.Add(new Hit(view.OriginalRanges(match.Index + skip, match.Index + match.Length), "high-entropy", Priority.Entropy));
+                hits.Add(new Hit(view.OriginalRanges(match.Index + skip, match.Index + end), "high-entropy", Priority.Entropy));
             }
         }
     }
@@ -448,16 +473,130 @@ public static partial class BundleRedactor
 
     // ------------------------------------------------------------------ apply
 
+    // ------------------------------------------------------------------ #812: identifiers and model names
+
+    /// <summary>The kind a pseudonymized identifier is counted under in REDACTIONS.md.</summary>
+    public const string PseudonymKind = "pseudonymized-id";
+
+    /// <summary>
+    /// #812: the value of an identifier key (<c>session_id</c>, <c>sessionId</c>, <c>uuid</c>, <c>parentUuid</c>,
+    /// <c>id</c> — so <c>message.id</c> too — <c>tool_use_id</c>, <c>parent_tool_use_id</c>, <c>request_id</c>) that has an
+    /// identifier SHAPE (a UUID, <c>toolu_…</c>, <c>call_…</c>, <c>msg_…</c>, <c>req_…</c>) becomes a stable per-bundle
+    /// token <c>[id-N]</c>, so a tool call still pairs with its result. Identifiers are not secrets and may appear raw
+    /// elsewhere (an unlisted key, a session file name, a command line), so a token is not a guarantee of
+    /// irreversibility. Any other value under those keys goes through every secret pass as before; a known value and a
+    /// token SHAPE (<c>toolu_sk-ant…</c>) both win over a pseudonym.
+    /// </summary>
+    private static void FindIdentifiers(RedactionView view, BundleRedactionContext context, List<Hit> hits)
+    {
+        foreach (Match match in IdentifierPair().Matches(view.Text))
+        {
+            Group value = match.Groups["v"];
+            if (IdentifierShape().IsMatch(value.Value))
+            {
+                hits.Add(new Hit(view.OriginalRanges(value.Index, value.Index + value.Length), PseudonymKind, Priority.Pseudonym,
+                    context.Pseudonyms.TokenFor(value.Value)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// #812: a <c>model</c> / <c>requestedModel</c> / <c>backendModel</c> value (JSON) or a <c>model:</c> line whose
+    /// value looks like a model name is allowed past the entropy and pair rules. Known values and token SHAPES still
+    /// apply to it, so a secret placed under <c>model</c> is still scrubbed.
+    /// </summary>
+    private static void FindAllowedModelValues(RedactionView view, List<(int Start, int End)> allowed)
+    {
+        foreach (Regex pattern in new[] { ModelJsonPair(), ModelLine() })
+        {
+            foreach (Match match in pattern.Matches(view.Text))
+            {
+                Group value = match.Groups["v"];
+                if (IsModelName(value.Value))
+                {
+                    allowed.AddRange(view.OriginalRanges(value.Index, value.Index + value.Length));
+                }
+            }
+        }
+    }
+
+    private static List<Hit> SuppressAllowed(List<Hit> hits, List<(int Start, int End)> allowed)
+    {
+        if (allowed.Count == 0)
+        {
+            return hits;
+        }
+
+        return
+        [
+            .. hits.Where(hit => hit.Priority is not Priority.Entropy
+                || !hit.Ranges.All(r => allowed.Any(a => r.Start >= a.Start && r.End <= a.End)))
+        ];
+    }
+
+    /// <summary>The length of a trailing model-file basename (<c>…/name.gguf</c>, <c>name.safetensors</c>) in a run, or 0.</summary>
+    private static int ModelFileBasenameLength(string run)
+    {
+        Match match = ModelFileBasename().Match(run);
+        return match.Success && HasOnlyLowEntropySegments(match.Groups["stem"].Value) ? match.Groups["b"].Length : 0;
+    }
+
+    /// <summary>
+    /// A model name (#812): the shape (letters, digits, <c>. _ -</c>, at most one <c>org/</c> prefix, a letter somewhere)
+    /// AND no alphanumeric segment that is itself a secret-shaped run. Real names are built of short, low-entropy
+    /// segments (<c>Qwen3</c>, <c>35B</c>, <c>A3B</c>, <c>MXFP4</c>, <c>MOE</c>); a random token is one long segment that
+    /// the entropy rule would catch, so it is never allowed through.
+    /// </summary>
+    internal static bool IsModelName(string value) => ModelNameShape().IsMatch(value) && HasOnlyLowEntropySegments(value);
+
+    // Every alphanumeric segment must be (a) not itself a secret-shaped run AND (b) at most 12 characters unless it is
+    // all digits or all lower case. (b) is what stops a random token split by `-`, `_`, `.` or one `/` into pieces
+    // under 24: each piece would pass (a) alone, while the suppressed entropy hit spans the whole joined run (#813 DA).
+    // Real names keep short mixed-case segments (`MXFP4`, `Instruct`, `DeepSeek`) and long ones only as dates or
+    // lower-case words (`20250929`, `community`).
+    private static bool HasOnlyLowEntropySegments(string value) =>
+        AlphanumericSegment().Matches(value).All(segment =>
+            (segment.Length < EntropyMinimumLength || !IsHighEntropy(segment.Value))
+            && (segment.Length <= MaxMixedModelSegment || segment.Value.All(char.IsAsciiDigit) || segment.Value.All(char.IsAsciiLetterLower)));
+
+    private const int MaxMixedModelSegment = 12;
+
+    [GeneratedRegex(
+        @"""(?:session_id|sessionId|uuid|parentUuid|id|tool_use_id|parent_tool_use_id|request_id)""\s*:\s*""(?<v>[^""\\\r\n]{1,200})(?="")",
+        RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex IdentifierPair();
+
+    [GeneratedRegex(
+        @"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?:toolu|call|msg|req)_[A-Za-z0-9_-]{6,128})$",
+        RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex IdentifierShape();
+
+    [GeneratedRegex(@"""(?:model|requestedModel|backendModel)""\s*:\s*""(?<v>[^""\\\r\n]{1,200})(?="")", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex ModelJsonPair();
+
+    [GeneratedRegex(@"(?im)^[ \t]*(?:(?:requested|served|backend)[ \t]+)?model:[ \t]*(?<v>[^\s]{1,200})[ \t]*\r?$", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex ModelLine();
+
+    // A model name: a letter somewhere; letters, digits and . _ : @ + -; at most one `org/` prefix (`Qwen/Qwen3-8B`).
+    [GeneratedRegex(@"^(?=[^/]*[A-Za-z])(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex ModelNameShape();
+
+    [GeneratedRegex(@"[A-Za-z0-9]+", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex AlphanumericSegment();
+
+    [GeneratedRegex(@"(?:^|/)(?<b>(?<stem>[A-Za-z0-9][A-Za-z0-9._-]{0,200})\.(?:gguf|safetensors))$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, Timeout)]
+    private static partial Regex ModelFileBasename();
+
     private static (string Text, List<string> Labels) Apply(string content, List<Hit> hits)
     {
-        var spans = new List<(int Start, int End, string Label, Priority Priority)>();
+        var spans = new List<(int Start, int End, string Label, Priority Priority, string Replacement)>();
         foreach (Hit hit in hits)
         {
             foreach ((int start, int end) in hit.Ranges)
             {
                 if (end > start)
                 {
-                    spans.Add((start, end, hit.Label, hit.Priority));
+                    spans.Add((start, end, hit.Label, hit.Priority, hit.Replacement ?? Render(hit.Label)));
                 }
             }
         }
@@ -469,28 +608,28 @@ public static partial class BundleRedactor
 
         spans.Sort((a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : b.End.CompareTo(a.End));
 
-        var merged = new List<(int Start, int End, string Label, Priority Priority, int Length)>();
-        foreach ((int start, int end, string label, Priority priority) in spans)
+        var merged = new List<(int Start, int End, string Label, Priority Priority, int Length, string Replacement)>();
+        foreach ((int start, int end, string label, Priority priority, string replacement) in spans)
         {
             if (merged.Count > 0 && start < merged[^1].End)
             {
                 var last = merged[^1];
                 bool better = priority < last.Priority || (priority == last.Priority && end - start > last.Length);
                 merged[^1] = (last.Start, Math.Max(last.End, end), better ? label : last.Label, better ? priority : last.Priority,
-                    better ? end - start : last.Length);
+                    better ? end - start : last.Length, better ? replacement : last.Replacement);
             }
             else
             {
-                merged.Add((start, end, label, priority, end - start));
+                merged.Add((start, end, label, priority, end - start, replacement));
             }
         }
 
         var output = new StringBuilder(content.Length);
         var labels = new List<string>(merged.Count);
         int at = 0;
-        foreach ((int start, int end, string label, _, _) in merged)
+        foreach ((int start, int end, string label, _, _, string replacement) in merged)
         {
-            output.Append(content, at, start - at).Append(Render(label));
+            output.Append(content, at, start - at).Append(replacement);
             labels.Add(label);
             at = end;
         }
@@ -503,12 +642,13 @@ public static partial class BundleRedactor
     {
         KnownValue = 0,
         Shape = 1,
-        Header = 2,
-        Pair = 3,
-        Entropy = 4,
+        Pseudonym = 2,
+        Header = 3,
+        Pair = 4,
+        Entropy = 5,
     }
 
-    private sealed record Hit(IReadOnlyList<(int Start, int End)> Ranges, string Label, Priority Priority);
+    private sealed record Hit(IReadOnlyList<(int Start, int End)> Ranges, string Label, Priority Priority, string? Replacement = null);
 
     // ------------------------------------------------------------------ the patterns (§17.6.2)
 

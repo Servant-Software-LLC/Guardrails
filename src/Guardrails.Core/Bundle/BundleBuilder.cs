@@ -60,6 +60,9 @@ public sealed partial class BundleBuilder
     private string _runLogs = string.Empty;
     private BundleSecrets _secrets = BundleSecrets.None;
     private HashSet<string> _exempt = new(StringComparer.Ordinal);
+
+    // #812: one identifier-pseudonym table for the whole bundle, so an id reads the same in every file.
+    private readonly BundlePseudonyms _pseudonyms = new();
     private BundlePathAnonymizer? _anonymizer;
     private IReadOnlyList<string> _selectedTasks = [];
     private long _streamCap = BundleCatalog.StreamCap;
@@ -290,6 +293,7 @@ public sealed partial class BundleBuilder
         Secrets = _secrets,
         ExemptTokens = _exempt,
         Paths = anonymize ? _anonymizer : null,
+        Pseudonyms = _pseudonyms,
     };
 
     // An entry name or a MANIFEST path cell: known values and patterns, no entropy rule, no anonymizer (already applied).
@@ -298,6 +302,7 @@ public sealed partial class BundleBuilder
         Secrets = _secrets,
         ExemptTokens = _exempt,
         Entropy = false,
+        Pseudonyms = _pseudonyms,
     };
 
     // ------------------------------------------------------------------ collection (the allow-list, §17.3)
