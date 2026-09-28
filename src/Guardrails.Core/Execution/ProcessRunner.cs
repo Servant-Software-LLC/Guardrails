@@ -96,13 +96,20 @@ public sealed class ProcessRunner
 
         using var process = new Process { StartInfo = startInfo };
 
-        var stdout = new StringBuilder();
-        var stderr = new StringBuilder();
-        using var stdoutDone = new SemaphoreSlim(0, 1);
-        using var stderrDone = new SemaphoreSlim(0, 1);
+        var stdout = new OutputCapture(stdoutLineSink);
+        var stderr = new OutputCapture(lineSink: null);
 
-        process.OutputDataReceived += (_, e) => Collect(e.Data, stdout, stdoutDone, stdoutLineSink);
-        process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone, lineSink: null);
+        process.OutputDataReceived += (_, e) => stdout.Collect(e.Data);
+        process.ErrorDataReceived += (_, e) => stderr.Collect(e.Data);
+
+        // Wait on the PROCESS, not on its pipes (#723). Process.WaitForExitAsync also waits for EOF on
+        // both redirected streams, so a grandchild that inherited them kept that wait going after the
+        // child had exited — and when the timeout then fired, a clean exit was reported as a timeout
+        // with a fabricated exit -1. The Exited event fires when the child itself is gone; the pipes
+        // are drained separately below, under a bound of their own.
+        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) => exited.TrySetResult();
 
         var stopwatch = Stopwatch.StartNew();
         await StartWithTextFileBusyRetryAsync(process, cancellationToken).ConfigureAwait(false);
@@ -120,29 +127,150 @@ public sealed class ProcessRunner
         bool timedOut = false;
         try
         {
-            await process.WaitForExitAsync(linkedCts.Token).ConfigureAwait(false);
+            await exited.Task.WaitAsync(linkedCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!HasExited(process))
         {
+            // Still running at the deadline (or on cancellation): the kill path.
             timedOut = timeoutCts.IsCancellationRequested;
             KillTree(process);
         }
+        catch (OperationCanceledException)
+        {
+            // The child exited in the same instant the token fired. It did not time out; its real
+            // exit code is reported below.
+        }
 
-        // Drain the async readers so captured output is complete before we return.
-        await stdoutDone.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        await stderrDone.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        // Drain the readers so captured output is complete — but BOUNDED (#723). A process the child
+        // started that escaped the tree kill, or a background job of a child that exited on its own,
+        // can hold the inherited pipes open indefinitely; an unbounded wait here defeated the timeout.
+        bool drained = await DrainAsync(stdout, stderr, _drainGrace).ConfigureAwait(false);
         stopwatch.Stop();
 
         int exitCode = timedOut ? TimeoutExitCode : SafeExitCode(process);
+        string standardError = stderr.Seal();
+        if (!drained)
+        {
+            standardError += DrainIncompleteNote(_drainGrace, timedOut);
+        }
 
         return new ProcessResult
         {
             ExitCode = exitCode,
-            StandardOutput = stdout.ToString(),
-            StandardError = stderr.ToString(),
+            StandardOutput = stdout.Seal(),
+            StandardError = standardError,
             TimedOut = timedOut,
+            OutputDrainIncomplete = !drained,
             Duration = stopwatch.Elapsed
         };
+    }
+
+    /// <summary>
+    /// How long the output drain may run once the child has exited or been killed (#723). Normally the
+    /// pipes reach EOF at once; they stay open only while some OTHER process — a grandchild that
+    /// inherited them — is still alive, and what that process writes later is not the child's result.
+    /// </summary>
+    public static readonly TimeSpan DefaultDrainGrace = TimeSpan.FromSeconds(10);
+
+    private readonly TimeSpan _drainGrace;
+
+    /// <summary>Creates a runner with the <see cref="DefaultDrainGrace"/> output-drain bound.</summary>
+    public ProcessRunner()
+        : this(DefaultDrainGrace)
+    {
+    }
+
+    /// <summary>Creates a runner with an explicit output-drain bound (tests shorten it).</summary>
+    internal ProcessRunner(TimeSpan drainGrace)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(drainGrace, TimeSpan.Zero);
+        _drainGrace = drainGrace;
+    }
+
+    /// <summary>
+    /// The text appended to <see cref="ProcessResult.StandardError"/> when the drain gave up, so every
+    /// reader of the result — retry feedback, the attempt logs, a halt — sees plainly that the capture
+    /// is truncated and why, instead of silently getting a short log (#723).
+    /// </summary>
+    internal static string DrainIncompleteNote(TimeSpan grace, bool timedOut) =>
+        Environment.NewLine +
+        $"[guardrails] output truncated: the process {(timedOut ? "was killed at its timeout" : "exited")}, " +
+        $"but its stdout/stderr pipes were still held open {grace.TotalSeconds:0.###}s later, most likely by a " +
+        "background process it started. Output written after that point was not captured." +
+        Environment.NewLine;
+
+    /// <summary>Waits for both readers to reach EOF, for at most <paramref name="grace"/>. True = fully drained.</summary>
+    private static async Task<bool> DrainAsync(OutputCapture stdout, OutputCapture stderr, TimeSpan grace)
+    {
+        try
+        {
+            await Task.WhenAll(stdout.Completed, stderr.Completed).WaitAsync(grace).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// One redirected stream's capture. Thread-safe and sealable: after a bounded drain gives up (#723)
+    /// the OS reader can still deliver lines from a pipe a grandchild holds, and those must neither race
+    /// the buffer being read nor reach a line sink whose owner has moved on — a disposed log writer
+    /// throwing on the reader thread would take the whole harness process down.
+    /// </summary>
+    private sealed class OutputCapture(Action<string>? lineSink)
+    {
+        private readonly StringBuilder _buffer = new();
+        private readonly TaskCompletionSource _completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Lock _gate = new();
+        private bool _sealed;
+
+        /// <summary>Completes when the stream reaches EOF.</summary>
+        public Task Completed => _completed.Task;
+
+        public void Collect(string? data)
+        {
+            if (data is null)
+            {
+                // Null line = stream closed; this reader has drained.
+                _completed.TrySetResult();
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (_sealed)
+                {
+                    return;
+                }
+
+                _buffer.AppendLine(data);
+                lineSink?.Invoke(data);
+            }
+        }
+
+        /// <summary>Stops collecting and returns what was captured.</summary>
+        public string Seal()
+        {
+            lock (_gate)
+            {
+                _sealed = true;
+                return _buffer.ToString();
+            }
+        }
     }
 
     /// <summary>
@@ -309,19 +437,6 @@ public sealed class ProcessRunner
         {
             childEnvironment[variable.Key] = variable.Value;
         }
-    }
-
-    private static void Collect(string? data, StringBuilder buffer, SemaphoreSlim done, Action<string>? lineSink)
-    {
-        if (data is null)
-        {
-            // Null line = stream closed; signal that this reader has drained.
-            done.Release();
-            return;
-        }
-
-        buffer.AppendLine(data);
-        lineSink?.Invoke(data);
     }
 
     private static async Task WriteStandardInputAsync(Process process, string input)
