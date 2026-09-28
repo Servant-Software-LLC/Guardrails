@@ -39,6 +39,10 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
     private readonly Overwatch? _overwatch;
+
+    // #810: the run's host-sleep monitor, or null (tests, the re-validate path). The executor reports each detected sleep
+    // (run.json's in-flight markers + the observer) and states awake and wall time in an attempt's summary.
+    private readonly HostSleepMonitor? _hostSleep;
     private readonly Func<TimeSpan, CancellationToken, Task> _transientDelay;
 
     /// <summary>
@@ -65,7 +69,8 @@ public sealed class TaskExecutor : ITaskExecutor
         IRunObserver observer,
         PromptRunnerRegistry? promptRunners = null,
         Overwatch? overwatch = null,
-        Func<TimeSpan, CancellationToken, Task>? transientDelay = null)
+        Func<TimeSpan, CancellationToken, Task>? transientDelay = null,
+        HostSleepMonitor? hostSleep = null)
     {
         _plan = plan;
         _stateManager = stateManager;
@@ -91,12 +96,63 @@ public sealed class TaskExecutor : ITaskExecutor
         // unconditionally in BOTH serial and worktree mode (TaskExecutor is constructed once per run).
         _reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
         _journaler = new AttemptJournaler(stateManager, journal, observer);
+
+        _hostSleep = hostSleep;
+        if (hostSleep is not null)
+        {
+            hostSleep.Slept += OnHostSlept;
+
+            // #810 review B1/B2: every attempt append and settle checks first, so a sleep that ended moments ago is on
+            // the in-flight marker (and moves onto the record) whichever path settles the attempt. Invoked by the
+            // journal OUTSIDE its own lock: the heartbeat takes the monitor's lock and then the journal's, never the
+            // reverse.
+            journal.BeforeAttemptRecorded = () => hostSleep.Check();
+        }
     }
+
+    /// <summary>
+    /// #810: a host sleep was detected (on the heartbeat, or by this executor's own check at an attempt boundary). Add it
+    /// to every in-flight attempt's <c>sleptSeconds</c> in <c>run.json</c>, then tell the observer which attempts it
+    /// covered. Runs inside the monitor's lock, so a check that returns has already seen this recorded.
+    /// </summary>
+    private void OnHostSlept(HostSleepEvent sleep)
+    {
+        IReadOnlyList<(string TaskId, int Attempt)> touched = _journal.AddSleepToInFlightAttempts(sleep.SleptFor);
+
+        // A gap under the threshold still counts toward the attempt's sleep (above); only a real sleep is announced.
+        if (sleep.Reported)
+        {
+            _observer.HostSlept(
+                sleep.From, sleep.To, sleep.SleptFor, [.. touched.Select(t => $"{t.TaskId}/attempt-{t.Attempt}")]);
+        }
+    }
+
+    /// <summary>
+    /// #810: an attempt's clock in both measures, on the monitor's own clocks, or all zero without a monitor (then no
+    /// clause is written).
+    /// </summary>
+    private (TimeSpan Wall, TimeSpan Slept, TimeSpan Awake) AttemptClock(HostSleepMark? start) =>
+        _hostSleep is { } monitor && start is { } mark ? monitor.Since(mark) : default;
+
+    /// <summary>
+    /// #810: <paramref name="cause"/> with both clocks, when the host slept during <paramref name="span"/>. A timeout LEADS
+    /// with its awake time, because that is what the timeout measured and the runner's own wording (one line or several)
+    /// follows it: <c>timed out after 1h00m awake (8h48m wall; host slept 7h48m): claude timed out</c>. Anything else gets
+    /// a trailing clause: <c>claude exited 1; host slept 2h00m during the attempt (10m00s awake, 2h10m wall)</c>.
+    /// Unchanged when the host did not sleep. Sleep does not count against the attempt timeout (SSOT §7).
+    /// </summary>
+    internal static string WithSleep(
+        string cause, (TimeSpan Wall, TimeSpan Slept, TimeSpan Awake) clock, bool timedOut, string span = "the attempt") =>
+        clock.Slept <= TimeSpan.Zero ? cause
+        : timedOut
+            ? $"timed out after {FormatDuration(clock.Awake)} awake ({FormatDuration(clock.Wall)} wall; host slept {FormatDuration(clock.Slept)}): {cause}"
+            : $"{cause.TrimEnd('.')}; host slept {FormatDuration(clock.Slept)} during {span} ({FormatDuration(clock.Awake)} awake, {FormatDuration(clock.Wall)} wall)";
 
     /// <inheritdoc />
     public async Task<TaskResult> ExecuteAsync(TaskNode task, WorktreeHandle worktree, CancellationToken cancellationToken)
     {
         var taskStartedAt = DateTimeOffset.UtcNow;
+        HostSleepMark? taskSleepMark = _hostSleep?.Mark();
         _observer.TaskStarting(task);
 
         // Task-level preflight slot (design-of-record 09-preflight-first-class, deliverable 5): a JIT
@@ -213,6 +269,10 @@ public sealed class TaskExecutor : ITaskExecutor
             // every resumed task (a resume grants a fresh per-run budget; attempt history survives it). The
             // marker is written first, so an operator who reads the console line finds run.json already agreeing.
             int journalAttempt = _journal.NextAttemptNumber(task.Id);
+
+            // #810 review B1: a sleep that ended before this attempt starts is charged to whatever was in flight then,
+            // so check BEFORE the new marker exists.
+            _hostSleep?.Check();
             MarkInFlight(task.Id, journalAttempt, InFlightPhase.Action);
             _observer.AttemptStarting(task, attemptIndex, budget, journalAttempt);
 
@@ -372,7 +432,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     // taskStartedAt is UTC; the subtraction is drift-free elapsed wall time.
                     // DateTimeOffset.Now (local) is used only for the human-readable HH:mm:ss
                     // stamp — intentional so the display matches the developer's clock.
-                    Summary = $"{attempt.Result.Summary}; took {FormatDuration(DateTimeOffset.UtcNow - taskStartedAt)}, " +
+                    Summary = WithSleep(
+                                  $"{attempt.Result.Summary}; took {FormatDuration(DateTimeOffset.UtcNow - taskStartedAt)}",
+                                  AttemptClock(taskSleepMark), timedOut: false, span: "the task") + ", " +
                               $"done {DateTimeOffset.Now:HH:mm:ss}",
                     ResolvedTransient = resolvedTransient
                 };
@@ -781,6 +843,7 @@ public sealed class TaskExecutor : ITaskExecutor
         int priorThrashes = 0)
     {
         var startedAt = DateTimeOffset.UtcNow;
+        HostSleepMark? sleepMark = _hostSleep?.Mark();
         string logDir = AttemptLogDir(task.Id, attemptNumber);
         Directory.CreateDirectory(logDir);
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
@@ -1405,7 +1468,10 @@ public sealed class TaskExecutor : ITaskExecutor
                 _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
             };
 
-            string cause = ActionFailureCause(action);
+            // #810: both clocks, when the host slept during the attempt. A timeout names its awake time first, because
+            // that is what the timeout measured; every other stop carries the same numbers as a trailing clause.
+            string cause = WithSleep(
+                ActionFailureCause(action), AttemptClock(sleepMark), timedOut: action.FailureKind == PromptFailureKind.Timeout);
             string summary = action.FailureKind switch
             {
                 PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",

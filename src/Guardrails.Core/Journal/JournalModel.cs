@@ -698,6 +698,14 @@ public sealed record InFlightAttemptRecord
     /// for integration) or <see cref="InFlightPhase.Paused"/> (<c>"paused"</c> — waiting out a transient backoff).
     /// </summary>
     public required string Phase { get; init; }
+
+    /// <summary>
+    /// Whole seconds the HOST was asleep while this attempt was in flight (#810, SSOT §7), accumulated as each sleep is
+    /// detected. ABSENT when the host has not slept during the attempt. Moves onto the settled
+    /// <see cref="AttemptRecord.SleptSeconds"/> when the attempt settles.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? SleptSeconds { get; init; }
 }
 
 /// <summary>The SSOT §7 tokens for <see cref="InFlightAttemptRecord.Phase"/> (issue #798).</summary>
@@ -783,6 +791,14 @@ public sealed record TransientPauseRecord
 /// <summary>One attempt of one task (SSOT §7 attempt record).</summary>
 public sealed record AttemptRecord
 {
+    /// <summary>
+    /// Whole seconds the HOST was asleep during this attempt (#810, SSOT §7), or absent when it did not sleep. The wall
+    /// time between <see cref="StartedAt"/> and <see cref="EndedAt"/> includes it; the attempt's awake time does not.
+    /// Stamped by the journal from the in-flight marker when the attempt settles, so every settle path carries it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? SleptSeconds { get; init; }
+
     /// <summary>1-based attempt number.</summary>
     public required int Attempt { get; init; }
 

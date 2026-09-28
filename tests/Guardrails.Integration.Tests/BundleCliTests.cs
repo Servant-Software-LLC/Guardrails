@@ -873,6 +873,9 @@ public sealed class BundleCliTests
             Host = new BundleCommandHost
             {
                 HomeDirectory = () => home,
+
+                // #810 review W5: no real `pmset -g log` in a test, on any OS.
+                SleepWake = (_, _) => null,
                 Environment = () =>
                 {
                     Interlocked.Increment(ref _environmentReads);

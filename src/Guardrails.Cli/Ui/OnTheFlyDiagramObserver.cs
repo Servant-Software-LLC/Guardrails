@@ -305,6 +305,10 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // #811: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting this would swallow
     // the stall verdict before it reached events.jsonl. This observer does not ACT on it: the attempt's own
     // AttemptFinished still follows and moves the node.
+    // #810: forwarded EXPLICITLY, verbatim; the DAG does not change shape when the host sleeps.
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) =>
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
     public void AttemptStalled(
         TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
         string? contextManagement, string? contextManagementDetail) =>

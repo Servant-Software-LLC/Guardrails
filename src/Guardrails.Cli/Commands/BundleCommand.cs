@@ -43,6 +43,9 @@ public sealed record BundleCommandHost
     /// <summary>The owner process's descendants for SUMMARY's Process tree block (#805 S1). Defaults to the real table.</summary>
     public Func<int, BundleProcessTree> ProcessTree { get; init; } = SystemBundleProcessTree.Capture;
 
+    /// <summary>The host's sleep/wake history for a window (#810): <c>pmset -g log</c> on macOS, null elsewhere.</summary>
+    public Func<DateTimeOffset, DateTimeOffset, BundleSleepWakeLog?> SleepWake { get; init; } = SystemBundleSleepWake.Capture;
+
     /// <summary>The OS user name pass 3 anonymizes (#805). Defaults to the real one; a test injects its own.</summary>
     public Func<string> UserName { get; init; } = () => System.Environment.UserName;
 
@@ -460,6 +463,7 @@ public static class BundleCommand
             ToolVersions = host.ToolVersions,
             Liveness = owner => RunLiveness.Assess(owner, RunLiveness.ThisHost(), host.ProcessProbe),
             ProcessTree = host.ProcessTree,
+            SleepWake = host.SleepWake,
             Stat = host.Stat,
             Git = host.Git,
             Validate = () =>

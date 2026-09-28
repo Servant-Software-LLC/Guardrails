@@ -81,6 +81,7 @@ public sealed partial class BundleBuilder
         s.Append("- Plan preflight: ").Append(PhaseText(RunJournalDoc?.PlanPreflights?.Status, RunJournalDoc?.PlanPreflights?.Checks)).Append('\n');
         s.Append("- Terminal gate: ").Append(PhaseText(RunJournalDoc?.PlanGuardrails?.Status, RunJournalDoc?.PlanGuardrails?.Checks)).Append('\n');
         s.Append("- Last halt or needs-human reason: ").Append(LastHaltOrNeedsHuman(labels)).Append('\n');
+        s.Append("- Host sleep: ").Append(HostSleepText()).Append('\n');
 
         // 3. Per task.
         s.Append("\n## 3. Tasks\n");
@@ -342,6 +343,20 @@ public sealed partial class BundleBuilder
                 .Append(" |\n");
         }
 
+        // #810: an attempt the host slept through looks hung; say so, per attempt, with the sleep the journal recorded.
+        foreach (AttemptRecord slept in (entry?.Attempts ?? []).Where(a => a.SleptSeconds is > 0 && attempts.Contains(a.Attempt)))
+        {
+            s.Append("\n- Host slept ").Append(Execution.HostSleepText.Duration(TimeSpan.FromSeconds(slept.SleptSeconds!.Value)))
+                .Append(" during attempt ").Append(slept.Attempt.ToString(CultureInfo.InvariantCulture))
+                .Append(" (its duration above includes it; its timeout did not count it)").Append('\n');
+        }
+
+        if (entry?.InFlightAttempt is { SleptSeconds: > 0 } sleptMarker)
+        {
+            s.Append("\n- Host slept ").Append(Execution.HostSleepText.Duration(TimeSpan.FromSeconds(sleptMarker.SleptSeconds!.Value)))
+                .Append(" during in-flight attempt ").Append(sleptMarker.Attempt.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        }
+
         string? inFlight = InFlightText(taskId, entry, attempts);
         if (inFlight is not null)
         {
@@ -355,6 +370,48 @@ public sealed partial class BundleBuilder
 
     /// <summary>The line prefixes that vary with the clock and the machine, which the determinism check masks (§17.10).</summary>
     public static IReadOnlyList<string> MaskedLinePrefixes { get; } = ["Bundled at: ", "- live: ", "- In flight for ", "- proc: "];
+
+    /// <summary>
+    /// #810: the run's recorded host sleep, from the <c>host-slept</c> rows of its <c>events.jsonl</c> (which the bundle
+    /// carries whole): how many, and how long in all.
+    /// </summary>
+    private string HostSleepText()
+    {
+        string path = Path.Combine(_runLogs, "events.jsonl");
+        if (!File.Exists(path))
+        {
+            return "unknown (no events.jsonl)";
+        }
+
+        int count = 0;
+        long seconds = 0;
+        try
+        {
+            foreach (string line in File.ReadLines(path))
+            {
+                if (!line.Contains("\"host-slept\"", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                using JsonDocument row = JsonDocument.Parse(line);
+                if (row.RootElement.TryGetProperty("kind", out JsonElement kind) && kind.GetString() == "host-slept"
+                    && row.RootElement.TryGetProperty("sleptForSeconds", out JsonElement slept) && slept.TryGetInt64(out long s))
+                {
+                    count++;
+                    seconds += s;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return "unknown (events.jsonl could not be read)";
+        }
+
+        return count == 0
+            ? "none recorded"
+            : $"{count} sleep(s), {Execution.HostSleepText.Duration(TimeSpan.FromSeconds(seconds))} in all (host-slept rows in events.jsonl; sleep does not count against an attempt's timeout)";
+    }
 
     private string InFlightForLine(TaskJournalEntry? entry)
     {

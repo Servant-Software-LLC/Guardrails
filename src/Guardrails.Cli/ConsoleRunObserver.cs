@@ -398,6 +398,15 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        lock (_gate)
+        {
+            // #810: under --no-ui the tailed log is the record, and a run whose host slept looks hung without this line.
+            _output.WriteLine($"[host-slept] {HostSleepText.Line(from, to, sleptFor, inFlight)}");
+        }
+    }
+
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         lock (_gate)

@@ -377,7 +377,10 @@ internal static class StreamJsonCliSession
             // #800: the context is exhausted and Claude Code has given up. Checked FIRST: it is the cause of whatever came
             // after it (a stall, a timeout, an error result), and its remedy is specific. Whether or not the CLI also
             // wrote its own is_error result, the attempt is classified by the give-up, never as a generic error.
-            if (result.Thrashing is { } thrashing && !(result.HasResult && !result.IsError))
+            // Claude Code's own STRUCTURED give-up is trusted even over a result that says is_error:false (#819 review);
+            // the text-only fallback never overrides a result parsed as a success.
+            if (result.Thrashing is { } thrashing
+                && (result.ThrashingIsStructured || !(result.HasResult && !result.IsError)))
             {
                 return new PromptResult
                 {

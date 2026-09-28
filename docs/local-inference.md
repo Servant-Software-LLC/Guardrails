@@ -288,6 +288,15 @@ Before any task starts, the preflight halts the run, with the reason, if:
 
 A halt costs no retries: fix the cause and run again.
 
+**Keeping the Mac awake.** You don't need to run `caffeinate` yourself. On macOS, `guardrails run` keeps the Mac from
+idle-sleeping until the run ends (it starts `caffeinate -i` tied to its own process) and prints one line saying so.
+That keeps `llama-server` and LiteLLM awake too, because they run on the same machine. It cannot stop the Mac sleeping
+when you close the lid on battery, so plug in for a long run. Pass `--allow-sleep` if you want the Mac to idle-sleep.
+
+If the Mac does sleep, the run says so: a `host slept` line in the live view (and in `--no-ui` output), and a
+`host-slept` row in `events.jsonl`. Sleep does not count against an attempt's timeout. An attempt's summary then
+names both clocks, for example `timed out after 1h00m awake (8h48m wall; host slept 7h48m)`.
+
 A header line that says **`backend identity unverified`** means Guardrails couldn't prove which model answered.
 The run still works, but its numbers can't be attributed to a model. Fix it before using the run as evidence.
 
@@ -514,6 +523,7 @@ works on a stuck run without stopping it, so bundle before you kill the run (ste
 | Header: `backend identity unverified` | LiteLLM isn't reporting `/model/info`, a `model_name` has several backends, or the backend is not on this machine or a private network | Fix the LiteLLM config (one `api_base` per name) |
 | `validate`: `GR2009` "command not found" for `qwen36` | `"command": "claude"` is missing | Add it (step 5) |
 | Attempts end as `timeout` | Local models are slow | Raise the task's `timeoutSeconds` |
+| The run seems stuck for hours, and the Mac's battery drained | The Mac slept (lid closed on battery), so the model server stopped too; the run shows `host slept` lines | Plug in, or keep the lid open. Sleep does not count against a timeout, so the run resumes by itself when the Mac wakes |
 | Attempts end as `stalled`, often with `context compaction failed` in the summary | Reading the prompt, or a compaction, took longer than the stall bound (step 5) | Set `stallTimeoutSeconds` on the block to about twice `contextTokens` divided by the prompt speed, or lower `contextTokens` |
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | An attempt ends `context exhausted` (Claude Code: "Autocompact is thrashing"); two in a row settle the task needs-human | The context refilled right after each compaction, often from whole files printed through Bash | Raise `contextTokens` toward the per-slot `n_ctx`, split the task, or narrow the block's Bash grant (step 5) |

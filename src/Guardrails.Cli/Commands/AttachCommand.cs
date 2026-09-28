@@ -371,6 +371,17 @@ public static class AttachCommand
                 renderer.TaskWaitingOnWorktree(TaskFor(node, taskById), RequireString(node, "operation"));
                 break;
 
+            // #810, following #722: an attached terminal is exactly where an operator decides whether a quiet run is
+            // hung or its host slept, so the host-sleep line is replayed too. LiveRunObserver renders it.
+            case "HostSlept":
+                renderer.HostSlept(
+                    RequireDateTimeOffset(node, "from"),
+                    RequireDateTimeOffset(node, "to"),
+                    TimeSpan.FromSeconds(node["sleptForSeconds"]?.GetValue<long>()
+                        ?? throw new FormatException("observer.jsonl line is missing 'sleptForSeconds'.")),
+                    [.. (node["inFlight"]?.AsArray() ?? []).Select(x => x?.GetValue<string>()).OfType<string>()]);
+                break;
+
             default:
                 // An event type this replay has no wire-shape decision for yet (a wave/cleanup/decision
                 // event, or a future addition) — skip it rather than fail the whole replay over it. This

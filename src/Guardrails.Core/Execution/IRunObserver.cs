@@ -115,6 +115,20 @@ public interface IRunObserver
         string? contextManagement, string? contextManagementDetail) { }
 
     /// <summary>
+    /// The HOST was asleep for <paramref name="sleptFor"/> somewhere between <paramref name="from"/> and
+    /// <paramref name="to"/> (#810): the wall clock ran ahead of the awake clock by at least a minute. Run-scoped.
+    /// <paramref name="inFlight"/> names the attempts that were running, as <c>&lt;task&gt;/attempt-&lt;N&gt;</c>; the
+    /// sleep was added to each one's <c>sleptSeconds</c> in <c>run.json</c>. A sleep does not count against an attempt's
+    /// timeout (SSOT §7), which is why a surface must show it: without it, an attempt that slept looks hung.
+    ///
+    /// <para>Raised on whichever thread detected the sleep: the heartbeat's, or a worker's at an attempt boundary (the
+    /// executor checks when an attempt starts and settles), so an implementation must be thread-safe, as the console
+    /// renderers already are. Default no-op, but a transparent DECORATOR must forward it EXPLICITLY (the
+    /// <c>ObserverForwardingSweepTests</c> contract).</para>
+    /// </summary>
+    void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) { }
+
+    /// <summary>
     /// The run is about to terminate, on every exit path — green, a gate failure, an unhandled fault
     /// during unwind, everything. <paramref name="exitCode"/> is the <c>Guardrails.Cli.ExitCodes</c>
     /// vocabulary: 0 green, 1 harness error, 2 needs-human/gate failure, 3 cancelled, 4 escalations

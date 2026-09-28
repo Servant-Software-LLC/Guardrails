@@ -30,8 +30,17 @@ public static class RunCommand
     /// the ambient process environment. See <see cref="TelemetryOverrides"/> for why this exists;
     /// <see cref="TelemetryOverrides.None"/> keeps the shipped behaviour exactly.
     /// </summary>
-    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry)
+    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry) => Create(io, telemetry, RunHostServices.Production);
+
+    /// <summary>
+    /// As <see cref="Create(IConsoleIo, TelemetryOverrides)"/>, with the #810 host services injected: the macOS keep-awake
+    /// assertion and the host-sleep monitor with its heartbeat. Public because the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>; the composition-root tests drive this seam.
+    /// </summary>
+    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry, RunHostServices hostServices)
     {
+        ArgumentNullException.ThrowIfNull(hostServices);
+
         var folderArgument = FolderArgument.Create();
 
         var freshOption = new Option<bool>("--fresh")
@@ -136,6 +145,13 @@ public static class RunCommand
             Description = "Include the free-text 'detail' field in webhook deliveries (design doc 36 §6.3). Withheld by default, carrying the fixed marker '(detail withheld; pass --on-event-detail)'."
         };
 
+        // #810: on macOS the run holds an idle-sleep assertion (caffeinate -i -w <pid>) for its whole life; this lets the
+        // Mac idle-sleep instead. A lid-close on battery sleeps either way, and the host-sleep monitor reports it.
+        var allowSleepOption = new Option<bool>("--allow-sleep")
+        {
+            Description = "macOS: let the Mac idle-sleep during the run. By default the run keeps it awake (caffeinate -i) until it ends. Sleep never counts against an attempt's timeout, and every sleep is reported."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -161,6 +177,7 @@ public static class RunCommand
         // checks, and the WebhookEventSink construction.
         command.Add(onEventOption);
         command.Add(onEventDetailOption);
+        command.Add(allowSleepOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -182,6 +199,7 @@ public static class RunCommand
             decimal? maxCostUsd = parseResult.GetValue(maxCostUsdOption);
             string[]? onEventValues = parseResult.GetValue(onEventOption);
             bool onEventDetail = parseResult.GetValue(onEventDetailOption);
+            bool allowSleep = parseResult.GetValue(allowSleepOption);
 
             // #340 delivery tri-state: --merge-on-success forces ON, --no-merge-on-success forces OFF,
             // neither leaves it to guardrails.json (which itself now defaults ON). Passing BOTH is a
@@ -226,14 +244,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, telemetry, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, telemetry, cancellationToken, allowSleep, hostServices).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, TelemetryOverrides telemetry, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, TelemetryOverrides telemetry, CancellationToken cancellationToken, bool allowSleep = false, RunHostServices? hostServices = null)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -453,6 +471,11 @@ public static class RunCommand
         // rebooting under it — never gets that write, and `guardrails status` reads the difference: a live owner is
         // RUNNING, a gone one with no recorded end EXITED WITHOUT FINISHING.
         using var ownership = new RunOwnership(journal, owner, io.Out);
+
+        // #810: hold the macOS idle-sleep assertion for the life of the run, taken only once this process owns the run
+        // (a refused second run never starts one). Disposed on every way out of this method.
+        RunHostServices host = hostServices ?? RunHostServices.Production;
+        using IDisposable? keepAwake = host.KeepAwake(allowSleep, io.Out);
 
         // #383/#407/#419 worktree-mode run-start setup: the startup GC (a crash BACKSTOP now, #419), the
         // liveness lock, and — on Windows — a FRESH short junction for this run. The junction is a
@@ -782,7 +805,7 @@ public static class RunCommand
                 diagramObserver = surfaces.Chain;
                 await using (surfaces.LiveTable)
                 {
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken, host).ConfigureAwait(false);
                 }
 
                 // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -3519,8 +3542,16 @@ public static class RunCommand
         IReadOnlyDictionary<string, bool>? breakdownConfirmations,
         string? junctionRoot,
         WorktreeModeResolution worktreeMode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RunHostServices hostServices)
     {
+        // #810: the host-sleep monitor and its heartbeat live exactly as long as the DAG run. The executor records each
+        // sleep it detects on the in-flight attempts (run.json) and reports it (events.jsonl, the live view, --no-ui).
+        HostSleepMonitor hostSleep = hostServices.HostSleep();
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task heartbeat = Task.Run(
+            () => hostSleep.WatchAsync(hostServices.HeartbeatInterval, hostServices.HeartbeatDelay, heartbeatCts.Token),
+            CancellationToken.None);
         try
         {
             // #596: the run's ONE worktree-mode resolution is handed to the factory rather than letting it
@@ -3528,7 +3559,7 @@ public static class RunCommand
             Scheduler scheduler = SchedulerFactory.Create(
                 plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
                 breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot,
-                worktreeMode: worktreeMode);
+                worktreeMode: worktreeMode, hostSleep: hostSleep);
             RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
             return new RunExecution(report, scheduler);
         }
@@ -3544,6 +3575,18 @@ public static class RunCommand
             // (and its original stack trace) propagates unchanged.
             observer.RunFinished(exitCode: null, faultKind: ex.GetType().Name);
             throw;
+        }
+        finally
+        {
+            await heartbeatCts.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await heartbeat.ConfigureAwait(false);
+            }
+            catch (Exception heartbeatFault) when (heartbeatFault is not OutOfMemoryException)
+            {
+                // The heartbeat reports sleep; its own fault must never replace the run's outcome or its exception.
+            }
         }
     }
 

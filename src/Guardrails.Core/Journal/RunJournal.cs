@@ -264,12 +264,18 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            DateTimeOffset startedAt = entry.InFlightAttempt is { } current && current.Attempt == attempt
-                ? current.StartedAt
-                : now ?? DateTimeOffset.UtcNow;
+            bool sameAttempt = entry.InFlightAttempt is { } current && current.Attempt == attempt;
+            DateTimeOffset startedAt = sameAttempt ? entry.InFlightAttempt!.StartedAt : now ?? DateTimeOffset.UtcNow;
             UpdateTask(taskId, entry with
             {
-                InFlightAttempt = new InFlightAttemptRecord { Attempt = attempt, StartedAt = startedAt, Phase = phase }
+                InFlightAttempt = new InFlightAttemptRecord
+                {
+                    Attempt = attempt,
+                    StartedAt = startedAt,
+                    Phase = phase,
+                    // #810: sleep accumulated on this attempt survives its phase changes; a new attempt starts at none.
+                    SleptSeconds = sameAttempt ? entry.InFlightAttempt!.SleptSeconds : null
+                }
             });
 
             try
@@ -314,10 +320,11 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
         string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
+        BeforeAttemptRecorded?.Invoke();
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            var attempts = new List<AttemptRecord>(entry.Attempts) { attempt };
+            var attempts = new List<AttemptRecord>(entry.Attempts) { WithSleep(entry, attempt) };
 
             TaskJournalEntry updated = entry with
             {
@@ -457,10 +464,11 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
         string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
+        BeforeAttemptRecorded?.Invoke();
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            var attempts = new List<AttemptRecord>(entry.Attempts) { attempt };
+            var attempts = new List<AttemptRecord>(entry.Attempts) { WithSleep(entry, attempt) };
 
             TaskJournalEntry updated = entry with
             {
@@ -504,6 +512,76 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash,
         string? bucket) =>
         RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash, bucket: bucket);
+
+    /// <summary>
+    /// #810: add <paramref name="slept"/> to every attempt in flight right now, and persist (best-effort, like the
+    /// marker itself). Returns the attempts it was added to, as (task, attempt) pairs, for the <c>host-slept</c> event.
+    /// </summary>
+    public IReadOnlyList<(string TaskId, int Attempt)> AddSleepToInFlightAttempts(TimeSpan slept)
+    {
+        long seconds = (long)Math.Round(slept.TotalSeconds);
+        lock (_gate)
+        {
+            var touched = new List<(string, int)>();
+            foreach ((string taskId, TaskJournalEntry entry) in _document.Tasks.OrderBy(p => p.Key, StringComparer.Ordinal).ToList())
+            {
+                if (entry.InFlightAttempt is not { } marker)
+                {
+                    continue;
+                }
+
+                UpdateTask(taskId, entry with
+                {
+                    InFlightAttempt = marker with { SleptSeconds = (marker.SleptSeconds ?? 0) + seconds }
+                });
+                touched.Add((taskId, marker.Attempt));
+            }
+
+            if (touched.Count > 0)
+            {
+                try
+                {
+                    Persist();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Display state, like the marker: the in-memory update is kept and the next persist carries it.
+                }
+            }
+
+            return touched;
+        }
+    }
+
+    /// <summary>
+    /// #810: runs at the start of <see cref="RecordAttempt"/> and <see cref="RecordSettleWithAttempt"/>, OUTSIDE the
+    /// journal's lock, so the run's host-sleep check can put a just-ended sleep on the in-flight marker before the attempt
+    /// settles. Null outside a run with a monitor.
+    /// </summary>
+    internal Action? BeforeAttemptRecorded { get; set; }
+
+    /// <summary>The sleep accumulated on <paramref name="taskId"/>'s in-flight attempt so far (#810), or zero.</summary>
+    public TimeSpan InFlightSleep(string taskId)
+    {
+        lock (_gate)
+        {
+            return _document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry)
+                   && entry.InFlightAttempt?.SleptSeconds is { } seconds
+                ? TimeSpan.FromSeconds(seconds)
+                : TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>
+    /// #810: the settling record carries the sleep its in-flight marker accumulated, unless the caller already set it.
+    /// Done HERE, at the two methods that append an attempt, so every settle path carries it without each building it.
+    /// </summary>
+    private static AttemptRecord WithSleep(TaskJournalEntry entry, AttemptRecord attempt) =>
+        attempt.SleptSeconds is null
+        && entry.InFlightAttempt is { SleptSeconds: { } slept } marker
+        && marker.Attempt == attempt.Attempt
+            ? attempt with { SleptSeconds = slept }
+            : attempt;
 
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)

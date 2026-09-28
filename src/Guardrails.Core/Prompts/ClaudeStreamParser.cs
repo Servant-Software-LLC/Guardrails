@@ -67,6 +67,13 @@ public sealed record ClaudeResult
     /// <see cref="CompactionFailure"/> wherever one context-management failure is reported: it is the terminal one.
     /// </summary>
     public ContextManagementFailure? Thrashing { get; init; }
+
+    /// <summary>
+    /// True when <see cref="Thrashing"/> came from Claude Code's own STRUCTURED signal (a top-level
+    /// <c>api_error: autocompact_thrashing</c> or <c>terminal_reason: rapid_refill_breaker</c>), not the text fallback.
+    /// The session trusts a structured signal even over a result that says <c>is_error: false</c>.
+    /// </summary>
+    public bool ThrashingIsStructured { get; init; }
 }
 
 /// <summary>
@@ -126,6 +133,7 @@ public sealed class ClaudeStreamParser
     private readonly bool _recognizeThrash;
     private volatile bool _thrashing;
     private volatile bool _resultSeen;
+    private bool _thrashStructured;
     private string? _thrashText;
 
     /// <summary>A parser; <paramref name="recognizeThrash"/> turns on the #800 autocompact-thrash signals (claude only).</summary>
@@ -206,6 +214,7 @@ public sealed class ClaudeStreamParser
             {
                 if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactGiveUp(root))
                 {
+                    _thrashStructured = true;
                     MarkThrashing(AssistantText(root));
                 }
 
@@ -219,6 +228,7 @@ public sealed class ClaudeStreamParser
 
             if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactThrashResult(root))
             {
+                _thrashStructured |= ClaudeSignalClassifier.IsStructuredThrashResult(root);
                 MarkThrashing(TryGetNonEmptyString(root, "result"));
             }
 
@@ -260,6 +270,7 @@ public sealed class ClaudeStreamParser
         Thrashing = _thrashing
             ? new ContextManagementFailure(ContextManagementFailureKind.AutocompactThrashing, _thrashText, 1)
             : null,
+        ThrashingIsStructured = _thrashStructured,
 
         CompactionFailure = _compactionFailures > 0
             ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
