@@ -10619,7 +10619,8 @@ id. Under `--no-redact` the whole file is the single line `NOT REDACTED: do not 
 | tasks/03-x/attempt-2/transcript.md | high-entropy | 1 |
 ```
 
-Over-redaction is the accepted cost, and it is **counted**: every pattern and entropy hit is in a row. A
+Over-redaction is the accepted cost, and it is **counted**: every pattern and entropy hit is in a row, and so is
+every pseudonymized identifier (kind `pseudonymized-id`, §17.6.2). A
 bundled file with nothing scrubbed gets one `(none) | 0` row, and SUMMARY.md gets a row too: its free-text fields
 (halt headlines, reasons, attempt summaries) are redacted one field at a time, and cut to length only after
 redaction, never inside a label.
@@ -10709,6 +10710,27 @@ took part, else the most specific kind.
 The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
 into short pieces. Hex lacks upper case, so SHAs pass; the mixed-class requirement spares branch names and
 PascalCase test names. The residual this leaves is stated in `CC1`.
+
+**Identifiers are pseudonymized, not erased (#812).** An agent stream is read by its identifiers: a `tool_use` is
+paired with its `tool_result` by id, and sessions are told apart by `session_id`. So the value of an identifier key
+(`session_id`, `uuid`, `parentUuid`, `id` (which covers `message.id`), `tool_use_id`, `parent_tool_use_id`,
+`request_id`) that has an **identifier shape** (a UUID, or `toolu_…`, `call_…`, `msg_…`, `req_…`) is replaced by a
+stable per-bundle token `[id-N]`. Each distinct value gets one token, the same in every file of the bundle, numbered
+in the order the bundle first meets it. The table stays in memory, so nothing reversible ships. A known value (§17.6.1)
+wins over a pseudonym. Any other value under those keys goes through every pass as before, so a key-shaped secret
+under `id` is still scrubbed. REDACTIONS.md counts these under their own kind, `pseudonymized-id`.
+
+**Model names are allowed through (#812).** The served model is the key fact of a gateway run (§9.10.3), and it is
+not a secret:
+
+- The value of a `model`, `requestedModel` or `backendModel` JSON key, or of a `model:`, `requested model:`,
+  `served model:` or `backend model:` line, that has a model-name shape is exempt from the entropy and pair rules.
+  The shape is letters, digits and `. _ : @ + -` with at least one letter, optionally after one `org/` prefix, for
+  example `qwen-3.6-35b-mtp`, `claude-…`, `Qwen/Qwen3-8B` or `Qwen3.6-35B-A3B-MXFP4_MOE.gguf`. Known values and token
+  shapes still apply, so a secret placed under `model` is still scrubbed.
+- A trailing model-file basename (`…/name.gguf`, `name.safetensors`) is never judged by the entropy rule, wherever
+  it appears: SUMMARY's backend identity, `attempt-route.log`, `run.json`, `observer.jsonl`, provenance, and streams.
+  The path before it is still judged, and still anonymized by pass 3.
 
 **Pairs, in detail.** A pair's value is captured without consuming it, so a pair inside another pair's value is
 still scanned (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`, and the first key of JSON quoted inside a JSON string,
@@ -10938,7 +10960,8 @@ Identical on-disk state plus injected probes (the tool versions, `RunLiveness`, 
 - one **fixed compression level** (`CompressionLevel.Optimal`) for every entry;
 - generated files (SUMMARY.md, MANIFEST.md, REDACTIONS.md, `validate.txt`, `git/*`) are UTF-8 without a BOM,
   with LF line endings;
-- label numbering (§17.6.1) and every table's row order are functions of the inputs, never of enumeration
+- label numbering (§17.6.1), identifier pseudonyms (`[id-N]`, numbered in the order the builder's fixed file order
+  first meets each value, §17.6.2) and every table's row order are functions of the inputs, never of enumeration
   order on disk;
 - the time- and machine-varying lines are SUMMARY.md's `Bundled at` line and the stuck-run lines of §17.4
   (prefixes `- live: `, `- In flight for `, `- proc: `), which the determinism test masks; relaxed from "only
