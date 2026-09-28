@@ -184,6 +184,9 @@ public sealed class MergeLockAndSettleTests
         /// </summary>
         public IReadOnlyList<string> SnapshotsAtCommit => _snaps;
 
+        /// <summary>#750: the task whose integration merge fails twice without a conflict, or null for none.</summary>
+        public string? FailIntegrationFor { get; init; }
+
         public CapturingFakeProvider(string workDir, string stateJson)
         {
             _workDir = workDir;
@@ -203,6 +206,7 @@ public sealed class MergeLockAndSettleTests
         public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct) =>
             new()
             {
+                TaskId = taskId,
                 WorktreePath = _workDir,   // real path — actions run here
                 SegmentBranchName = $"gr-seg/{taskId}",
                 TaskBase = "0000000000000000000000000000000000000000",
@@ -216,6 +220,13 @@ public sealed class MergeLockAndSettleTests
             // Capture state.json NOW — if B1 step 1 (fragment merge) happened first,
             // the fragment is already here. A commit-before-fragment impl leaves it absent.
             _snaps.Add(File.Exists(_stateJson) ? File.ReadAllText(_stateJson) : "{}");
+            if (segment.TaskId == FailIntegrationFor)
+            {
+                throw new IntegrationMergeFailedException(
+                    "git merge --no-commit --no-ff gr-seg/x failed twice without a conflict. "
+                    + "the retry stderr: fatal: simulated refusal for the #750 test");
+            }
+
             return IntegrationResult.FastForward;
         }
 
@@ -1268,6 +1279,55 @@ public sealed class MergeLockAndSettleTests
         Assert.Empty(attempt.FailedGuardrails);
         Assert.Null(doc.Tasks[nh.TaskId].MergeSequence);
         Assert.Equal(2, RunJournal.LoadOrCreate(new PlanLoader().Load(planDir).Plan!).NextAttemptNumber(nh.TaskId));
+    }
+
+    /// <summary>
+    /// #750 / SSOT §5.3: a git failure during integration is a needs-human halt for THAT task, never a run
+    /// abort. One of two independent tasks has its integration merge fail twice without a conflict; it settles
+    /// needs-human with git's words in its feedback, its fragment is rolled back, and the other task still
+    /// settles green in the same run.
+    /// </summary>
+    [Fact]
+    public async Task APersistentIntegrationMergeFailure_SettlesThatTaskNeedsHuman_AndTheRunContinues()
+    {
+        using var plan = new StatePlanBuilder(maxParallelism: 2)
+            .AddTask("01-fine", actionBody: ProducerFragmentAction("01-fine"))
+            .AddTask("02-refused", actionBody: ProducerFragmentAction("02-refused"));
+
+        var provider = new CapturingFakeProvider(plan.PlanDir, plan.StateJsonPath) { FailIntegrationFor = "02-refused" };
+
+        PlanLoadResult load = new PlanLoader().Load(plan.PlanDir);
+        Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+        var stateManager = new StateManager(load.Plan!.PlanDirectory);
+        stateManager.Initialize();
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        var registry = PromptRunnerRegistry.Build(load.Plan!.Config,
+            _ => throw new InvalidOperationException("No prompt runners in this test."));
+        var executor = new TaskExecutor(
+            load.Plan!, new ProcessRunner(), new InterpreterMap(new PathExecutableProbe(), load.Plan!.Config.Interpreters),
+            stateManager, journal, IRunObserver.Null, registry);
+
+        RunReport report = await new Scheduler(load.Plan!, executor, journal, worktreeProvider: provider)
+            .RunAsync(load.Plan!, TestContext.Current.CancellationToken);
+
+        Assert.False(report.Aborted, report.Abort?.Headline);
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks, t => t.TaskId == "01-fine").Outcome);
+
+        TaskResult refused = Assert.Single(report.Tasks, t => t.TaskId == "02-refused");
+        Assert.Equal(TaskOutcome.NeedsHuman, refused.Outcome);
+        Assert.Contains("integration merge failed twice without a conflict", refused.Summary, StringComparison.Ordinal);
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
+        Assert.Equal(JournalTaskStatus.NeedsHuman, doc.Tasks["02-refused"].Status);
+        Assert.False(HasFragment(plan.PlanDir, "02-refused"), "the refused task's fragment must be rolled back");
+
+        string feedback = File.ReadAllText(Path.Combine(plan.PlanDir, "logs", doc.RunId, "02-refused", "feedback.md"));
+        Assert.Contains("fatal: simulated refusal for the #750 test", feedback, StringComparison.Ordinal);
+
+        // #802: the attempt is journaled, so a re-drive gets the next number and a fresh folder.
+        AttemptRecord attempt = Assert.Single(doc.Tasks["02-refused"].Attempts);
+        Assert.Equal(AttemptOutcome.IntegrationFailed, attempt.Outcome);
+        Assert.Null(doc.Tasks["02-refused"].MergeSequence);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

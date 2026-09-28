@@ -13,8 +13,8 @@ public sealed class IntegrateGitFailureDetailTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "gr-750-" + Guid.NewGuid().ToString("N"));
 
-    [Fact]
-    public void ANonConflictMergeFailure_CarriesGitsExitCodeAndOutput()
+    /// <summary>Repo + integration + a segment that changes <c>shared.txt</c>, with the integration branch moved on.</summary>
+    private (GitWorktreeProvider Provider, IntegrationHandle Integ, WorktreeHandle Seg) Diverged(string segmentFile, string segmentContent)
     {
         string repo = Path.Combine(_root, "repo");
         Directory.CreateDirectory(repo);
@@ -28,32 +28,65 @@ public sealed class IntegrateGitFailureDetailTests : IDisposable
         var provider = new GitWorktreeProvider(repo, Path.Combine(_root, "worktrees"));
         IntegrationHandle integ = provider.CreateIntegration("p750", "run-750", CancellationToken.None);
         WorktreeHandle seg = provider.CreateSegment("01-task", 1, integ, CancellationToken.None);
+        File.WriteAllText(Path.Combine(seg.WorktreePath, segmentFile), segmentContent);
 
-        // The segment changes shared.txt.
-        File.WriteAllText(Path.Combine(seg.WorktreePath, "shared.txt"), "segment\n");
+        // The integration branch moves on, so the segment's merge is not a fast-forward.
+        File.WriteAllText(Path.Combine(integ.IntegrationWorktreePath, "other.txt"), "sibling\n");
+        Git(integ.IntegrationWorktreePath, "add", "other.txt");
+        Git(integ.IntegrationWorktreePath, "commit", "-m", "sibling landed");
+        return (provider, integ, seg);
+    }
 
-        // The integration branch moves on (so the merge is not a fast-forward) and its worktree holds an
-        // uncommitted edit to the same file, which git refuses to overwrite: a failure with no MERGE_HEAD.
-        string integPath = integ.IntegrationWorktreePath;
-        File.WriteAllText(Path.Combine(integPath, "other.txt"), "sibling\n");
-        Git(integPath, "add", "other.txt");
-        Git(integPath, "commit", "-m", "sibling landed");
-        File.WriteAllText(Path.Combine(integPath, "shared.txt"), "uncommitted local edit\n");
+    [Fact]
+    public void AMergeRefusedOnce_IsRetriedFromTheCleanPreMergeHead_AndSucceeds()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ, WorktreeHandle seg) = Diverged("shared.txt", "segment\n");
 
-        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+        // A stray uncommitted edit in the integration worktree: git refuses to overwrite it (no MERGE_HEAD, so not a
+        // conflict). The reset to the pre-merge head clears it, which is exactly what a transient state looks like.
+        File.WriteAllText(Path.Combine(integ.IntegrationWorktreePath, "shared.txt"), "stray local edit\n");
+
+        Assert.Equal(IntegrationResult.Merged, provider.Integrate(seg, integ, CancellationToken.None));
+        Assert.Equal(1, provider.MergeRetries);
+    }
+
+    [Fact]
+    public void AMergeRefusedTwice_ThrowsWithGitsWords_AndLeavesTheIntegrationWorktreeAtItsPreMergeHead()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ, WorktreeHandle seg) = Diverged("added.txt", "segment adds this\n");
+        string preMergeHead = Git(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
+
+        // An UNTRACKED file where the segment adds one: git refuses to overwrite it, and a hard reset does not remove
+        // untracked files, so the retry is refused the same way. A persistent, non-conflict failure.
+        File.WriteAllText(Path.Combine(integ.IntegrationWorktreePath, "added.txt"), "untracked in the way\n");
+
+        IntegrationMergeFailedException ex = Assert.Throws<IntegrationMergeFailedException>(
             () => provider.Integrate(seg, integ, CancellationToken.None));
 
-        Assert.Contains("failed unexpectedly: it exited ", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("left no MERGE_HEAD", ex.Message, StringComparison.Ordinal);
-
-        // git's own explanation, which is what the operator needed and never got.
+        Assert.Equal(1, provider.MergeRetries);
+        Assert.Contains("failed twice without a conflict", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("added.txt", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("would be overwritten by merge", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("the retry stderr:", ex.Message, StringComparison.Ordinal);
         Assert.Contains("git merge stderr:", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("shared.txt", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("overwritten by merge", ex.Message, StringComparison.Ordinal);
-
-        // The sibling probes are no longer silent either.
         Assert.Contains("the MERGE_HEAD probe (exit ", ex.Message, StringComparison.Ordinal);
         Assert.Contains("the --ff-only attempt before it (exit ", ex.Message, StringComparison.Ordinal);
+
+        // Left at the pre-merge head with no merge in progress, for the tasks integrating after this one.
+        Assert.Equal(preMergeHead, Git(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim());
+        Assert.Throws<InvalidOperationException>(
+            () => Git(integ.IntegrationWorktreePath, "rev-parse", "-q", "--verify", "MERGE_HEAD"));
+    }
+
+    [Fact]
+    public void ARealConflict_StillTakesTheConflictPath_WithoutARetry()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ, WorktreeHandle seg) = Diverged("shared.txt", "segment side\n");
+        File.WriteAllText(Path.Combine(integ.IntegrationWorktreePath, "shared.txt"), "integration side\n");
+        Git(integ.IntegrationWorktreePath, "commit", "-am", "integration changes the same line");
+
+        Assert.Equal(IntegrationResult.Conflict, provider.Integrate(seg, integ, CancellationToken.None));
+        Assert.Equal(0, provider.MergeRetries);
     }
 
     [Fact]

@@ -5901,7 +5901,31 @@ public sealed class Scheduler
         }
 
         // B1 step 2: git integration commit (FF or non-FF union).
-        IntegrationResult integResult = provider.Integrate(handle, integ, ct);
+        IntegrationResult integResult;
+        try
+        {
+            integResult = provider.Integrate(handle, integ, ct);
+        }
+        catch (IntegrationMergeFailedException mergeFailure)
+        {
+            // #750 / SSOT §5.3: a git failure during integration is a needs-human halt for THIS task, routed
+            // through the normal failed path, never a run abort. The provider already retried once and left the
+            // integration worktree at its pre-merge head; undo the fragment merge, make sure of the reset, and
+            // put git's own words where the human will read them.
+            string mergeFeedback = PersistIntegrationMergeFailure(task, result, integ, mergeFailure);
+            AtomicFile.WriteAllText(statePath, preMergeState);
+            provider.RollbackMerge(integ, ct);
+            RecordFailedSettle(task, result, Journal.AttemptOutcome.IntegrationFailed, failedGuardrails: []);
+            return new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.NeedsHuman,
+                ActionExitCode = result.ActionExitCode,
+                Guardrails = result.Guardrails,
+                Summary = "integration merge failed twice without a conflict; needs human "
+                          + $"(git's output in {mergeFeedback})"
+            };
+        }
 
         if (integResult == IntegrationResult.FastForward)
         {
@@ -6102,6 +6126,41 @@ public sealed class Scheduler
         catch
         {
             // Best-effort — never let a logging IO failure mask the re-verify failure itself.
+        }
+
+        return feedbackPath;
+    }
+
+    /// <summary>
+    /// Write a failed integration merge's evidence to the task log dir (#750): a <c>feedback.md</c> carrying git's
+    /// exit codes and output for both merge attempts. Returns its path. Best-effort, like
+    /// <see cref="PersistUnionReVerifyFailure"/>: an IO failure here must never mask the merge failure itself.
+    /// </summary>
+    private string PersistIntegrationMergeFailure(
+        TaskNode task, TaskResult result, IntegrationHandle integ, IntegrationMergeFailedException failure)
+    {
+        string taskLogDir = result.PendingAttempt?.LogDir is { Length: > 0 } relLogDir
+            ? Path.GetDirectoryName(Path.Combine(
+                _plan.PlanDirectory, relLogDir.Replace('/', Path.DirectorySeparatorChar)))!
+            : Path.Combine(_plan.PlanDirectory, "logs", integ.RunId, task.Id);
+        string feedbackPath = Path.Combine(taskLogDir, "feedback.md");
+
+        try
+        {
+            Directory.CreateDirectory(taskLogDir);
+            AtomicFile.WriteAllText(feedbackPath,
+                $"# Task '{task.Id}': integration merge failed\n\n" +
+                $"Task: {task.Description}\n\n" +
+                "The task's own attempt passed, but merging its segment into the integration branch failed " +
+                "WITHOUT a conflict, and failed again when retried from a clean pre-merge head. The merge was " +
+                "rolled back (state.json restored, integration worktree reset) and this task settled " +
+                "`needs-human`; the rest of the run continued. This is usually environmental (a lock, a path " +
+                "git refuses to overwrite, a hook or filter in the repository's git config), not the task's work.\n\n" +
+                "## What git said\n\n```\n" + failure.Message + "\n```\n");
+        }
+        catch
+        {
+            // Best-effort — never let a logging IO failure mask the merge failure itself.
         }
 
         return feedbackPath;

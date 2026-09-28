@@ -2253,9 +2253,9 @@ the user's deliverable; a global user `pre-commit` hook (e.g. GitGuardian's `ggs
 them. The incident that motivated this: an offline `ggshield` `pre-commit` hook failed the internal
 state-marker commit and crashed the run. User hooks run only on the **user-facing** merge-back (below).
 
-**A git/IO failure during integration is a `needs-human` halt** routed through the normal failed path,
-never an uncaught throw. More broadly, **any unexpected infrastructure fault during a run** (a task
-executor or an integration step throwing — git unavailable, a failing internal hook that somehow still
+**A segment merge that git refuses is a `needs-human` halt for that task** routed through the normal
+failed path, never an uncaught throw (the retry-once rule is below, #750). Any OTHER **unexpected
+infrastructure fault during a run** (a task executor or an integration step throwing — git unavailable, a failing internal hook that somehow still
 fired, an IO error) is an **honest halt, not an unhandled crash (#150)**: the scheduler terminates the
 worker pool, runs the end-of-run cleanup sweep, and returns an **aborted `RunReport`** carrying a
 `RunAbort` (one-line `Headline` + `Remedy` for the console, full exception `Detail` for the logs). The
@@ -2263,12 +2263,18 @@ CLI renders the one-liner + remedy, writes the full fault to `logs/<runId>/abort
 non-zero (harness error) — never a raw stack trace as the headline. An aborted report is failed
 regardless of per-task outcomes.
 
-**A git failure names git's own words (#750).** When an integration merge fails WITHOUT leaving a
-`MERGE_HEAD` (so it is not a conflict), the fault's message carries git's exit code and its trimmed
-`stderr`/`stdout`, plus the exit code and output of the `MERGE_HEAD` probe and of the `--ff-only` attempt
-before it, each stream capped at 4000 characters. That message is the abort headline and part of
-`abort.log`'s detail, so the operator reads why git refused instead of reconstructing the merge by hand.
-The trial-delivery merge (§14.12) reports the same way.
+**A merge that fails without a conflict is retried once, then halts THAT task (#750).** When the
+non-fast-forward merge of a segment fails WITHOUT leaving a `MERGE_HEAD` (so it is not a conflict), the
+provider resets the integration worktree to its pre-merge head (`merge --abort`, `reset --hard`) and
+retries the merge once. A retry that merges, or conflicts, proceeds exactly as a first attempt would. A
+retry that fails the same way resets the integration worktree to the pre-merge head again, and the task
+settles **`needs-human`** through the normal failed path: its attempt is journaled as
+`integration-failed` (§7, #802), its state fragment is rolled back, no merge sequence is consumed, the rest of the run continues, and the task's `feedback.md` and halt text carry
+git's exit codes and trimmed `stderr`/`stdout` for both merges, plus the `MERGE_HEAD` probe and the
+`--ff-only` attempt before them, each stream capped at 4000 characters. It never aborts the run. A git
+failure anywhere else in integration (the segment commit, the trial-delivery merge of §14.12) still
+reaches the abort path below, but its message likewise carries git's output, so `abort.log` says why git
+refused.
 
 **Retry preserves upstream work:** a failed attempt is `git reset --hard <taskBase> + git clean -fd`
 in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a

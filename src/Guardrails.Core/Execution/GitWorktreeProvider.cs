@@ -203,14 +203,48 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         var mergeHead = TryGitInWithStderr(integPath, "rev-parse", "MERGE_HEAD");
         if (mergeHead.exitCode == 0) return IntegrationResult.Conflict;
 
-        // #750: the throw carries what git SAID. This message is the abort headline, and its exception
-        // is abort.log's detail, so git's own explanation reaches both instead of a bare "failed".
-        throw new InvalidOperationException(
-            $"git merge --no-commit --no-ff {segBranch} (in {integPath}) failed unexpectedly: it exited "
-            + $"{merge.exitCode} and left no MERGE_HEAD, so this is not a merge conflict."
+        // #750: not a conflict, and possibly transient (a plan-41 run aborted on a merge that succeeded when
+        // replayed by hand moments later). Retry ONCE, bounded, from a clean pre-merge head.
+        string firstAttempt =
+            $"The first merge exited {merge.exitCode} and left no MERGE_HEAD, so it was not a merge conflict."
             + GitOutputDetail("git merge", merge.stdout, merge.stderr)
             + GitOutputDetail($"the MERGE_HEAD probe (exit {mergeHead.exitCode})", mergeHead.stdout, mergeHead.stderr)
-            + GitOutputDetail($"the --ff-only attempt before it (exit {ff.exitCode})", ff.stdout, ff.stderr));
+            + GitOutputDetail($"the --ff-only attempt before it (exit {ff.exitCode})", ff.stdout, ff.stderr);
+        ResetIntegrationTo(integPath, _preMergeIntegHead);
+        Interlocked.Increment(ref _mergeRetries);
+
+        var retry = TryGitInWithStderr(integPath, "merge", "--no-commit", "--no-ff", segBranch);
+        if (retry.exitCode == 0) return IntegrationResult.Merged;
+
+        var retryHead = TryGitInWithStderr(integPath, "rev-parse", "MERGE_HEAD");
+        if (retryHead.exitCode == 0) return IntegrationResult.Conflict;
+
+        // Failed twice. Leave the integration worktree at its pre-merge head for the tasks after this one,
+        // and hand the Scheduler what git SAID, both times: it becomes the task's halt text and feedback.
+        ResetIntegrationTo(integPath, _preMergeIntegHead);
+        throw new IntegrationMergeFailedException(
+            $"git merge --no-commit --no-ff {segBranch} (in {integPath}) failed twice without a conflict. "
+            + $"The retry from the pre-merge head exited {retry.exitCode} and left no MERGE_HEAD."
+            + GitOutputDetail("the retry", retry.stdout, retry.stderr)
+            + Environment.NewLine + firstAttempt);
+    }
+
+    private int _mergeRetries;
+
+    /// <summary>How many times <see cref="Integrate"/> has retried a non-conflict merge failure (#750). A test seam.</summary>
+    internal int MergeRetries => Volatile.Read(ref _mergeRetries);
+
+    /// <summary>
+    /// Put the integration worktree back at <paramref name="head"/> (#750): abort any half-made merge and reset hard.
+    /// Best-effort: a failure here is reported by the retry, or by the next integration, in git's own words.
+    /// </summary>
+    private static void ResetIntegrationTo(string integPath, string head)
+    {
+        TryGitInWithStderr(integPath, "merge", "--abort");
+        if (!string.IsNullOrEmpty(head))
+        {
+            TryGitInWithStderr(integPath, "reset", "--hard", head);
+        }
     }
 
     /// <summary>The longest stretch of one git stream an exception message quotes (#750).</summary>

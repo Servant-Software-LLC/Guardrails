@@ -18,3 +18,12 @@ public enum IntegrationResult
     /// </summary>
     Conflict
 }
+
+/// <summary>
+/// The non-fast-forward merge of a segment failed WITHOUT a conflict, twice (#750): git refused it, left no
+/// <c>MERGE_HEAD</c>, and refused it again after the integration worktree was reset to its pre-merge head. The
+/// provider has left the integration worktree reset to that head. The Scheduler settles the task
+/// <c>needs-human</c> with <see cref="Exception.Message"/> (git's exit codes and output) instead of aborting the
+/// run. An <see cref="InvalidOperationException"/>, so a caller that does not know this type still sees a fault.
+/// </summary>
+public sealed class IntegrationMergeFailedException(string message) : InvalidOperationException(message);
