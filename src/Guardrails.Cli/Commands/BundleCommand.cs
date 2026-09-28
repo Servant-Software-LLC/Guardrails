@@ -146,7 +146,7 @@ public static class BundleCommand
         var diffOption = new Option<bool>("--include-worktree-diff") { Description = "Add the full git diff of the integration worktree and each selected segment. Refused with --lean." };
         var withoutAgentTextOption = new Option<bool>("--without-agent-text")
         {
-            Description = "Remove all agent-derived free text, run-wide. The only way past the D1 refusal.",
+            Description = "Remove all agent-derived free text, run-wide. Clears the D1 refusal without the token value.",
         };
         var keepPathsOption = new Option<bool>("--keep-paths") { Description = "Do not anonymize paths." };
         var noRedactOption = new Option<bool>("--no-redact") { Description = "Skip the credential passes. Never for a public issue." };
@@ -302,7 +302,7 @@ public static class BundleCommand
         // §17.6.5 D1, run-scoped: the scrub would be blind to a token this shell cannot see.
         if (!args.NoRedact && !args.WithoutAgentText && BundleD1.UnsetVariables(plan, environment) is { Count: > 0 } unset)
         {
-            foreach (string line in BundleD1.RefusalLines(unset))
+            foreach (string line in BundleD1.RefusalLines(unset, environment))
             {
                 io.Error.WriteLine(line);
             }

@@ -445,7 +445,26 @@ public sealed class BundleBuilderTests : IDisposable
         var shell = new Dictionary<string, string> { ["LITELLM_MASTER_KEY"] = "set-in-this-shell", ["JUDGE_API_KEY"] = "" };
         Assert.Equal(["JUDGE_API_KEY"], BundleD1.UnsetVariables(plan, shell));
         Assert.Equal(["JUDGE_API_KEY", "LITELLM_MASTER_KEY"], BundleD1.UnsetVariables(plan, new Dictionary<string, string>()));
-        Assert.Contains("  export JUDGE_API_KEY in this shell and re-run `guardrails bundle`", BundleD1.RefusalLines(["JUDGE_API_KEY"]));
+        Assert.Contains("  export JUDGE_API_KEY=<value> (the token itself) in this shell and re-run `guardrails bundle`", BundleD1.RefusalLines(["JUDGE_API_KEY"]));
+    }
+
+    /// <summary>#814: the refusal names the value a variable needs, says when it is set but empty, and offers --no-redact.</summary>
+    [Fact]
+    public void TheD1RefusalShowsTheValue_NamesASetButEmptyVariable_AndOffersNoRedact()
+    {
+        var shell = new Dictionary<string, string> { ["JUDGE_API_KEY"] = "" };
+
+        IReadOnlyList<string> lines = BundleD1.RefusalLines(["JUDGE_API_KEY", "LITELLM_MASTER_KEY"], shell);
+
+        Assert.Contains(
+            "  JUDGE_API_KEY is set but empty in this shell: export JUDGE_API_KEY=<value> (the token itself) and re-run `guardrails bundle`",
+            lines);
+        Assert.Contains("  export LITELLM_MASTER_KEY=<value> (the token itself) in this shell and re-run `guardrails bundle`", lines);
+        Assert.DoesNotContain(lines, line => line.Contains("export JUDGE_API_KEY in this shell", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("--without-agent-text", StringComparison.Ordinal));
+        Assert.Contains(
+            "  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).",
+            lines);
     }
 
     [Fact]

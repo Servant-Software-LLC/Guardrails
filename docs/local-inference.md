@@ -518,7 +518,7 @@ works on a stuck run without stopping it, so bundle before you kill the run (ste
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | An attempt ends `context exhausted` (Claude Code: "Autocompact is thrashing"); two in a row settle the task needs-human | The context refilled right after each compaction, often from whole files printed through Bash | Raise `contextTokens` toward the per-slot `n_ctx`, split the task, or narrow the block's Bash grant (step 5) |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
-| `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=...` and re-run, or pass `--without-agent-text` |
+| `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=<value>` (with the key itself) and re-run, or pass `--without-agent-text`; for a bundle that stays private, `--no-redact` |
 
 ## What still leaves the machine
 

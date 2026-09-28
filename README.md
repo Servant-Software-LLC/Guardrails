@@ -598,8 +598,11 @@ versions, and a computed `SUMMARY.md`.
   only the harness-written evidence.
 - **It refuses when it can't see a token.** If a runner block in `guardrails.json` names an `authTokenEnv`
   or `apiKeyEnv` that is unset in your shell, the scrub would be blind to that token, so `bundle` refuses
-  and writes nothing. Run it from the shell that exported the variable (`export LITELLM_MASTER_KEY=...`),
-  or pass `--without-agent-text` to ship the bundle with all agent-derived text removed, run-wide.
+  and writes nothing. Run it from the shell that exported the variable with its value
+  (`export LITELLM_MASTER_KEY=<value>`; a bare `export LITELLM_MASTER_KEY` sets it empty and still refuses), or
+  pass `--without-agent-text` to ship the bundle with all agent-derived text removed, run-wide. For a bundle that
+  stays private (moving it between your own machines), `--no-redact` also gets past it; the zip is named
+  `-UNREDACTED`, and it must never be attached to a public issue.
 - **Where it goes.** `~/guardrails-bundles/<plan>-<runId>.zip` by default (`--out` or `--dir` to change
   it). Any destination inside a git working tree is refused, so a bundle can't be committed by accident.
   The absolute path is printed.

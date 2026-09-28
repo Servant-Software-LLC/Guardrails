@@ -10407,7 +10407,7 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--max-size <MB>` | `20` | Cap on the **finished zip**, in MiB (§17.7). GitHub accepts attachments up to 25 MB. |
 | `--lean` | off | Withholds every **full**-class entry (§17.3), leaving only the harness-written evidence set. For a public issue when the code is private. |
 | `--include-worktree-diff` | off | Adds the full `git diff` of the integration worktree and of each selected segment. It is source code, so it is **refused with `--lean`**. |
-| `--without-agent-text` | off | The only way past the D1 refusal (§17.6.5). Ships the bundle with **all agent-derived free text removed, run-wide**. |
+| `--without-agent-text` | off | Clears the D1 refusal (§17.6.5) without the token value. Ships the bundle with **all agent-derived free text removed, run-wide**. |
 | `--keep-paths` | off | Disables path anonymization (§17.6.3). Anonymization is the default. |
 | `--no-redact` | off | Skips the credential passes (§17.6.8). Never for a public issue. |
 
@@ -10908,11 +10908,18 @@ events, which can split a value across lines. Two rules cover that:
 
 If **any** runner block the plan declares names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in
 the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable and gives
-the remedy, e.g.:
+the remedy, then the two ways past it without the value (#814), e.g.:
 
 ```text
-export LITELLM_MASTER_KEY in this shell and re-run `guardrails bundle`
+  export LITELLM_MASTER_KEY=<value> (the token itself) in this shell and re-run `guardrails bundle`
+  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.
+  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).
 ```
+
+The remedy shows the VALUE: a bare `export NAME` exports an empty variable, which D1 treats as unset, so it
+changes nothing. A variable that is present but empty is named that way instead (`LITELLM_MASTER_KEY is set but
+empty in this shell: …`). `--no-redact` skips every credential pass, D1 included; it is the remedy for a bundle
+moved between one's own machines, never for a public issue.
 
 The check is **run-scoped**, not per file, because attributing a token to individual files is unsound: a
 prompt judge picks its own block (`TierResolver.ResolveJudge` with the judge's frontmatter `runner`);

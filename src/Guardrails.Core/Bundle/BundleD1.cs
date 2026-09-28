@@ -27,12 +27,22 @@ public static class BundleD1
         .. BlockVariables(plan).Where(name => !environment.TryGetValue(name, out string? value) || string.IsNullOrEmpty(value))
     ];
 
-    /// <summary>The refusal text: each variable named, with the remedy.</summary>
-    public static IReadOnlyList<string> RefusalLines(IReadOnlyList<string> unset) =>
+    /// <summary>
+    /// The refusal text: each variable named, with the remedy, then the two ways past it (#814). The remedy shows the
+    /// VALUE a variable needs (<c>export NAME=&lt;value&gt;</c>): a bare <c>export NAME</c> exports an empty variable, which
+    /// D1 treats as unset, so the same refusal would come back. A variable that exists in
+    /// <paramref name="environment"/> but is empty is named as such. <c>--no-redact</c> is offered for a bundle that
+    /// stays private, and <c>--without-agent-text</c> for one that keeps no agent text.
+    /// </summary>
+    public static IReadOnlyList<string> RefusalLines(
+        IReadOnlyList<string> unset, IReadOnlyDictionary<string, string>? environment = null) =>
     [
         "guardrails bundle: refused (D1): a runner block names a token variable this shell does not have, so the scrub "
         + "would be blind to a token the run held. Nothing was written.",
-        .. unset.Select(name => $"  export {name} in this shell and re-run `guardrails bundle`"),
+        .. unset.Select(name => environment is not null && environment.ContainsKey(name)
+            ? $"  {name} is set but empty in this shell: export {name}=<value> (the token itself) and re-run `guardrails bundle`"
+            : $"  export {name}=<value> (the token itself) in this shell and re-run `guardrails bundle`"),
         "  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.",
+        "  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).",
     ];
 }

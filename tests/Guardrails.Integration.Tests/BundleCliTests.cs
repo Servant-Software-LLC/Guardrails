@@ -415,6 +415,18 @@ public sealed class BundleCliTests
     // 4. D1 end to end (§17.6.5)
     // =====================================================================================================
 
+    /// <summary>#814: the --without-agent-text help no longer claims to be the only way past D1 (--no-redact is another).</summary>
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public void TheWithoutAgentTextHelp_DoesNotClaimToBeTheOnlyWayPastD1()
+    {
+        System.CommandLine.Command bundle = BundleCommand.Create(new StringConsoleIo());
+        System.CommandLine.Option option = bundle.Options.Single(o => o.Name == "--without-agent-text");
+
+        Assert.DoesNotContain("only way", option.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Clears the D1 refusal without the token value", option.Description, StringComparison.Ordinal);
+    }
+
     [Fact]
     [Trait("Category", "Bundle")]
     public async Task AJudgeOnlyAuthTokenEnvUnsetInTheBundlingShell_RefusesBeforeWriting_NamingTheVariable()
@@ -426,8 +438,9 @@ public sealed class BundleCliTests
         (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, "--out", zip);
 
         Assert.Equal(ExitCodes.HarnessError, exit);
-        Assert.Contains($"  export {SyntheticRun.JudgeTokenVar} in this shell and re-run `guardrails bundle`", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains($"  export {SyntheticRun.JudgeTokenVar}=<value> (the token itself) in this shell and re-run `guardrails bundle`", io.ErrorText, StringComparison.Ordinal);
         Assert.Contains("--without-agent-text", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("Or pass --no-redact if this bundle stays private", io.ErrorText, StringComparison.Ordinal);
         Assert.False(File.Exists(zip));
         Assert.False(Directory.Exists(Path.GetDirectoryName(zip)));
         Assert.Equal(0, host.ToolVersionReads);
