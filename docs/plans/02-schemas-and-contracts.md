@@ -2946,6 +2946,10 @@ fails the write, loudly, with a message naming the likely cause.
                                     //   "action" under the same number and startedAt). Best-effort: a failed
                                     //   marker write never faults the run — it is noted in the task-level
                                     //   inflight-marker.log and the next journal write carries it
+        "sleptSeconds": 21600       // OPTIONAL (#810): whole seconds the HOST was asleep while this attempt was
+                                    //   in flight, added as each sleep is detected. Kept across phase changes and a
+                                    //   pause's re-run; copied onto the attempts[] record at settle. ABSENT when
+                                    //   the host has not slept during the attempt
       }
     }
   },
@@ -3491,6 +3495,46 @@ row carries the journal number as `attempt`. Four properties are load-bearing:
   the marker. A resume load clears it too: `guardrails status` reads the file directly and so can still show a
   crashed run's marker (labelled interrupted), but the resumed run itself starts clean.
 * **Additive.** Absent on every journal written before it; a reader that does not know the key ignores it.
+
+**Host sleep does NOT count against an attempt's timeout, and every surface shows both numbers (#810, a
+maintainer decision of 2026-09-27).** A laptop that sleeps mid-attempt used to make a run look hung: on the
+maintainer's Mac an attempt ran 8h48m of wall time against a 1h timeout while the machine cycled through Maintenance
+Sleep and DarkWake, and nothing said the machine had been asleep. The rule is now documented, and made visible:
+
+- **What each OS does (measured or by the clock's definition).** The attempt timeout is a
+  `CancellationTokenSource` timer, which .NET schedules on its timer-queue clock. On **Windows** that clock is
+  `QueryUnbiasedInterruptTime` (measured on .NET 10: the timer queue's `TickCount64` equals unbiased time and runs
+  36 hours behind `Environment.TickCount64` on a machine that had slept), so sleep is excluded. On **macOS** it is
+  the uptime clock, which stops in sleep (observed: the 8h48m-wall / 1h-timeout attempt above). On **Linux** it is
+  `CLOCK_MONOTONIC`, which does not advance in suspend by definition (not measured here). So the rule holds on all
+  three. A measured action duration (`segments.actionMs`, a `Stopwatch`) is awake time on macOS and Linux but WALL
+  time on Windows, where QPC keeps counting in sleep.
+- **Detection.** `HostSleepMonitor` compares the wall clock with an awake clock: `Stopwatch` on macOS
+  (`CLOCK_UPTIME_RAW`) and Linux (`CLOCK_MONOTONIC`), `QueryUnbiasedInterruptTime` on Windows, which is the
+  timer queue's own clock there (so the "awake" figure is what the timeout measured). Every gap above 1 s of clock
+  jitter is sleep and is **counted**; a gap of **60 s or more** is also **reported**, with the check before it
+  (`from`), the check after it (`to`), and its length, so several short DarkWake sleeps still add up. It checks on a
+  heartbeat (every 15 s of awake time) **while the task DAG runs**, and at every attempt boundary: before an attempt
+  starts (so a sleep that ended before it is never charged to it) and before any attempt settles, on every settle
+  path (so a sleep that just ended is on the record and in the summary). A sleep during the plan preflight, the
+  terminal gate or delivery is not reported, though it never counts against a timeout either. A forward wall-clock
+  step of a minute or more (NTP, a manual change) reads as a sleep; that is the known limit.
+- **Provider-reset waits run on awake time too.** A transient backoff (`TransientBackoff`) waits with `Task.Delay`,
+  on the same timer clock, so after a sleep it can run past a provider's wall-clock reset time before it retries.
+- **Recorded.** Each counted sleep is added to every in-flight attempt's `inFlightAttempt.sleptSeconds`, which
+  moves onto the settled `attempts[].sleptSeconds`: the sleep while THAT attempt was in flight, nothing before it. A
+  reported sleep is also written as a §8.1 `host-slept` row, replayed by `guardrails attach`, and printed by the live
+  view and `--no-ui`: `host slept: the host was asleep for 6h00m (between … and … UTC); in flight: <task>/attempt-1 —
+  sleep does not count against an attempt's timeout`.
+- **Both numbers in the summary.** A failed attempt that slept names its awake and wall time. A timeout leads with
+  them, because the awake time is what the timeout measured: `timed out after 1h00m awake (8h48m wall; host slept
+  7h48m): claude timed out`. Any other stop, and a green task's `took …` line, trail them: `…; host slept 2h00m during
+  the attempt (10m00s awake, 2h10m wall)`.
+- **Keeping a Mac awake.** `guardrails run` on macOS holds an idle-sleep assertion for its whole life by starting
+  `/usr/bin/caffeinate -i -w <its own pid>` (so it ends with the run however the run ends), taken only once the
+  process owns the run, and prints one line saying so; `--allow-sleep` turns it off. It cannot stop a lid-close sleep
+  on battery. Linux (`systemd-inhibit`, which wraps a command rather than watching a pid) and Windows
+  (`SetThreadExecutionState`, which is per thread) are follow-ups.
 
 **`tasks.<id>.transientPauses[]` — a pause that RESOLVES is evidence too (#115/#515).** Until this field
 existed, only the transient that **exhausted** the per-task pause budget left a durable trace (an attempt
@@ -5033,6 +5077,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-stalled` | `AttemptStalled` | `attempt`, `boundSeconds`, `silentSeconds`, `suspends` (host suspends the watchdog discounted, #517), and when the session's context management failed `contextManagement` (`compaction-failed`) with the runner's error text in `detail` (#811, §9). Written before the same attempt's `attempt-finished` row |
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
+| `host-slept` | `IRunObserver.HostSlept` | `from`, `to` (the checks either side of the sleep), `sleptForSeconds`, and `inFlight` (`<task>/attempt-<N>` for each attempt that was running; omitted when none was). No `taskId`: the host sleeps for the whole run (#810, §7) |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
 | `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit`, `by` (`operator` \| `overwatcher` \| `task:<folder>`, the same value as the `supplied[]` record) — no `taskId`: a supply commit (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
@@ -6037,7 +6082,9 @@ the context refilled to the limit within 3 turns of the previous compact, 3 time
 message carrying `"api_error":"autocompact_thrashing"` at the top level (`parent_tool_use_id` null, never a
 subagent's), and, when the CLI exits on its own, a result carrying `"terminal_reason":"rapid_refill_breaker"`. The
 fallback is an ERROR result (`is_error: true`) whose text opens with that sentence; a successful result that merely
-mentions it never counts, and a give-up never overrides a result already parsed as a success.
+mentions it never counts. Claude Code's own STRUCTURED signal (the top-level `api_error` or the `terminal_reason`) is
+trusted even when the result says `is_error: false`; only the text fallback defers to a result parsed as a
+success.
 
 - **The session ends it.** On the give-up line the session arms a **10 s grace period**. If the CLI writes its own
   result first (it normally does, at once), the session exits on its own and keeps the result's usage, turns and cost.
@@ -10540,7 +10587,8 @@ withheld by `--lean`; each withheld entry is a MANIFEST.md row (reason `lean`).
 │                  composed-prompt*.md, transcript.md, guardrail-*.transcript.md,
 │                  claude-stream.jsonl + guardrail-*.stream.jsonl (tails), *.patch      full
 ├── gateway/sessions/  claude-config/projects/**/*.jsonl ONLY (tails)                   full
-└── git/        integration.txt, <task>.txt: status, log -5, diff --stat                lean
+├── git/        integration.txt, <task>.txt: status, log -5, diff --stat                lean
+└── host/       sleep-wake.log: pmset -g log Sleep/Wake/DarkWake in the run's window (macOS) lean
                 integration.diff, <task>.diff (only with --include-worktree-diff)       full
 ```
 
@@ -10559,6 +10607,10 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
   only, to attribute a session to its attempt for trim tier 2 (§17.7).
 - **`claude-config/` beyond `projects/**/*.jsonl` is excluded by construction**, and the exclusion is a named
   MANIFEST.md row (reason `claude-config-excluded`), under `--no-redact` too.
+- **`host/sleep-wake.log`** (#810, macOS only) holds the `Sleep`, `Wake` and `DarkWake` lines of `pmset -g log` from
+  five minutes before the run's process started (the journal owner, else its earliest attempt) to the moment of
+  bundling (`Wake Requests` lines excluded), capped at the newest 2,000, redacted like any file. On another OS the bundle has no such file; the
+  run's own `host-slept` rows in `events.jsonl` (§8.1) are the record there.
 - **`git/`** has one file for the integration worktree (in serial mode, the repository holding the plan) and
   one per selected task's segment worktree that still exists. A `diff --stat` whose base is not recorded is
   omitted, and the file says why.
@@ -10615,11 +10667,14 @@ Then six numbered blocks, always in this order:
    render all six `RunLivenessState` values (`NotRecorded`, `Running`, `ExitedWithoutFinishing`, `Ended`,
    `OnAnotherHost`, `CannotCheck`); the plan preflight and terminal gate results; then the line
    **`Last halt or needs-human reason:`**, which is `run.json`'s `halt` headline and failed checks, else the
-   newest needs-human task's reason, else `none`.
+   newest needs-human task's reason, else `none`; then **`Host sleep:`**, the count and total of the run's
+   `host-slept` rows in `events.jsonl` (#810), or `none recorded`.
 3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6; the loaded task's
    definition hash against the journal's `definitionHash`); then one row per
    **journaled** attempt: number, outcome, duration, exit code, provenance `summary`, and model requested vs
-   served. Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
+   served. Each attempt the host slept through adds `Host slept <d> during attempt <N>`, and an in-flight one
+   `Host slept <d> during in-flight attempt <N>` (#810, from `sleptSeconds`). Then the **in-flight attempt**: taken
+   from #798's per-task in-flight marker in `run.json`
    (attempt number, `startedAt`, phase) when present; otherwise **inferred** from disk vs journal:
    *"attempt-4/ exists on disk and is not in the journal: in flight, or the run died during it (liveness:
    …)"*. Both paths are contract: the bundle must not require #798.
@@ -11059,7 +11114,8 @@ If your code is private, re-run with --lean before attaching this to a public is
 
 ### 17.10 Determinism
 
-Identical on-disk state plus injected probes (the tool versions, `RunLiveness`, and the clock) gives a
+Identical on-disk state plus injected probes (the tool versions, `RunLiveness`, the clock, and the sleep/wake
+history) gives a
 **byte-identical zip**:
 
 - entries sorted **ordinally** by bundle path, with `/` separators;

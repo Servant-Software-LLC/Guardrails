@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Guardrails.Core.Journal;
@@ -16,6 +17,63 @@ public sealed partial class BundleBuilder
     }
 
     private bool _gitPending;
+
+    /// <summary>
+    /// #810: <c>host/sleep-wake.log</c>, the host's Sleep/Wake/DarkWake history from five minutes before the run's
+    /// process started to the moment of bundling, when the probe has one (macOS). Redacted like any file.
+    /// </summary>
+    private void AddSleepWakeEntry()
+    {
+        DateTimeOffset to = _probes.Now();
+        DateTimeOffset from = RunStartedAt() is { } started ? started - TimeSpan.FromMinutes(5) : to - TimeSpan.FromDays(1);
+        if (_probes.SleepWake?.Invoke(from, to) is not { } log)
+        {
+            return;
+        }
+
+        var text = new StringBuilder();
+        text.Append("# host sleep/wake history (pmset -g log: Sleep, Wake, DarkWake)\n");
+        text.Append("# window: ").Append(from.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture))
+            .Append(" to ").Append(to.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)).Append("\n\n");
+        if (log.Unavailable is { } why)
+        {
+            text.Append("(unavailable: ").Append(why).Append(")\n");
+        }
+        else if (log.Lines.Count == 0)
+        {
+            text.Append("(no Sleep, Wake or DarkWake line in the window)\n");
+        }
+
+        foreach (string line in log.Lines)
+        {
+            text.Append(line).Append('\n');
+        }
+
+        var entry = new Entry
+        {
+            BundlePath = "host/sleep-wake.log",
+            Kind = new BundleKind("host-sleep-wake", BundleClass.Lean, BundleCapClass.None, AgentText: false),
+            Generated = text.ToString(),
+            SourceLabel = "generated: pmset -g log, Sleep/Wake/DarkWake lines in the run's window",
+        };
+
+        // Added after the main pass, like the git files: filtered and materialized (redacted) here.
+        Add(entry);
+        ApplyFilters(entry);
+        if (entry.Included)
+        {
+            Materialize(entry);
+        }
+    }
+
+    /// <summary>When the run's process started (the journal owner), else its earliest recorded attempt, else null.</summary>
+    private DateTimeOffset? RunStartedAt() =>
+        _journal?.Owner?.ProcessStartedAt
+        ?? RunJournalDoc?.Tasks.Values
+            .SelectMany(t => t.Attempts.Select(a => (DateTimeOffset?)a.StartedAt)
+                .Append(t.InFlightAttempt?.StartedAt))
+            .Where(at => at is not null)
+            .Min();
 
     private void AddGitEntries()
     {
@@ -311,6 +369,7 @@ public sealed partial class BundleBuilder
     private BundleOutcome TrimAndFinish()
     {
         AddGitEntries();
+        AddSleepWakeEntry();
         ApplyStreamConsistency();
 
         long cap = _options.MaxSizeBytes;

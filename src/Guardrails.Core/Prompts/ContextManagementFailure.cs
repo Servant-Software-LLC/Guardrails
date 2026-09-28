@@ -78,8 +78,8 @@ public sealed record ContextManagementFailure(ContextManagementFailureKind Kind,
 /// silent. ZERO means the runner or its backend never produced anything at all, which is most likely not the model's
 /// fault (#815 review W4).
 /// </param>
-/// <remarks>TODO(#810): carry the wall-clock and awake-clock durations here once the host-sleep monitor lands, so a stall
-/// report can state both numbers the way a timeout does.</remarks>
+/// <remarks>The wall and awake durations of a stalled attempt are stated by the executor (#810), which appends the same
+/// both-numbers clause to every failed attempt's summary when the host slept during it.</remarks>
 public sealed record StallReport(TimeSpan Bound, TimeSpan SilentFor, int SuspendsObserved, int ProgressBeats = 0)
 {
     /// <summary>True when the session produced no progress at all before the stall.</summary>

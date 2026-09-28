@@ -45,6 +45,8 @@ namespace Guardrails.Core.Execution;
 ///         <c>boundSeconds</c>, <c>silentSeconds</c>, <c>suspends</c> (host suspends it discounted), and, when the
 ///         session's context management failed, <c>contextManagement</c> (<c>compaction-failed</c>) with the runner's
 ///         error text in <c>detail</c>. Written before the attempt's own <c>attempt-finished</c> row.</item>
+///   <item><c>host-slept</c> — the host was asleep (#810): <c>from</c>, <c>to</c>, <c>sleptForSeconds</c>, and
+///         <c>inFlight</c>, the attempts that were running. Run-scoped: no <c>taskId</c>.</item>
 ///   <item><c>task-settled</c> — a task reached a terminal outcome.</item>
 ///   <item><c>run-finished</c> — the run itself reached a terminal outcome, carrying <c>exitCode</c> and
 ///         <c>faultKind</c>. It is the only kind with no <c>taskId</c>: it is run-scoped, not task-scoped.</item>
@@ -243,6 +245,26 @@ public sealed class RunEventStream : IRunObserver
             Detail = contextManagementDetail
         });
     }
+
+    /// <inheritdoc/>
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
+        AppendLine(new EventRow
+        {
+            Kind = HostSleptKind,
+            RunId = _runId,
+            TaskId = null,
+            From = from,
+            To = to,
+            SleptForSeconds = (long)Math.Round(sleptFor.TotalSeconds),
+            InFlight = inFlight.Count > 0 ? inFlight : null
+        });
+    }
+
+    /// <summary>The wire token for the #810 host-sleep row.</summary>
+    public const string HostSleptKind = "host-slept";
 
     /// <summary>The wire token for the #811 stall-verdict row.</summary>
     public const string AttemptStalledKind = "attempt-stalled";
@@ -603,6 +625,18 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>supplied-resources-committed</c>: the SHA the drain committed them in.</summary>
         public string? Commit { get; init; }
+
+        /// <summary><c>host-slept</c>: the last check before the sleep (#810).</summary>
+        public DateTimeOffset? From { get; init; }
+
+        /// <summary><c>host-slept</c>: the first check after the sleep.</summary>
+        public DateTimeOffset? To { get; init; }
+
+        /// <summary><c>host-slept</c>: how long the host was asleep, in whole seconds.</summary>
+        public long? SleptForSeconds { get; init; }
+
+        /// <summary><c>host-slept</c>: the attempts in flight, as <c>&lt;task&gt;/attempt-&lt;N&gt;</c>; omitted when none was.</summary>
+        public IReadOnlyList<string>? InFlight { get; init; }
 
         /// <summary><c>attempt-stalled</c>: the silence bound the watchdog enforced, in whole seconds (#811).</summary>
         public long? BoundSeconds { get; init; }

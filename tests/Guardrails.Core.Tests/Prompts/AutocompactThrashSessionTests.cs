@@ -77,8 +77,12 @@ public sealed class AutocompactThrashSessionTests : IDisposable
         Assert.Null(result.ContextManagement);
     }
 
+    /// <summary>
+    /// #819 review: Claude Code's own STRUCTURED give-up (a top-level api_error) is trusted even when the result that
+    /// follows says is_error:false. Only the text fallback defers to a successful result.
+    /// </summary>
     [Fact]
-    public async Task AGiveUpBeforeACleanSuccess_NeverOverridesTheSuccess()
+    public async Task AStructuredGiveUp_IsTrusted_EvenOverAResultThatSaysSuccess()
     {
         string[] real = Real();
         const string success = """{"type":"result","subtype":"success","is_error":false,"result":"done","num_turns":9}""";
@@ -86,8 +90,20 @@ public sealed class AutocompactThrashSessionTests : IDisposable
 
         PromptResult result = await runner.RunAsync(Invocation(TimeSpan.FromMinutes(2)), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Completed, result.Summary);
-        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.Equal(PromptFailureKind.ContextExhausted, result.FailureKind);
+        Assert.Equal(9, result.NumTurns);
+    }
+
+    [Fact]
+    public async Task AStructuredTerminalReason_IsTrusted_EvenWithIsErrorFalse()
+    {
+        const string breaker =
+            """{"type":"result","subtype":"success","is_error":false,"terminal_reason":"rapid_refill_breaker","result":"stopped","num_turns":5}""";
+        var runner = new ClaudePromptRunner("claude", WriteFakeCli("breaker", [breaker], sleepSeconds: 0), new ProcessRunner());
+
+        PromptResult result = await runner.RunAsync(Invocation(TimeSpan.FromMinutes(2)), TestContext.Current.CancellationToken);
+
+        Assert.Equal(PromptFailureKind.ContextExhausted, result.FailureKind);
     }
 
     private PromptInvocation Invocation(TimeSpan timeout) => new()

@@ -335,6 +335,10 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
     // #811: forwarded EXPLICITLY, verbatim — an unforwarded call would swallow the stall verdict in every mode. The
     // site does not ACT on it: the durable record is the attempt-stalled row in events.jsonl, which the log server serves.
+    // #810: forwarded EXPLICITLY, verbatim; the log site does not change shape when the host sleeps.
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) =>
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
     public void AttemptStalled(
         TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
         string? contextManagement, string? contextManagementDetail) =>

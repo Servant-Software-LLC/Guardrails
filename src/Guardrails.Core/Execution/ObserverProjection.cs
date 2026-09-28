@@ -203,6 +203,20 @@ public sealed class ObserverProjection : IRunObserver
         _inner.AttemptFinished(task, record);
     }
 
+    /// <summary>#810: a host sleep, recorded like every other call.</summary>
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "HostSlept",
+            ["from"] = JsonValue.Create(from),
+            ["to"] = JsonValue.Create(to),
+            ["sleptForSeconds"] = JsonValue.Create((long)Math.Round(sleptFor.TotalSeconds)),
+            ["inFlight"] = new JsonArray([.. inFlight.Select(x => (JsonNode?)JsonValue.Create(x))])
+        });
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+    }
+
     /// <summary>#811: the stall watchdog's verdict, recorded like every other call (seconds, not TimeSpan strings).</summary>
     public void AttemptStalled(
         TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,

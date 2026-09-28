@@ -909,6 +909,16 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        lock (_gate)
+        {
+            // #810, the live twin of ConsoleRunObserver's line. NON-coalescing: each sleep is its own event, and the one
+            // fact that separates an asleep machine from a hung run.
+            AppendNarrative($"[bold]host slept:[/] {Markup.Escape(HostSleepText.Line(from, to, sleptFor, inFlight))}");
+        }
+    }
+
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         lock (_gate)
