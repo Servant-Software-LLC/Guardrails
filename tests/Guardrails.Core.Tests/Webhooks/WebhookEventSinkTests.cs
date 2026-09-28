@@ -269,16 +269,21 @@ public sealed class WebhookEventSinkTests
             };
 
             using var cts = new CancellationTokenSource();
-            var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token);
+
+            // #736: the waits BETWEEN attempts are instant. The schedule is read from ComputedBackoffs below,
+            // so nothing is lost by not sleeping it; what is gained is that the four attempts no longer wait
+            // on four real timers, whose continuations a saturated thread pool can hold for seconds each.
+            // That was the last wall-clock dependence here: the poll below timed out after 30s under load.
+            var sink = new WebhookEventSink(
+                DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token,
+                backoffDelay: (_, _) => Task.CompletedTask);
 
             sink.Emit(Row("row-1"));
 
-            // WAIT FOR THE SCHEDULE, do not race the teardown. Disposing immediately makes this test a
-            // coin flip on jitter even on an idle machine: the jittered backoff can reach
-            // (1+2+4) * 1.5 * 0.2 = 2.1s, while DisposeAsync's backlog budget is 10s * 0.2 = 2.0s - and
-            // the backlog phase abandons retries (one attempt per row), so the fourth request is simply
-            // never made. Observed as "Expected: 4 / Actual: 3". Poll for the schedule, then tear down.
-            await WaitFor(() => handler.Requests.Count >= 4, "the row's full four-attempt schedule", timeoutSeconds: 30);
+            // WAIT FOR THE SCHEDULE, do not race the teardown: the backlog phase abandons retries (one
+            // attempt per row), so disposing first would cut the schedule short. With instant backoffs this
+            // takes microseconds; the bound is a hung-test guard, never the thing that decides the result.
+            await WaitFor(() => handler.Requests.Count >= 4, "the row's full four-attempt schedule", timeoutSeconds: 120);
 
             await sink.DisposeAsync();
 
@@ -529,8 +534,15 @@ public sealed class WebhookEventSinkTests
         };
 
         using var cts = new CancellationTokenSource();
-        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
+        var dropped = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var sink = new WebhookEventSink(
+            DefaultUrl, null, "guardrails/test", notices.Add, handler, 1.0, cts.Token,
+            onItemDropped: row => dropped.Enqueue(row.DeliveryId));
 
+        // Real-time scale (1.0), not 0.05: row 0 must stay parked for the whole flood, and at 0.05 its
+        // per-attempt timeout was half a second, short enough for a loaded machine to time it out mid-flood
+        // and let the pump dequeue row 1. Nothing here waits on a budget, so the full scale costs nothing.
+        //
         // Row 0 is dequeued by the pump and blocks it; everything after fills the queue. WAIT for that
         // to have actually happened - "blocks it immediately" was an assumption, not a fact. Emit only
         // ENQUEUES; if the flood starts before the pump has entered the handler, the pump dequeues
@@ -551,20 +563,32 @@ public sealed class WebhookEventSinkTests
         for (int i = 1; i < total; i++)
             sink.Emit(Row($"row-{i:D5}"));
 
+        // #695: ASSERT THE QUEUE'S DECISION, not what teardown managed to deliver. With row 0 parked in the
+        // handler, rows 1..1024 fill the queue and each of the remaining rows displaces the oldest, so the
+        // queue dropped EXACTLY rows 1..(total-1-capacity), oldest first. That is DropOldest, stated as the
+        // decision the channel made; it holds on any machine at any load, because nothing has been released
+        // yet and the pump cannot dequeue.
+        int expectedDrops = total - 1 - WebhookEventSink.QueueCapacity;
+        Assert.Equal(
+            Enumerable.Range(1, expectedDrops).Select(i => $"row-{i:D5}"),
+            dropped);
+
+        // And the newest row was KEPT: the entire reason DropOldest was chosen over DropWrite. With any
+        // newest-loses policy the queue is full exactly when the terminal row arrives, so the one row a CI
+        // wrapper exists to receive would be guaranteed lost.
+        Assert.DoesNotContain($"row-{total - 1:D5}", dropped);
+
         release.SetResult();
+
+        // Delivery of the kept rows, bounded only as a hung-test guard. The previous form disposed first and
+        // asserted on what the scaled backlog budget had let through; on a loaded machine that budget can
+        // expire before the pump reaches the newest row, which proves nothing about the queue.
+        await WaitFor(() => handler.CountFor($"row-{total - 1:D5}") >= 1, "the newest row to be attempted", timeoutSeconds: 120);
         await sink.DisposeAsync();
 
         HashSet<string> seenIds = [.. handler.Requests.Select(r => r.DeliveryId)];
-
-        // The oldest of the FLOODED rows (comfortably away from row 0, which was already in flight
-        // when the queue started filling) were displaced and never attempted.
         Assert.DoesNotContain("row-00001", seenIds);
         Assert.DoesNotContain("row-00005", seenIds);
-
-        // The newest row still gets through — the entire reason DropOldest was chosen over
-        // DropWrite: with any newest-loses policy the queue is full exactly when the terminal row
-        // arrives, so the one row a CI wrapper exists to receive would be guaranteed lost.
-        Assert.Contains($"row-{total - 1:D5}", seenIds);
     }
 
     [Trait("Category", "RunEvents")]
@@ -1130,6 +1154,7 @@ public sealed class WebhookEventSinkTests
     public async Task AFaultedPumpIsReportedNotSummarizedAsZero()
     {
         var notices = new List<string>();
+        var stuck = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new RecordingHandler
         {
             // Ignores its own cancellation token entirely — Task.WhenAny(pump, delay) does not throw
@@ -1137,9 +1162,16 @@ public sealed class WebhookEventSinkTests
             // channel would be the silent disappearance §2.2 mocks the shell shim for. A finite delay
             // comfortably longer than the scaled teardown budget — never Timeout.Infinite, which would
             // leave a task hanging for the life of the test host.
+            //
+            // #729: parked on a gate the test releases only AFTER teardown, never on a timer. The previous
+            // 5-second delay was a race: on a loaded machine teardown itself took longer than 5s, the
+            // handler returned, the pump drained, and the sink TRUTHFULLY reported "3 delivered, 3 dropped"
+            // with no stopped-early notice. That was a correct report of a pump that was no longer stuck,
+            // not a misreport; the test simply stopped testing a stuck pump. A gate keeps it stuck for as
+            // long as teardown takes, whatever the machine is doing.
             OnRequest = async (_, _, _) =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(5));
+                await stuck.Task;
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
         };
@@ -1155,6 +1187,9 @@ public sealed class WebhookEventSinkTests
         await sink.DisposeAsync();
         stopwatch.Stop();
 
+        // Let the parked sends finish now that teardown has made its decisions, so no task outlives the test.
+        stuck.SetResult();
+
         // WHICH BUDGET teardown selected, not how long the machine took to run it (#518) - the same move
         // the cancelled-teardown test above already makes, and for the same reason. The wall-clock form
         // (elapsed < 3s) FAILED here at 5.89s during a full-solution run on a developer laptop, then
@@ -1168,10 +1203,9 @@ public sealed class WebhookEventSinkTests
         Assert.Equal(WebhookEventSink.PumpShutdownGrace * scale, sink.LastPumpGraceUsed);
 
         // A deliberately LOOSE sanity bound, kept for catastrophic regressions only. Note what dominates
-        // it: the handler parks for 5s and ignores its token, so ELAPSED here is mostly that delay plus
-        // scheduling, not the 100ms of teardown budget under test. That is precisely why a 3s bound was
-        // measuring the machine rather than the code, and why this one is nowhere near the budget it
-        // sits above.
+        // it: the handler never returns during teardown, so ELAPSED is the scaled budgets plus scheduling,
+        // and scheduling is what a busy machine inflates. That is why a 3s bound measured the machine rather
+        // than the code, and why this one sits orders of magnitude above the budget.
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(30),
             $"DisposeAsync took {stopwatch.Elapsed}, far beyond any plausible scheduling overhead on a "

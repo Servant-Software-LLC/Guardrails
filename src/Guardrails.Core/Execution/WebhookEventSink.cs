@@ -78,10 +78,22 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// TEST SEAM. Internal, and <c>Guardrails.Core.csproj</c> already carries
     /// <c>&lt;InternalsVisibleTo Include="Guardrails.Core.Tests" /&gt;</c> (measured: line 27).
     /// </summary>
+    /// <param name="backoffDelay">
+    /// The wait between a row's attempts (#736). Null = <see cref="Task.Delay(TimeSpan, CancellationToken)"/>. A
+    /// test that pins the SCHEDULE passes an instant wait and reads <see cref="ComputedBackoffs"/>, so four
+    /// attempts do not depend on how fast a loaded machine runs four timers.
+    /// </param>
+    /// <param name="onItemDropped">
+    /// Told each row the full queue displaces (#695), so a test can assert WHICH rows the queue dropped rather
+    /// than what teardown managed to deliver. Runs inside the channel's lock: it must be quick and must not throw.
+    /// </param>
     internal WebhookEventSink(
         Uri url, string? auth, string userAgent, Action<string> onNotice,
-        HttpMessageHandler handler, double timeScale, CancellationToken cancellationToken)
+        HttpMessageHandler handler, double timeScale, CancellationToken cancellationToken,
+        Func<TimeSpan, CancellationToken, Task>? backoffDelay = null,
+        Action<EventDelivery>? onItemDropped = null)
     {
+        _backoffDelay = backoffDelay ?? Task.Delay;
         _url = url;
         _auth = auth;
         _userAgent = userAgent;
@@ -103,7 +115,11 @@ public sealed class WebhookEventSink : IAsyncDisposable
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true
             },
-            itemDropped: _ => Interlocked.Increment(ref _droppedCount));
+            itemDropped: item =>
+            {
+                Interlocked.Increment(ref _droppedCount);
+                onItemDropped?.Invoke(item);
+            });
 
         _pumpCts = new CancellationTokenSource();
         _pumpTask = Task.Run(PumpAsync);
@@ -418,7 +434,7 @@ public sealed class WebhookEventSink : IAsyncDisposable
                 TimeSpan backoff = Jittered(BackoffSteps[attempt - 1]);
                 try
                 {
-                    await Task.Delay(backoff, rowCts.Token).ConfigureAwait(false);
+                    await _backoffDelay(backoff, rowCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -665,6 +681,9 @@ public sealed class WebhookEventSink : IAsyncDisposable
     internal TimeSpan LastPerRowCeilingUsed { get; private set; }
 
     private readonly ConcurrentQueue<TimeSpan> _computedBackoffs = new();
+
+    /// <summary>The wait between a row's attempts; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> in production (#736).</summary>
+    private readonly Func<TimeSpan, CancellationToken, Task> _backoffDelay;
 
     /// <summary>
     /// Test observable, and the same reasoning as <see cref="LastPumpGraceUsed"/> one layer down: the

@@ -256,8 +256,17 @@ public sealed class PromptRunnerReliabilityTests
         // Budget = 1 (defaultRetries 0): a SINGLE retry slot. Two transient pauses then success must
         // still SUCCEED on the one budgeted attempt — proving the transient pauses did NOT consume it.
         var observer = new PauseRecordingObserver();
+
+        // #747: the reset hint is RELATIVE to now, never a clock literal. It used to be "11:20am", and from
+        // 10:50 to 11:20 (in whatever zone the runner was in) the time until that reset was under the 30-minute
+        // probe interval, so min() correctly picked it and this assertion failed, every day, for half an hour.
+        // Four hours ahead keeps the reset far enough away that the probe interval always wins, which is the
+        // premise the comment below states. The hint resolves in the machine's own zone (ProviderResetHint),
+        // so it is formatted from local time, 24-hour, so it needs no meridiem.
+        string resetFourHoursAway =
+            DateTimeOffset.Now.AddHours(4).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
         var runner = new SequencingRunner(
-            Transient("usage limit reached", resetHint: "11:20am"),
+            Transient("usage limit reached", resetHint: resetFourHoursAway),
             Transient("overloaded"),
             Success());
 
@@ -279,7 +288,7 @@ public sealed class PromptRunnerReliabilityTests
         // The waited total is the sum of TWO DIFFERENT horizons since #511, and this fixture exercises one
         // of each — which is why the figure is composed from the policy's own constants rather than written
         // as a number. Pause 1 is "usage limit reached (resets 11:20am)": a limit that names its reset is a
-        // quota window, so it POLLS, and with 11:20am hours away the probe interval wins the min(). Pause 2
+        // quota window, so it POLLS, and with the reset four hours away the probe interval wins the min(). Pause 2
         // is a bare "overloaded" with no reset — a blip — so it takes the exponential, at its SECOND step
         // (4s, not 2s): the schedule is indexed by how many pauses this TASK has taken, not by how many it
         // has taken on that particular horizon, so repeated trouble keeps escalating whatever its shape.
@@ -304,12 +313,12 @@ public sealed class PromptRunnerReliabilityTests
         Assert.NotNull(entry.TransientPauses);
         Assert.Equal(2, entry.TransientPauses!.Count);
         Assert.All(entry.TransientPauses, p => Assert.Equal(1, p.Attempt));
-        Assert.Equal("11:20am", entry.TransientPauses[0].ResetHint);
+        Assert.Equal(resetFourHoursAway, entry.TransientPauses[0].ResetHint);
         Assert.Null(entry.TransientPauses[1].ResetHint);   // the second transient named no reset time
 
         // Two distinct pause signals were surfaced to the observer; the first carries the reset hint.
         Assert.Equal(2, observer.Pauses.Count);
-        Assert.Contains(observer.Pauses, p => p.Reason.Contains("11:20am"));
+        Assert.Contains(observer.Pauses, p => p.Reason.Contains(resetFourHoursAway));
     }
 
     [Fact]
