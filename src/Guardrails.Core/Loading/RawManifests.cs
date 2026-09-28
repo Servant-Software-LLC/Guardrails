@@ -239,6 +239,10 @@ internal sealed class RawPromptRunnerOverrides
     public JsonElement? AuthTokenEnv { get; set; }
     public JsonElement? BackendModel { get; set; }
     public JsonElement? ContextTokens { get; set; }
+
+    // NOT an override (#811): the stall bound is block-level only and bounds task ACTIONS, which never use this
+    // profile. Bound RAW so the loader can SEE it and warn (GR2089) instead of ignoring it without a word.
+    public JsonElement? StallTimeoutSeconds { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>

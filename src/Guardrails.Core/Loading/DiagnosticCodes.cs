@@ -1392,7 +1392,14 @@ public static class DiagnosticCodes
     /// </summary>
     public const string StallTimeoutNegative = "GR2088";
 
-    // CURRENT next-free code: GR2089. GR2088 (StallTimeoutNegative) is the last taken code
+    /// <summary>
+    /// GR2089 (WARNING) — a prompt runner block's <c>guardrailOverrides</c> carries <c>stallTimeoutSeconds</c> (#811).
+    /// The stall bound is block-level and bounds task actions only; the override profile serves judges, which never
+    /// read it, so the key does nothing there.
+    /// </summary>
+    public const string StallTimeoutInGuardrailOverrides = "GR2089";
+
+    // CURRENT next-free code: GR2090. GR2089 (StallTimeoutInGuardrailOverrides) is the last taken code
     // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
     // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the

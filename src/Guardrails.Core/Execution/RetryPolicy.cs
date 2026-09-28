@@ -1610,26 +1610,63 @@ public static class RetryPolicy
         "## Calls still running when the session was stopped (not refused — they may simply need more time)";
 
     /// <summary>
-    /// #811: what a STALLED attempt's retry is told. The session was alive and emitted no progress (no model output,
-    /// no tool call, no tool result) for the whole bound. The usual causes are a tool call that sat silent past it or
-    /// a context compaction that never returned; <see cref="ForContextManagement"/> names the second when it was seen.
+    /// #811: what a STALLED attempt's retry is told — routed like <see cref="ForTimeout"/> (#815 review B2), with the
+    /// same #167 rollback-aware header and #306 salvage section: in worktree mode the attempt's writes are reverted,
+    /// so it must never be told its partial work is on disk.
+    /// <para>A stall where the session produced NO progress at all (<see cref="Prompts.StallReport.NoProgressAtAll"/>,
+    /// W4) is told the truth instead: the runner or its backend produced nothing, which is most likely not the task's
+    /// fault, so there is nothing to change in the approach.</para>
     /// </summary>
-    public static string ForStall(Prompts.StallReport? stall)
+    public static string ForStalled(
+        TaskNode task, int attempt, Prompts.StallReport? stall, bool fileWritesRolledBack = false,
+        SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        text.AppendLine();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine(StallHeading);
         text.AppendLine();
         text.AppendLine(stall is { } report
-            ? $"The session produced no progress for {report.SilentFor.TotalMinutes:F1} minutes (the bound is {report.Bound.TotalMinutes:F0}) and was killed."
-            : "The session produced no progress for longer than its silence bound and was killed.");
-        text.AppendLine("Progress means model output, a tool call, or a tool result; status lines do not count. If a command");
-        text.AppendLine("you ran can take that long without printing, narrow it (for example, a filtered test run) or run it");
-        text.AppendLine("once rather than repeatedly. Keep your working context small: read only the files you need.");
+            ? $"The session produced no progress for {report.SilentFor.TotalMinutes:F1} minutes (the bound is {report.Bound.TotalMinutes:F0}) and was stopped."
+            : "The session produced no progress for longer than its silence bound and was stopped.");
+        text.AppendLine("Progress means model output, reasoning, a tool call, a tool heartbeat or a tool result; status lines");
+        text.AppendLine("do not count.");
+        text.AppendLine();
+
+        if (stall is { NoProgressAtAll: true })
+        {
+            text.AppendLine("It produced NOTHING before it went silent: no reply, no reasoning, no tool call. That points at the");
+            text.AppendLine("runner or its backend (a gateway or model server that is not answering), not at this task. Nothing");
+            text.AppendLine("about your approach needs to change; carry on with the task as written.");
+        }
+        else if (fileWritesRolledBack && salvageRef is not null)
+        {
+            text.AppendLine("Its partial work was reverted from your working tree, but it was NOT discarded — see");
+            text.AppendLine("'## Prior attempt work is salvageable' below to recover it, then go straight to the deliverable.");
+        }
+        else if (fileWritesRolledBack)
+        {
+            text.AppendLine("Its partial work was reverted (see the rollback note below), so re-author the files, carrying");
+            text.AppendLine("forward what you LEARNED rather than re-reading the whole codebase.");
+        }
+        else
+        {
+            text.AppendLine("Its PARTIAL WORK is preserved in your workspace: continue from it rather than starting over.");
+        }
+
+        if (stall is not { NoProgressAtAll: true })
+        {
+            text.AppendLine();
+            text.AppendLine("- If a command you ran can go quiet for that long, narrow it (for example, a filtered test run) or");
+            text.AppendLine("  run it once rather than repeatedly.");
+            text.AppendLine("- Keep your working context small: read only the files you need, and large files in ranges.");
+        }
+
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
-    /// <summary>The heading <see cref="ForStall"/> opens with (pinned by tests).</summary>
+    /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
     internal const string StallHeading = "## The session went silent and was stopped";
 
     /// <summary>

@@ -222,7 +222,7 @@ internal sealed class ActionRunner
 
             // #811: a silence bound for every prompt action, from the DISPATCHED block's stallTimeoutSeconds (the block
             // whose CLI actually runs), else derived from the extended timeout. See ActionStallBound for the numbers.
-            StallBound = ActionStallBound.Resolve(registry.ResolveConfig(dispatchName).StallTimeoutSeconds, actionTimeout),
+            StallBound = ActionStallBound.Resolve(registry.ResolveConfig(dispatchName), actionTimeout),
             StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl"),
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
@@ -709,10 +709,6 @@ internal sealed record ActionRun
 
         text.Append(RetryPolicy.ForRunnerRefusals(result.RefusedToolCalls));
         text.Append(RetryPolicy.ForInFlightCalls(result.InFlightToolCalls));
-        if (result.FailureKind == PromptFailureKind.Stalled)
-        {
-            text.Append(RetryPolicy.ForStall(result.Stall));
-        }
 
         text.AppendLine();
         text.AppendLine("Fix the specific problem above on retry; do not start over.");

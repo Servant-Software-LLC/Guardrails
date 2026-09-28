@@ -394,6 +394,8 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             {
                 return failure with
                 {
+                    // A completed earlier turn IS progress: a stall on turn 3 is not a backend that never answered.
+                    Stall = failure.Stall is { } stall ? stall with { ProgressBeats = stall.ProgressBeats + completedTurns } : null,
                     NumTurns = completedTurns,
                     Usage = totalUsage,
                     ObservedModel = failure.ObservedModel ?? observedModel,
@@ -789,7 +791,9 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, stallCts.Token)
                 .ConfigureAwait(false);
 
-            heartbeat?.Beat();
+            // Headers arriving show the connection is alive, not that the model produced anything: the window restarts,
+            // but no progress is counted (#815 review W4).
+            heartbeat?.ResetWindow();
 
             if (!response.IsSuccessStatusCode)
             {
@@ -1294,7 +1298,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 Completed = false,
                 IsError = true,
                 FailureKind = PromptFailureKind.Stalled,
-                Stall = new StallReport(heartbeat.Bound, heartbeat.SilentFor(), heartbeat.SuspendsObserved),
+                Stall = new StallReport(heartbeat.Bound, heartbeat.SilentFor(), heartbeat.SuspendsObserved, heartbeat.Beats),
                 Summary =
                     $"STALLED — {_config.Endpoint} produced no stream frame for {heartbeat.SilentFor().TotalMinutes:F1}m " +
                     $"(bound {(invocation.StallBound ?? TimeSpan.Zero).TotalMinutes:F0}m) while generating with '{model}'; " +

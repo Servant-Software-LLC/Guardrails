@@ -174,6 +174,9 @@ public sealed class TaskExecutor : ITaskExecutor
             probeInterval: TimeSpan.FromMinutes(_plan.Config.ProviderProbeIntervalMinutes),
             providerWaitBound: TimeSpan.FromHours(_plan.Config.MaxProviderWaitHours));
         int timeoutRetries = 0;
+        // #815 review W4: consecutive stalls in which the session produced NO progress at all. Two in a row settle
+        // needs-human (the runner or its backend is not answering); any other attempt outcome resets it.
+        int silentStalls = 0;
         // One auto-escalation counter for turn-budget exhaustion (issue #129 / #94), mirroring the
         // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
@@ -232,7 +235,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken)
+                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken, silentStalls)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -312,6 +315,7 @@ public sealed class TaskExecutor : ITaskExecutor
             }
 
             last = attempt.Result;
+            silentStalls = attempt.SilentStall ? silentStalls + 1 : 0;
 
             // A timeout outcome means the task needed more clock; count it so the NEXT attempt's
             // timeout is extended (issue #119) — a same-clock retry just re-times-out.
@@ -768,7 +772,8 @@ public sealed class TaskExecutor : ITaskExecutor
         int guardrailFailedRetries,
         PermissionWallTracker permissionWalls,
         HashSet<string> pathsWrittenOutOfScope,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int priorSilentStalls = 0)
     {
         var startedAt = DateTimeOffset.UtcNow;
         string logDir = AttemptLogDir(task.Id, attemptNumber);
@@ -1237,6 +1242,39 @@ public sealed class TaskExecutor : ITaskExecutor
                 segments: AttemptJournaler.SegmentsFor(action));
         }
 
+        // #815 review W4: a SECOND consecutive stall in which the session produced nothing at all. The runner or its
+        // backend is not answering, which no retry of the task can change, so settle needs-human now rather than burn
+        // the budget. A stall that followed some progress keeps the ordinary retry path below.
+        if (!action.Succeeded
+            && action.FailureKind == PromptFailureKind.Stalled
+            && action.Stall is { NoProgressAtAll: true }
+            && priorSilentStalls >= 1)
+        {
+            var silentFeedback = new StringBuilder();
+            silentFeedback.Append($"# Task '{task.Id}' halted: the runner produced nothing, twice\n\n");
+            silentFeedback.Append($"Task: {task.Description}\n\n");
+            silentFeedback.Append($"{action.FailureSummary}\n\n");
+            silentFeedback.Append(
+                "Two attempts in a row went silent without producing any output at all: no reply, no reasoning, no tool " +
+                "call. That is the runner or its backend, not the task. Check that the gateway or model server is up and " +
+                "answering (and, for a local model, that it is loaded and not swapping), then resume.\n");
+            silentFeedback.Append(RetryPolicy.ForContextManagement(action.ContextManagement));
+
+            return _journaler.FailedAttempt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, silentFeedback.ToString(), isFinal: true,
+                AttemptOutcome.ActionFailed,
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"{ActionFailureCause(action)}; not retried — the second consecutive attempt in which the " +
+                              "runner produced no output at all: check the gateway or backend, then resume"
+                },
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action)) with { SilentStall = true };
+        }
+
         if (!action.Succeeded)
         {
             // #86 (#708): a path or command refused across ≥2 attempts, on an attempt that could not finish, is a
@@ -1302,6 +1340,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack, salvageRef)
                     + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
+                // #815 review B2: a stall is routed like a timeout — the rollback-aware header, the salvage section.
+                PromptFailureKind.Stalled => RetryPolicy.ForStalled(task, attemptNumber, action.Stall, fileWritesRolledBack, salvageRef)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
 
@@ -1323,6 +1364,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",
                 PromptFailureKind.MaxTurns => $"{cause}; turn budget auto-raised for retry; guardrails skipped",
                 PromptFailureKind.Timeout => $"{cause} — likely under-sized/under-budgeted; guardrails skipped",
+                // #815 review W4: nothing at all came back, which indicts the runner or its backend, not the task.
+                PromptFailureKind.Stalled when action.Stall is { NoProgressAtAll: true } =>
+                    $"{cause} — the runner produced no output at all, so check the gateway or backend; guardrails skipped",
                 _ => $"{cause}; guardrails skipped"
             };
 
@@ -1341,7 +1385,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Plan 30 §3.4: the action ran (badly, or into a timeout / turn cap) and its clock is
                 // real — that is precisely the cost §2 is missing. The summaries above all say
                 // "guardrails skipped", so the guardrail half is honestly absent.
-                segments: AttemptJournaler.SegmentsFor(action));
+                segments: AttemptJournaler.SegmentsFor(action))
+                with { SilentStall = action.FailureKind == PromptFailureKind.Stalled && action.Stall is { NoProgressAtAll: true } };
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope

@@ -479,7 +479,7 @@ public sealed class PlanLoader
             // not the loader's.
             Endpoint = raw.Endpoint,
             ContextTokens = raw.ContextTokens,
-            StallTimeoutSeconds = raw.StallTimeoutSeconds,
+            StallTimeoutSeconds = ReadStallTimeout(name, raw.StallTimeoutSeconds, raw.GuardrailOverrides?.StallTimeoutSeconds, configPath, diagnostics),
             ApiKeyEnv = raw.ApiKeyEnv,
             Wire = raw.Wire is null
                 ? null
@@ -493,6 +493,23 @@ public sealed class PlanLoader
             BackendModel = raw.BackendModel,
             GatewayKeysInOverrides = GatewayKeysInOverrides(raw.GuardrailOverrides)
         };
+    }
+
+    /// <summary>
+    /// The block's <c>stallTimeoutSeconds</c> (#811), passed through; the same key under <c>guardrailOverrides</c> is
+    /// GR2089, a warning: the bound applies to task actions only, and judges never read the override profile's copy.
+    /// </summary>
+    private static int? ReadStallTimeout(
+        string name, int? value, JsonElement? overrideValue, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (!AbsentAxis(overrideValue, out _))
+        {
+            diagnostics.Add(Warning(DiagnosticCodes.StallTimeoutInGuardrailOverrides, configPath,
+                $"promptRunners.{name}.guardrailOverrides.stallTimeoutSeconds does nothing: the stall bound is " +
+                $"block-level and applies to task actions only. Move it to promptRunners.{name}.stallTimeoutSeconds (SSOT §9)."));
+        }
+
+        return value;
     }
 
     /// <summary>

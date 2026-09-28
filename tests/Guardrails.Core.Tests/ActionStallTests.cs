@@ -58,7 +58,7 @@ public sealed class ActionStallTests
         // raised to 15m. A configured bound is an absolute and does not scale.
         TimeSpan extended = TimeSpan.FromMinutes(36 * TaskExecutor.TimeoutMultiplierFor(1));
 
-        Assert.Equal(TimeSpan.FromMinutes(18), ActionStallBound.Resolve(null, extended));
+        Assert.Equal(TimeSpan.FromMinutes(18), ActionStallBound.Resolve((int?)null, extended));
         Assert.Equal(TimeSpan.FromMinutes(10), ActionStallBound.Resolve(600, extended));
     }
 
@@ -69,7 +69,12 @@ public sealed class ActionStallTests
         { Compacting, false },
         { CompactFailed, false },
         { """{"type":"system","subtype":"init","model":"claude-opus-5-5"}""", false },
-        { """{"type":"system","subtype":"compact_boundary"}""", false },
+        { """{"type":"system","subtype":"compact_boundary"}""", true },
+        { """{"type":"system","subtype":"thinking_tokens","estimated_tokens":150,"estimated_tokens_delta":100}""", true },
+        { """{"type":"system","subtype":"thinking_tokens","estimated_tokens":150,"estimated_tokens_delta":0}""", false },
+        { """{"type":"system","subtype":"thinking_tokens","estimated_tokens":150}""", false },
+        { """{"type":"tool_progress","tool_use_id":"t-heartbeat-0","tool_name":"Bash","elapsed_time_seconds":30,"heartbeat":true}""", true },
+        { """{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"t"}""", false },
         { """{"type":"system","subtype":"hook_response"}""", false },
         { """{"type":"user","message":{"content":[{"type":"text","text":"This session is being continued"}]}}""", false },
         { """{"type":"rate_limit_event"}""", false },
@@ -312,7 +317,7 @@ public sealed class ActionStallTests
                 Completed = false,
                 IsError = true,
                 FailureKind = PromptFailureKind.Stalled,
-                Stall = new StallReport(TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(20.5), 1),
+                Stall = new StallReport(TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(20.5), 1, ProgressBeats: 12),
                 ContextManagement = new ContextManagementFailure(
                     ContextManagementFailureKind.CompactionFailed, "Request timed out", 1),
                 Summary = "STALLED — no progress (model output, tool call or tool result) for 20.5m (bound 20m); the session was killed."
@@ -422,6 +427,148 @@ public sealed class ActionStallTests
         finally { Fixture.DeleteBestEffort(dir); }
     }
 
+    // ─── #815 review: executor-level decisions ────────────────────────────────────────────
+
+    /// <summary>W3: after a timeout, attempt 2 runs on a 1.5x clock, and the derived bound is resolved from THAT clock.</summary>
+    [Fact]
+    public async Task TheExtendedTimeoutReachesTheResolverOnTheNextAttempt()
+    {
+        string root = Fixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = Fixture.WritePlan(root, """{ "command": "stub" }""", 2400, retries: 1);
+            var timedOut = new PromptResult
+            {
+                Completed = false, IsError = true, FailureKind = PromptFailureKind.Timeout, Summary = "claude timed out"
+            };
+            var runner = new SequenceRunner(timedOut, Succeeded());
+
+            await Fixture.RunSerialAsync(plan, runner, new RecordingObserver(), Ct);
+
+            Assert.Equal(2, runner.Invocations.Count);
+            Assert.Equal(TimeSpan.FromMinutes(40), runner.Invocations[0].Timeout);
+            Assert.Equal(TimeSpan.FromMinutes(15), runner.Invocations[0].StallBound);   // 40m / 3 = 13.3m, raised to 15m
+            Assert.Equal(TimeSpan.FromMinutes(60), runner.Invocations[1].Timeout);
+            Assert.Equal(TimeSpan.FromMinutes(20), runner.Invocations[1].StallBound);   // 60m / 3 = 20m
+        }
+        finally { Fixture.DeleteBestEffort(root); }
+    }
+
+    /// <summary>W1: a claude gateway block (a local backend) gets clamp(timeout / 2, 30m, 60m).</summary>
+    [Fact]
+    public async Task AGatewayBlockGetsTheLocalBand()
+    {
+        string root = Fixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = Fixture.WritePlan(
+                root, """{ "command": "stub", "baseUrl": "http://127.0.0.1:4000", "model": "Qwen" }""", 3600);
+            var runner = new CapturingRunner(Succeeded());
+
+            await Fixture.RunSerialAsync(plan, runner, new RecordingObserver(), Ct);
+
+            Assert.Equal(TimeSpan.FromMinutes(30), Assert.Single(runner.Invocations).StallBound);
+        }
+        finally { Fixture.DeleteBestEffort(root); }
+    }
+
+    /// <summary>
+    /// W4: a stall in which the runner produced NOTHING says so, and a second one in a row settles needs-human instead
+    /// of burning the rest of the budget (3 attempts here, only 2 run).
+    /// </summary>
+    [Fact]
+    public async Task TwoStallsWithNoOutputAtAll_SettleNeedsHuman_OnTheSecond()
+    {
+        string root = Fixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = Fixture.WritePlan(root, """{ "command": "stub" }""", 3600, retries: 2);
+            var runner = new SequenceRunner(SilentStall(), SilentStall(), SilentStall());
+            var observer = new RecordingObserver();
+
+            RunReport report = await Fixture.RunSerialAsync(plan, runner, observer, Ct);
+
+            Assert.Equal(2, runner.Invocations.Count);
+            TaskResult settled = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.NeedsHuman, settled.Outcome);
+            Assert.Contains("second consecutive attempt in which the runner produced no output at all", settled.Summary, StringComparison.Ordinal);
+            Assert.Equal([AttemptOutcome.ActionFailed, AttemptOutcome.ActionFailed], observer.Outcomes);
+
+            string[] feedback = [.. Directory.GetFiles(root, "feedback.md", SearchOption.AllDirectories)
+                .OrderBy(path => path, StringComparer.Ordinal).Select(File.ReadAllText)];
+            Assert.Equal(2, feedback.Length);
+            Assert.Contains("runner or its backend", feedback[0], StringComparison.Ordinal);
+            Assert.Contains("halted: the runner produced nothing, twice", feedback[1], StringComparison.Ordinal);
+        }
+        finally { Fixture.DeleteBestEffort(root); }
+    }
+
+    /// <summary>W4: a stall that followed some progress is an ordinary failure, retried to the end of the budget.</summary>
+    [Fact]
+    public async Task StallsAfterProgress_KeepTheOrdinaryRetryPath()
+    {
+        string root = Fixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = Fixture.WritePlan(root, """{ "command": "stub" }""", 3600, retries: 2);
+            var runner = new SequenceRunner(ProgressStall(), ProgressStall(), ProgressStall());
+
+            RunReport report = await Fixture.RunSerialAsync(plan, runner, new RecordingObserver(), Ct);
+
+            Assert.Equal(3, runner.Invocations.Count);
+            TaskResult settled = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.ActionFailed, settled.Outcome);
+            Assert.DoesNotContain("no output at all", settled.Summary, StringComparison.Ordinal);
+        }
+        finally { Fixture.DeleteBestEffort(root); }
+    }
+
+    /// <summary>W4: a silent stall, then one after progress, then a silent one again: the count resets, so all three run.</summary>
+    [Fact]
+    public async Task ASilentStallCountResets_WhenAnAttemptProducesOutput()
+    {
+        string root = Fixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = Fixture.WritePlan(root, """{ "command": "stub" }""", 3600, retries: 2);
+            var runner = new SequenceRunner(SilentStall(), ProgressStall(), SilentStall());
+
+            RunReport report = await Fixture.RunSerialAsync(plan, runner, new RecordingObserver(), Ct);
+
+            Assert.Equal(3, runner.Invocations.Count);
+            Assert.Equal(TaskOutcome.ActionFailed, Assert.Single(report.Tasks).Outcome);
+        }
+        finally { Fixture.DeleteBestEffort(root); }
+    }
+
+    private static PromptResult SilentStall() => new()
+    {
+        Completed = false, IsError = true, FailureKind = PromptFailureKind.Stalled,
+        Stall = new StallReport(TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(20), 0, ProgressBeats: 0),
+        Summary = "STALLED — no progress for 20.0m (bound 20m); the session was killed."
+    };
+
+    private static PromptResult ProgressStall() => new()
+    {
+        Completed = false, IsError = true, FailureKind = PromptFailureKind.Stalled,
+        Stall = new StallReport(TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(20), 0, ProgressBeats: 30),
+        Summary = "STALLED — no progress for 20.0m (bound 20m); the session was killed."
+    };
+
+    /// <summary>Returns the scripted results in order (the last one repeats), recording each invocation.</summary>
+    private sealed class SequenceRunner(params PromptResult[] results) : IPromptRunner
+    {
+        public List<PromptInvocation> Invocations { get; } = [];
+
+        public string Name => "stub";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
+        {
+            Invocations.Add(invocation);
+            return Task.FromResult(results[Math.Min(Invocations.Count, results.Length) - 1]);
+        }
+    }
+
     // ─── fakes ───────────────────────────────────────────────────────────────────────────
 
     private static PromptResult Succeeded() => new() { Completed = true, IsError = false, Summary = "done" };
@@ -489,7 +636,8 @@ file static class Fixture
     };
 
     public static string WritePlanFiles(
-        string root, string stubBlock, int timeoutSeconds, string extraBlocks = "", string? actionRunner = null)
+        string root, string stubBlock, int timeoutSeconds, string extraBlocks = "", string? actionRunner = null,
+        int retries = 0)
     {
         string planDir = Path.Combine(root, "plan");
         Write(Path.Combine(planDir, "guardrails.json"),
@@ -499,7 +647,7 @@ file static class Fixture
               "workspace": ".",
               "maxParallelism": 1,
               "defaultTimeoutSeconds": {{timeoutSeconds}},
-              "defaultRetries": 0,
+              "defaultRetries": {{retries}},
               "promptRunners": { "default": "stub", "stub": {{stubBlock}}{{extraBlocks}} }
             }
             """);
@@ -523,9 +671,11 @@ file static class Fixture
     }
 
     public static PlanDefinition WritePlan(
-        string root, string stubBlock, int timeoutSeconds, string extraBlocks = "", string? actionRunner = null)
+        string root, string stubBlock, int timeoutSeconds, string extraBlocks = "", string? actionRunner = null,
+        int retries = 0)
     {
-        PlanLoadResult load = new PlanLoader().Load(WritePlanFiles(root, stubBlock, timeoutSeconds, extraBlocks, actionRunner));
+        PlanLoadResult load = new PlanLoader().Load(
+            WritePlanFiles(root, stubBlock, timeoutSeconds, extraBlocks, actionRunner, retries));
         Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
         return load.Plan!;
     }

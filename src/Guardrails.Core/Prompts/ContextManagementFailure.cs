@@ -58,4 +58,15 @@ public sealed record ContextManagementFailure(ContextManagementFailureKind Kind,
 /// <param name="Bound">The silence bound.</param>
 /// <param name="SilentFor">How long the session had produced no progress when it was killed.</param>
 /// <param name="SuspendsObserved">How many polls found the host had been suspended, each resetting the window.</param>
-public sealed record StallReport(TimeSpan Bound, TimeSpan SilentFor, int SuspendsObserved);
+/// <param name="ProgressBeats">
+/// How many progress lines (or, for openai-compat, completed turns and data frames) the session produced before it went
+/// silent. ZERO means the runner or its backend never produced anything at all, which is most likely not the model's
+/// fault (#815 review W4).
+/// </param>
+/// <remarks>TODO(#810): carry the wall-clock and awake-clock durations here once the host-sleep monitor lands, so a stall
+/// report can state both numbers the way a timeout does.</remarks>
+public sealed record StallReport(TimeSpan Bound, TimeSpan SilentFor, int SuspendsObserved, int ProgressBeats = 0)
+{
+    /// <summary>True when the session produced no progress at all before the stall.</summary>
+    public bool NoProgressAtAll => ProgressBeats == 0;
+}

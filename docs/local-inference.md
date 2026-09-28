@@ -207,15 +207,17 @@ In the plan's `guardrails.json`, set `maxParallelism` and replace `promptRunners
   `"runner": "qwen38"` in that task's `action`.
 - **Timeouts:** local models are slower than Claude, especially Qwen 3.8. If attempts end as `timeout`, raise the
   task's `timeoutSeconds` rather than retrying blindly.
-- **Stall bound:** an attempt is also stopped as `stalled` when the session produces no model output, tool call or
-  tool result for too long. The default is a third of the attempt's timeout, kept between 15 and 20 minutes (15
-  minutes at the default 30-minute timeout). A local model can be silent that long for a legitimate reason. Claude
-  Code prints nothing while the server reads the prompt, or while it writes one whole reply. A compaction re-reads
-  the whole context before it prints anything. Allow about `contextTokens` divided by the server's prompt speed: at
-  about 150 tokens per second, 65,536 tokens takes about 7 minutes, so the default is enough. For a larger
-  `contextTokens`, set `"stallTimeoutSeconds"` on the block to about twice that. For example, 262,144 tokens takes
-  about 30 minutes, so use `"stallTimeoutSeconds": 3600`. Also raise `timeoutSeconds` above it, because the bound
-  applies only when it is shorter than the timeout.
+- **Stall bound:** an attempt is also stopped as `stalled` when the session produces no model output, reasoning,
+  tool call or tool heartbeat for too long. A local model can be silent for a legitimate reason: Claude Code prints
+  nothing while the server reads the prompt, and a compaction re-reads the whole context before it prints anything.
+  Allow about `contextTokens` divided by the server's prompt speed. At about 150 tokens per second, 65,536 tokens
+  takes about 7 minutes.
+  - On a gateway block the default bound is half the attempt's timeout, kept between 30 and 60 minutes. At the
+    default 30-minute timeout there is no separate bound (the timeout already covers it); at a 1-hour timeout it is
+    30 minutes. Either is enough for 65,536 tokens.
+  - For a larger `contextTokens`, set `"stallTimeoutSeconds"` on the block to about twice that time. For example,
+    262,144 tokens takes about 30 minutes, so use `"stallTimeoutSeconds": 3600`. Also raise `timeoutSeconds` above
+    it, because the bound applies only when it is shorter than the timeout.
 - **Don't** add `ANTHROPIC_*`, `CLAUDE_CODE_*` or `CLAUDE_CONFIG_DIR` to a block's `env`, or `--settings`,
   `--model` or `--fallback-model` to its `extraArgs`. Guardrails owns them, and `validate` rejects them (`GR2084`).
 

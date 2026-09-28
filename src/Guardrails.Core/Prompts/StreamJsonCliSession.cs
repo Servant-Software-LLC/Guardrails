@@ -336,9 +336,9 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Stalled,
                     ContextManagement = result.CompactionFailure,
-                    Stall = new StallReport(stall.Bound, silentFor, stall.SuspendsObserved),
+                    Stall = new StallReport(stall.Bound, silentFor, stall.SuspendsObserved, stall.Beats),
                     Summary =
-                        $"STALLED — no progress (model output, tool call or tool result) for {silentFor.TotalMinutes:F1}m " +
+                        $"STALLED — no progress (model output, reasoning, a tool call, heartbeat or result) for {silentFor.TotalMinutes:F1}m " +
                         $"(bound {stall.Bound.TotalMinutes:F0}m); the session was killed. " +
                         "The process was alive and producing nothing, which is not the same as slow: a session " +
                         "that keeps emitting is never stopped by this bound."

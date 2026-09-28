@@ -46,7 +46,7 @@ public sealed record PromptInvocation
     /// Kill the session when it has produced NO PROGRESS for this long (issue #504; #811 narrowed "output" to
     /// progress lines, see <see cref="StreamProgress"/>). Null disables stall detection. Breakdowns set it
     /// (<c>WaveBreakdownInvoker.BreakdownStallBound</c>), and since #811 so do task actions
-    /// (<c>ActionStallBound</c>, SSOT §9.2); guardrail judges and the harness's advisory prompts leave it null.
+    /// (<c>ActionStallBound</c>, SSOT §9); guardrail judges and the harness's advisory prompts leave it null.
     ///
     /// <para>This bounds SILENCE where <see cref="Timeout"/> bounds DURATION, and the two are not
     /// interchangeable. A caller that sets a stall bound should set <see cref="Timeout"/> to a generous
