@@ -147,6 +147,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
         var dialect = new StreamJsonCliDialect
         {
             Label = "claude",
+            RecognizesAutocompactThrash = true,
             CostIsFiction = true,
             SummarySuffix = suffix,
             StreamLogPreamble = ClaudeGatewayLaunch.StreamLogPreamble(gateway, dropped)
@@ -203,7 +204,8 @@ public sealed class ClaudePromptRunner : IPromptRunner
     /// </summary>
     private static readonly StreamJsonCliDialect Dialect = new()
     {
-        Label = "claude"
+        Label = "claude",
+        RecognizesAutocompactThrash = true
     };
 
     /// <summary>

@@ -50,6 +50,12 @@ internal sealed record StreamJsonCliDialect
     /// the transcript. Null = no preamble — the stream log is byte-for-byte the child's output.
     /// </summary>
     public string? StreamLogPreamble { get; init; }
+
+    /// <summary>
+    /// True for the Claude Code CLI only (#800): its "Autocompact is thrashing" give-up is recognised
+    /// (<see cref="ClaudeSignalClassifier.IsAutocompactGiveUp"/>). False for Cursor, whose final text must never trip it.
+    /// </summary>
+    public bool RecognizesAutocompactThrash { get; init; }
 }
 
 /// <summary>
@@ -85,6 +91,13 @@ internal interface IToolDenialScanner
 /// </summary>
 internal static class StreamJsonCliSession
 {
+    /// <summary>
+    /// How long a session may run after Claude Code's autocompact give-up (#800) before the harness ends it. Long enough
+    /// for the CLI to write its own error result and exit (it normally does, in well under a second); short enough that a
+    /// version that hangs costs seconds, not the attempt's timeout.
+    /// </summary>
+    internal static readonly TimeSpan ThrashGrace = TimeSpan.FromSeconds(10);
+
     /// <summary>
     /// Pin the two persisted log artifacts to UTF-8 (no BOM) explicitly (issue #55). The
     /// no-arg <see cref="StreamWriter"/> overloads already default to this, but the symptom of
@@ -132,7 +145,7 @@ internal static class StreamJsonCliSession
         CancellationToken cancellationToken,
         Action<string>? lineObserver)
     {
-        var parser = new ClaudeStreamParser();
+        var parser = new ClaudeStreamParser(dialect.RecognizesAutocompactThrash);
 
         // Mine permission-wall signals from the same stream lines (issues #86 / #104 / #773): a tool call
         // refused because it is not granted (Claude) or not approved (Cursor). The scanner is the RUNNER'S —
@@ -191,6 +204,12 @@ internal static class StreamJsonCliSession
         // returns (its state is final by then), so no cross-thread read of this flag is load-bearing.
         bool denialAbortFired = false;
 
+        // #800: the same spawn-guard shape for Claude Code's "Autocompact is thrashing" give-up. A session in that state
+        // cannot make progress, so it is ended the moment the signal is parsed rather than left to the timeout.
+        bool thrashAbortFired = false;
+        bool thrashGraceArmed = false;
+        using var thrashGraceCts = new CancellationTokenSource();
+
         // #504 stall watchdog / #517 suspend discrimination. Bounds SILENCE, not duration: the caller's
         // Timeout stays a backstop while this kills a session that has stopped producing. The clock, the
         // cadence and the verdict all live on the shared StallWatch — OpenAiCompatPromptRunner drives the
@@ -214,6 +233,41 @@ internal static class StreamJsonCliSession
                 streamWriter?.WriteLine(line);
                 transcript?.Feed(line);
 
+                // #800: the give-up arrived. Claude Code normally writes its own error result and exits within a
+                // moment, which keeps the usage, turns and cost; a version that hangs instead is ended after a short
+                // grace period, never left to the timeout or the stall bound.
+                if (!thrashGraceArmed && parser.ContextExhausted && !parser.ResultSeen)
+                {
+                    thrashGraceArmed = true;
+                    CancellationToken graceToken = thrashGraceCts.Token;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(ThrashGrace, graceToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+
+                        if (parser.ResultSeen)
+                        {
+                            return;
+                        }
+
+                        Volatile.Write(ref thrashAbortFired, true);
+                        try
+                        {
+                            abortCts.Cancel();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // The run already finished and the source was disposed — nothing left to abort.
+                        }
+                    }, CancellationToken.None);
+                }
+
                 if (denialAbortThreshold is not { } threshold
                     || denialAbortFired
                     || permissionScanner!.ConsecutiveDenials < threshold)
@@ -222,10 +276,13 @@ internal static class StreamJsonCliSession
                 }
 
                 denialAbortFired = true;
+                RequestAbort();
+            }
 
-                // OFF this thread on purpose. Tee runs on the stdout reader callback; cancelling inline
-                // can resume WaitForExitAsync's continuation here, which then awaits the very reader
-                // drain this thread owes — a self-deadlock. Task.Run hands the cancel to the pool.
+            // OFF this thread on purpose. Tee runs on the stdout reader callback; cancelling inline can resume
+            // WaitForExitAsync's continuation here, which then awaits the very reader drain this thread owes — a
+            // self-deadlock. Task.Run hands the cancel to the pool.
+            void RequestAbort() =>
                 _ = Task.Run(() =>
                 {
                     try
@@ -237,7 +294,6 @@ internal static class StreamJsonCliSession
                         // The run already finished and the source was disposed — nothing left to abort.
                     }
                 });
-            }
 
             // The watchdog itself: poll staleness on a cadence well under the bound, and abort through the
             // SAME linked source the #452 fail-fast uses, so a stall lands as an ordinary ProcessResult
@@ -297,8 +353,9 @@ internal static class StreamJsonCliSession
                 return LaunchFailureResult(launchFailure, command.Executable, dialect);
             }
 
-            // The run is over, so retire the watchdog before anything below can be blamed on it.
+            // The run is over, so retire the watchdog (and any #800 grace timer) before anything below can be blamed on it.
             stallCts.Cancel();
+            thrashGraceCts.Cancel();
             if (stallWatchdog is not null)
             {
                 try { await stallWatchdog.ConfigureAwait(false); }
@@ -315,6 +372,33 @@ internal static class StreamJsonCliSession
             if (dialect.CostIsFiction)
             {
                 result = result with { CostUsd = null };
+            }
+
+            // #800: the context is exhausted and Claude Code has given up. Checked FIRST: it is the cause of whatever came
+            // after it (a stall, a timeout, an error result), and its remedy is specific. Whether or not the CLI also
+            // wrote its own is_error result, the attempt is classified by the give-up, never as a generic error.
+            if (result.Thrashing is { } thrashing && !(result.HasResult && !result.IsError))
+            {
+                return new PromptResult
+                {
+                    Completed = false,
+                    IsError = true,
+                    ResultText = result.ResultText,
+                    CostUsd = result.CostUsd,
+                    NumTurns = result.NumTurns,
+                    Usage = ToPromptUsage(result.Usage),
+                    ObservedModel = result.Model,
+                    FailureKind = PromptFailureKind.ContextExhausted,
+                    ContextManagement = thrashing,
+                    BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
+                    RefusedCommands = permissionScanner?.RefusedCommands ?? [],
+                    Summary =
+                        "context exhausted — Claude Code reported that autocompact is thrashing: the context refilled to " +
+                        "the limit right after each compaction, so no further turn could make progress" +
+                        (Volatile.Read(ref thrashAbortFired)
+                            ? $"; the CLI did not exit, so the harness ended the session after a {ThrashGrace.TotalSeconds:F0} s grace period"
+                            : string.Empty)
+                };
             }
 
             // #504: a stall abort, re-derived AFTER the process returned (the flag's write is final by

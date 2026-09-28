@@ -534,7 +534,9 @@ public sealed class CursorPromptRunnerTests : IDisposable
             exitCode: 0, hang: true);
         PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
         {
-            StallBound = TimeSpan.FromSeconds(2),
+            // The stall clock runs from launch, so the bound must clear the fake's start-up under full-suite load, or
+            // the session is stalled before the compaction line is read (the StalledSession_WithACallInFlight lesson).
+            StallBound = TimeSpan.FromSeconds(15),
             Timeout = TimeSpan.FromMinutes(5)
         };
 
@@ -542,7 +544,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
         Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
         StallReport stall = Assert.IsType<StallReport>(result.Stall);
-        Assert.Equal(TimeSpan.FromSeconds(2), stall.Bound);
+        Assert.Equal(TimeSpan.FromSeconds(15), stall.Bound);
         Assert.True(stall.SilentFor >= stall.Bound);
         ContextManagementFailure context = Assert.IsType<ContextManagementFailure>(result.ContextManagement);
         Assert.Equal(ContextManagementFailureKind.CompactionFailed, context.Kind);
@@ -564,7 +566,9 @@ public sealed class CursorPromptRunnerTests : IDisposable
             drip: """{"type":"system","subtype":"status","status":"compacting"}""");
         PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
         {
-            StallBound = TimeSpan.FromSeconds(3),
+            // Long enough for the fake to start and print its progress line under full-suite load; still far inside
+            // the two-minute drip, so only the progress-only rule can end this as a stall.
+            StallBound = TimeSpan.FromSeconds(15),
             Timeout = TimeSpan.FromMinutes(5)
         };
 
@@ -572,6 +576,23 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
         Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
         Assert.False(Assert.IsType<StallReport>(result.Stall).NoProgressAtAll);
+    }
+
+    /// <summary>
+    /// #800 review W4: the autocompact give-up is a CLAUDE signal, recognised for the claude dialect only. The same line
+    /// in a Cursor session is not classified as context exhaustion, so a Cursor session's final text can never trip it.
+    /// </summary>
+    [Fact]
+    public async Task ACursorSessionNeverRecognisesTheClaudeThrashSignal()
+    {
+        string thrash = File.ReadAllLines(TestPaths.Fixture(Path.Combine("claude-live", "autocompact-thrash.jsonl")))[0];
+        Canned([InitLine, thrash], exitCode: 0);
+
+        PromptResult result = await Runner().RunAsync(
+            Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(PromptFailureKind.ContextExhausted, result.FailureKind);
+        Assert.Null(result.ContextManagement);
     }
 
     [Fact]

@@ -16,7 +16,16 @@ public enum ContextManagementFailureKind
     /// A context compaction was attempted and failed: Claude Code's
     /// <c>{"type":"system","subtype":"status","compact_result":"failed","compact_error":"…"}</c>.
     /// </summary>
-    CompactionFailed
+    CompactionFailed,
+
+    /// <summary>
+    /// Claude Code gave up on the context (#800): "Autocompact is thrashing: the context refilled to the limit within 3
+    /// turns of the previous compact, 3 times in a row." Read from a synthetic assistant message carrying
+    /// <c>"api_error":"autocompact_thrashing"</c> or a result carrying <c>"terminal_reason":"rapid_refill_breaker"</c>.
+    /// A session in this state cannot make progress, so the harness ends it at once
+    /// (<see cref="PromptFailureKind.ContextExhausted"/>).
+    /// </summary>
+    AutocompactThrashing
 }
 
 /// <summary>
@@ -33,6 +42,7 @@ public sealed record ContextManagementFailure(ContextManagementFailureKind Kind,
     public string Token => Kind switch
     {
         ContextManagementFailureKind.CompactionFailed => "compaction-failed",
+        ContextManagementFailureKind.AutocompactThrashing => "autocompact-thrashing",
         _ => throw new InvalidOperationException($"Unhandled context-management failure '{Kind}'.")
     };
 
@@ -42,11 +52,16 @@ public sealed record ContextManagementFailure(ContextManagementFailureKind Kind,
         string what = Kind switch
         {
             ContextManagementFailureKind.CompactionFailed => "context compaction failed",
+            ContextManagementFailureKind.AutocompactThrashing => "the context filled up faster than it could be compacted (autocompact thrashing)",
             _ => throw new InvalidOperationException($"Unhandled context-management failure '{Kind}'.")
         };
 
         string times = Count > 1 ? $" {Count} times" : string.Empty;
-        return string.IsNullOrWhiteSpace(Detail) ? $"{what}{times}" : $"{what}{times} ({Detail})";
+
+        // The thrash message is Claude Code's own paragraph; the phrase above already says what it means.
+        return string.IsNullOrWhiteSpace(Detail) || Kind == ContextManagementFailureKind.AutocompactThrashing
+            ? $"{what}{times}"
+            : $"{what}{times} ({Detail})";
     }
 }
 

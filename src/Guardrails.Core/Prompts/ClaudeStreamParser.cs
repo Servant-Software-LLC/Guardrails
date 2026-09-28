@@ -61,6 +61,12 @@ public sealed record ClaudeResult
     /// did. Its <see cref="ContextManagementFailure.Detail"/> is the LAST failure's <c>compact_error</c>.
     /// </summary>
     public ContextManagementFailure? CompactionFailure { get; init; }
+
+    /// <summary>
+    /// Claude Code's "Autocompact is thrashing" give-up (#800), or null. Takes precedence over
+    /// <see cref="CompactionFailure"/> wherever one context-management failure is reported: it is the terminal one.
+    /// </summary>
+    public ContextManagementFailure? Thrashing { get; init; }
 }
 
 /// <summary>
@@ -113,6 +119,26 @@ public sealed class ClaudeStreamParser
     // #811: failed compactions, counted, with the last one's error text.
     private int _compactionFailures;
     private string? _compactionError;
+
+    // #800: Claude Code's "Autocompact is thrashing" give-up, recognised only for the claude dialect (a Cursor session's
+    // final text can never trigger it). Volatile because the session's tee reads them on the reader thread right after
+    // Feed to arm its grace timer, and the timer reads _resultSeen from the pool.
+    private readonly bool _recognizeThrash;
+    private volatile bool _thrashing;
+    private volatile bool _resultSeen;
+    private string? _thrashText;
+
+    /// <summary>A parser; <paramref name="recognizeThrash"/> turns on the #800 autocompact-thrash signals (claude only).</summary>
+    public ClaudeStreamParser(bool recognizeThrash = false) => _recognizeThrash = recognizeThrash;
+
+    /// <summary>
+    /// True once the stream has reported that autocompact is thrashing (#800). Read by the session straight after
+    /// <see cref="Feed"/>, to end a session that can no longer make progress if its CLI does not exit on its own.
+    /// </summary>
+    public bool ContextExhausted => _thrashing;
+
+    /// <summary>True once a terminal <c>result</c> line has been parsed. Read by the session's #800 grace timer.</summary>
+    public bool ResultSeen => _resultSeen;
 
     /// <summary>
     /// Feed one raw output line (newline excluded). Non-JSON lines are ignored, as is every event
@@ -173,10 +199,30 @@ public sealed class ClaudeStreamParser
                 return;
             }
 
+            // #800: the give-up arrives as a synthetic assistant message with a structured api_error, then (when the
+            // CLI exits on its own) a result carrying terminal_reason "rapid_refill_breaker". The phrase-matching lives
+            // in ClaudeSignalClassifier, the claude quarantine.
+            if (type == "assistant")
+            {
+                if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactGiveUp(root))
+                {
+                    MarkThrashing(AssistantText(root));
+                }
+
+                return;
+            }
+
             if (type != "result")
             {
                 return;
             }
+
+            if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactThrashResult(root))
+            {
+                MarkThrashing(TryGetNonEmptyString(root, "result"));
+            }
+
+            _resultSeen = true;
 
             // Terminal result message — capture it (last one wins).
             _hasResult = true;
@@ -211,15 +257,19 @@ public sealed class ClaudeStreamParser
         // on. Both null stays null: absent, never "".
         Model = _initModel ?? _resultModel,
 
+        Thrashing = _thrashing
+            ? new ContextManagementFailure(ContextManagementFailureKind.AutocompactThrashing, _thrashText, 1)
+            : null,
+
         CompactionFailure = _compactionFailures > 0
             ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
             : null
     };
 
     /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>
-    public static ClaudeResult ParseAll(string streamText)
+    public static ClaudeResult ParseAll(string streamText, bool recognizeThrash = false)
     {
-        var parser = new ClaudeStreamParser();
+        var parser = new ClaudeStreamParser(recognizeThrash);
         foreach (string line in streamText.Replace("\r\n", "\n").Split('\n'))
         {
             parser.Feed(line);
@@ -234,13 +284,40 @@ public sealed class ClaudeStreamParser
             ? value
             : null;
 
+    private void MarkThrashing(string? text)
+    {
+        _thrashText ??= text;
+        _thrashing = true;
+    }
+
+    private static string? AssistantText(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out JsonElement message) || message.ValueKind != JsonValueKind.Object
+            || !message.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (JsonElement block in content.EnumerateArray())
+        {
+            if (block.ValueKind == JsonValueKind.Object
+                && TryGetNonEmptyString(block, "type") == "text"
+                && TryGetNonEmptyString(block, "text") is { } text)
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// A string field, read as tolerantly as every number above: absent, not a string, or blank all
     /// yield <b>null</b>. Blank collapses to null deliberately — <c>""</c> would read as "the runner
     /// reported this and it was empty", a claim about the attempt, where null is the truthful "the
     /// runner reported none". Same absent-not-zero rule <see cref="TryGetUsage"/> follows.
     /// </summary>
-    private static string? TryGetNonEmptyString(JsonElement root, string name) =>
+    internal static string? TryGetNonEmptyString(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String &&
         !string.IsNullOrWhiteSpace(element.GetString())
             ? element.GetString()

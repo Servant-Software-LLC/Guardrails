@@ -27,7 +27,8 @@ public sealed class StallReviewTests
     /// (30 s apart in the capture) before its result. Session ids, uuids, tool ids, text and tool output are replaced.
     /// The captures carry no per-line timestamps, so the replay spaces the thinking lines 5 s apart and the heartbeats
     /// 30 s apart, as captured, against a 2-minute bound: the thinking run lasts about 7 minutes and the tool run 10,
-    /// each well past the bound, and both stay alive. A status-only tail then stalls.
+    /// each well past the bound, and both stay alive (the heartbeats' own elapsed times, up to 10 minutes, stay inside
+    /// the 11-minute heartbeat floor). A status-only tail then stalls.
     /// </summary>
     [Fact]
     public void ARealSession_StaysAliveThroughLongThinkingAndALongTool_AndStallsOnAStatusOnlyTail()
@@ -51,10 +52,10 @@ public sealed class StallReviewTests
             StreamProgress.BeatOnStreamJsonProgress(watch, line);
         }
 
-        Assert.True(thinking > TimeSpan.FromMinutes(6), $"the thinking run spans {thinking}");
-        Assert.True(tool > TimeSpan.FromMinutes(9), $"the tool run spans {tool}");
+        Assert.True(thinking > watch.Bound, $"the thinking run spans {thinking}");
+        Assert.True(tool > watch.Bound, $"the tool run spans {tool}");
 
-        for (int i = 0; i < 60 && !watch.Stalled; i++)
+        for (int i = 0; i < 120 && !watch.Stalled; i++)
         {
             AdvanceAndPoll(clock, watch, TimeSpan.FromSeconds(5));
             StreamProgress.BeatOnStreamJsonProgress(watch, Compacting);
@@ -134,6 +135,64 @@ public sealed class StallReviewTests
 
         Assert.Equal(TimeSpan.Zero, watch.Credited);
         Assert.True(watch.Stalled);
+    }
+
+    /// <summary>
+    /// The DA re-review's race: a beat landing between the credit's read and its write. The credit must not put the
+    /// older value back over the fresh beat.
+    /// </summary>
+    [Fact]
+    public void ABeatDuringAPartialSuspendCredit_IsNotOverwritten()
+    {
+        var clock = new FakeClock();
+        var watch = new StallWatch(TimeSpan.FromMinutes(20), clock.Now);
+        watch.BeforeCreditWrite = watch.Beat;
+
+        clock.Advance(TimeSpan.FromMinutes(3.5)); // a partial suspend: 3.5x the 60 s interval
+        Assert.Equal(StallVerdict.KeepWaiting, watch.Observe());
+
+        Assert.Equal(TimeSpan.Zero, watch.SilentFor());
+        Assert.Equal(TimeSpan.Zero, watch.Credited);
+    }
+
+    [Theory]
+    [InlineData(30, true)]
+    [InlineData(600, true)]    // Claude Code's Bash timeout: always inside the 11-minute floor
+    [InlineData(660, true)]
+    [InlineData(661, false)]
+    [InlineData(3007, false)]
+    public void AToolHeartbeatStopsCounting_OnceItsToolHasRunPastTheLimit(int elapsedSeconds, bool counts)
+    {
+        var clock = new FakeClock();
+        var watch = new StallWatch(TimeSpan.FromMinutes(2), clock.Now);
+        clock.Advance(TimeSpan.FromSeconds(10));
+
+        StreamProgress.BeatOnStreamJsonProgress(watch,
+            $$"""{"type":"tool_progress","tool_name":"mcp__slow__query","elapsed_time_seconds":{{elapsedSeconds}},"heartbeat":true}""");
+
+        Assert.Equal(counts ? TimeSpan.Zero : TimeSpan.FromSeconds(10), watch.SilentFor());
+    }
+
+    /// <summary>
+    /// The #800 review's W3 case: stallTimeoutSeconds 120 and a Bash call heartbeating for its full 600 s. Twice the bound
+    /// is only 4 minutes, so without the 11-minute floor the last six minutes of heartbeats would not count and a healthy
+    /// Bash call inside Claude Code's own timeout would be killed.
+    /// </summary>
+    [Fact]
+    public void ABashCallHeartbeatingForItsFull600s_StaysAlive_UnderA120sBound()
+    {
+        var clock = new FakeClock();
+        var watch = new StallWatch(TimeSpan.FromSeconds(120), clock.Now);
+
+        for (int elapsed = 30; elapsed <= 600; elapsed += 30)
+        {
+            AdvanceAndPoll(clock, watch, TimeSpan.FromSeconds(30));
+            Assert.False(watch.Stalled, $"stalled at {elapsed} s");
+            StreamProgress.BeatOnStreamJsonProgress(watch,
+                $$"""{"type":"tool_progress","tool_name":"Bash","elapsed_time_seconds":{{elapsed}},"heartbeat":true}""");
+        }
+
+        Assert.False(watch.Stalled);
     }
 
     // ─── W3: the openai-compat SSE wiring ───────────────────────────────────────────────

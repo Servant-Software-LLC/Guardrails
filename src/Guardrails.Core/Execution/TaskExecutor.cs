@@ -177,6 +177,9 @@ public sealed class TaskExecutor : ITaskExecutor
         // #815 review W4: consecutive stalls in which the session produced NO progress at all. Two in a row settle
         // needs-human (the runner or its backend is not answering); any other attempt outcome resets it.
         int silentStalls = 0;
+        // #800: consecutive attempts that ended in Claude Code's autocompact thrash. Two in a row settle needs-human with
+        // the operator's context levers; any other outcome resets it (the #174 no-op short-circuit shape).
+        int thrashes = 0;
         // One auto-escalation counter for turn-budget exhaustion (issue #129 / #94), mirroring the
         // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
@@ -235,7 +238,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken, silentStalls)
+                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken, silentStalls, thrashes)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -316,6 +319,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
             last = attempt.Result;
             silentStalls = attempt.SilentStall ? silentStalls + 1 : 0;
+            thrashes = attempt.ContextExhausted ? thrashes + 1 : 0;
 
             // A timeout outcome means the task needed more clock; count it so the NEXT attempt's
             // timeout is extended (issue #119) — a same-clock retry just re-times-out.
@@ -773,7 +777,8 @@ public sealed class TaskExecutor : ITaskExecutor
         PermissionWallTracker permissionWalls,
         HashSet<string> pathsWrittenOutOfScope,
         CancellationToken cancellationToken,
-        int priorSilentStalls = 0)
+        int priorSilentStalls = 0,
+        int priorThrashes = 0)
     {
         var startedAt = DateTimeOffset.UtcNow;
         string logDir = AttemptLogDir(task.Id, attemptNumber);
@@ -1245,6 +1250,39 @@ public sealed class TaskExecutor : ITaskExecutor
         // #815 review W4: a SECOND consecutive stall in which the session produced nothing at all. The runner or its
         // backend is not answering, which no retry of the task can change, so settle needs-human now rather than burn
         // the budget. A stall that followed some progress keeps the ordinary retry path below.
+        // #800: a SECOND consecutive attempt whose context ran out (autocompact thrashing). The task as written does not
+        // fit the window on this backend, and a third try under the same window is unlikely to converge: settle
+        // needs-human with the operator's levers instead of spending the rest of the budget.
+        if (!action.Succeeded && action.FailureKind == PromptFailureKind.ContextExhausted && priorThrashes >= 1)
+        {
+            PromptRunnerConfig? thrashBlock = DispatchBlockFor(task, route);
+            var thrashFeedback = new StringBuilder();
+            thrashFeedback.Append($"# Task '{task.Id}' halted: its context ran out twice in a row\n\n");
+            thrashFeedback.Append($"Task: {task.Description}\n\n");
+            thrashFeedback.Append($"{action.FailureSummary}\n\n");
+            thrashFeedback.Append(
+                "Two attempts in a row filled the model's context faster than Claude Code could compact it. A third try " +
+                "under the same window is unlikely to converge. " + RetryPolicy.ContextLevers(thrashBlock) + "\n");
+            if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } thrashSalvage)
+            {
+                RetryPolicy.AppendSalvageSection(thrashFeedback, thrashSalvage, SalvageFraming.Escalation);
+            }
+
+            return _journaler.FailedAttempt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, thrashFeedback.ToString(), isFinal: true,
+                AttemptOutcome.ActionFailed,
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"{ActionFailureCause(action)}; not retried — the second consecutive attempt that ran out of " +
+                              $"context. {RetryPolicy.ContextLevers(thrashBlock)}"
+                },
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action)) with { ContextExhausted = true };
+        }
+
         if (!action.Succeeded
             && action.FailureKind == PromptFailureKind.Stalled
             && action.Stall is { NoProgressAtAll: true }
@@ -1343,18 +1381,27 @@ public sealed class TaskExecutor : ITaskExecutor
                 // #815 review B2: a stall is routed like a timeout — the rollback-aware header, the salvage section.
                 PromptFailureKind.Stalled => RetryPolicy.ForStalled(task, attemptNumber, action.Stall, fileWritesRolledBack, salvageRef)
                     + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
+                // #800: targeted advice — bounded reads, no whole-file cat, a "Wasted call" is a cache hit.
+                PromptFailureKind.ContextExhausted => RetryPolicy.ForContextExhausted(task, attemptNumber, fileWritesRolledBack, salvageRef)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
 
             // #811: a context-management failure (a compaction that failed) is named whatever the failure kind:
             // it explains a stall, a timeout or an error alike, and the remedy (carry less) is the same.
-            feedback += RetryPolicy.ForContextManagement(action.ContextManagement);
+            if (action.FailureKind != PromptFailureKind.ContextExhausted)
+            {
+                feedback += RetryPolicy.ForContextManagement(action.ContextManagement);
+            }
 
             AttemptOutcome attemptOutcome = action.FailureKind switch
             {
                 PromptFailureKind.Timeout => AttemptOutcome.Timeout,
                 PromptFailureKind.OutputCap => AttemptOutcome.OutputCap,
                 PromptFailureKind.MaxTurns => AttemptOutcome.MaxTurns,
+                // #800: never a timeout, even when the give-up coincided with the clock: more time does not help a
+                // session whose context is exhausted, so the next attempt's timeout is not extended.
+                PromptFailureKind.ContextExhausted => AttemptOutcome.ActionFailed,
                 _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
             };
 
@@ -1364,6 +1411,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",
                 PromptFailureKind.MaxTurns => $"{cause}; turn budget auto-raised for retry; guardrails skipped",
                 PromptFailureKind.Timeout => $"{cause} — likely under-sized/under-budgeted; guardrails skipped",
+                PromptFailureKind.ContextExhausted =>
+                    $"{cause}; guardrails skipped. If it recurs: {RetryPolicy.ContextLevers(DispatchBlockFor(task, route))}",
                 // #815 review W4: nothing at all came back, which indicts the runner or its backend, not the task.
                 PromptFailureKind.Stalled when action.Stall is { NoProgressAtAll: true } =>
                     $"{cause} — the runner produced no output at all, so check the gateway or backend; guardrails skipped",
@@ -1386,7 +1435,11 @@ public sealed class TaskExecutor : ITaskExecutor
                 // real — that is precisely the cost §2 is missing. The summaries above all say
                 // "guardrails skipped", so the guardrail half is honestly absent.
                 segments: AttemptJournaler.SegmentsFor(action))
-                with { SilentStall = action.FailureKind == PromptFailureKind.Stalled && action.Stall is { NoProgressAtAll: true } };
+                with
+                {
+                    SilentStall = action.FailureKind == PromptFailureKind.Stalled && action.Stall is { NoProgressAtAll: true },
+                    ContextExhausted = action.FailureKind == PromptFailureKind.ContextExhausted
+                };
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
@@ -3396,8 +3449,11 @@ public sealed class TaskExecutor : ITaskExecutor
             _ => action.FailureSummary
         };
 
-        // #811: a failed compaction is named on the attempt summary (and action-result.json), whatever the kind.
-        return action.ContextManagement is { } context ? $"{cause} — {context.Describe()}" : cause;
+        // #811: a failed compaction is named on the attempt summary (and action-result.json), whatever the kind — except
+        // a context-exhausted stop (#800), whose own summary already says what happened to the context.
+        return action.ContextManagement is { } context && action.FailureKind != PromptFailureKind.ContextExhausted
+            ? $"{cause} — {context.Describe()}"
+            : cause;
     }
 
     /// <summary>

@@ -139,6 +139,30 @@ internal static class ClaudeSignalClassifier
         @"resets?\s+(?<when>[0-9][0-9:apmAPM\s.]*\b)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    /// <summary>The opening of Claude Code's "Autocompact is thrashing" give-up (#800).</summary>
+    internal const string AutocompactThrashingPhrase = "Autocompact is thrashing";
+
+    /// <summary>
+    /// #800: Claude Code's give-up line — a synthetic assistant message carrying <c>"api_error":"autocompact_thrashing"</c>
+    /// at the TOP level of the session (<c>parent_tool_use_id</c> null or absent), never a subagent's.
+    /// </summary>
+    internal static bool IsAutocompactGiveUp(System.Text.Json.JsonElement assistantLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(assistantLine, "api_error") == "autocompact_thrashing"
+        && (!assistantLine.TryGetProperty("parent_tool_use_id", out System.Text.Json.JsonElement parent)
+            || parent.ValueKind == System.Text.Json.JsonValueKind.Null);
+
+    /// <summary>
+    /// #800: a result line that reports the thrash — <c>"terminal_reason":"rapid_refill_breaker"</c>, or, as the
+    /// fallback, an ERROR result (<c>is_error: true</c>) whose text opens with the give-up sentence. A successful result
+    /// that merely mentions the phrase (a model reporting that it wired up thrash detection) is never one.
+    /// </summary>
+    internal static bool IsAutocompactThrashResult(System.Text.Json.JsonElement resultLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(resultLine, "terminal_reason") == "rapid_refill_breaker"
+        || resultLine.TryGetProperty("is_error", out System.Text.Json.JsonElement isError)
+           && isError.ValueKind == System.Text.Json.JsonValueKind.True
+           && ClaudeStreamParser.TryGetNonEmptyString(resultLine, "result") is { } text
+           && text.StartsWith(AutocompactThrashingPhrase, StringComparison.Ordinal);
+
     /// <summary>
     /// Classify an error <paramref name="text"/> (a terminal <c>result</c> message's error text, or,
     /// when there was no terminal result, the captured stdout/stderr of the failed run) into a
