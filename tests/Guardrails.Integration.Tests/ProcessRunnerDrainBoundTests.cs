@@ -41,7 +41,10 @@ public sealed class ProcessRunnerDrainBoundTests : IDisposable
     [Fact]
     public async Task ChildThatExitsWhileAGrandchildHoldsItsPipes_ReportsItsRealExitCode_NotATimeout()
     {
-        ProcessResult result = await new ProcessRunner(GiveUpQuickly).RunAsync(
+        // #820: a 10 s idle grace, not 1 s. This asserts on CONTENT ("child-output"), which a loaded runner can take
+        // seconds to deliver after the exit.
+        var policy = GiveUpQuickly with { IdleGrace = TimeSpan.FromSeconds(10) };
+        ProcessResult result = await new ProcessRunner(policy).RunAsync(
             ExitsLeavingGrandchildCommand(exitCode: 3),
             _dir,
             new Dictionary<string, string>(),
@@ -116,6 +119,25 @@ public sealed class ProcessRunnerDrainBoundTests : IDisposable
         Assert.False(result.OutputDrainIncomplete);
         Assert.Contains("child-output", result.StandardOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("output truncated", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OnExited_IsRaisedWhenTheChildItselfExits()
+    {
+        ResolvedCommand command = Windows
+            ? Cmd("@echo off
+echo child-output
+exit /b 0
+")
+            : Bash("echo child-output; exit 0");
+        int raised = 0;
+
+        await new ProcessRunner().RunAsync(
+            command, _dir, new Dictionary<string, string>(), TimeSpan.FromMinutes(1),
+            standardInput: null, stdoutLineSink: null, TestContext.Current.CancellationToken,
+            onExited: () => Interlocked.Increment(ref raised));
+
+        Assert.Equal(1, raised);
     }
 
     /// <summary>Child writes a line, starts a pipe-holding grandchild, and exits with <paramref name="exitCode"/>.</summary>

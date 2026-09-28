@@ -99,6 +99,13 @@ internal static class StreamJsonCliSession
     internal static readonly TimeSpan ThrashGrace = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Whether the #800 thrash grace, once it has run out, should end the session: only when the CLI has written no
+    /// result AND is still running (#820). A CLI that exited on its own while an escaped process held its pipes left
+    /// no session to end; firing then would make the summary claim the harness ended it.
+    /// </summary>
+    internal static bool ThrashGraceShouldAbort(bool resultSeen, bool processExited) => !resultSeen && !processExited;
+
+    /// <summary>
     /// Pin the two persisted log artifacts to UTF-8 (no BOM) explicitly (issue #55). The
     /// no-arg <see cref="StreamWriter"/> overloads already default to this, but the symptom of
     /// #55 — mojibake — lived in exactly these files, so stating the encoding keeps a future edit
@@ -208,6 +215,10 @@ internal static class StreamJsonCliSession
         // cannot make progress, so it is ended the moment the signal is parsed rather than left to the timeout.
         bool thrashAbortFired = false;
         bool thrashGraceArmed = false;
+
+        // #820: set when the CLI process itself exits. Once it has, there is no session left to end: the grace below
+        // must not fire and then claim the harness ended a session that had already exited on its own.
+        bool processExited = false;
         using var thrashGraceCts = new CancellationTokenSource();
 
         // #504 stall watchdog / #517 suspend discrimination. Bounds SILENCE, not duration: the caller's
@@ -251,7 +262,7 @@ internal static class StreamJsonCliSession
                             return;
                         }
 
-                        if (parser.ResultSeen)
+                        if (!ThrashGraceShouldAbort(parser.ResultSeen, Volatile.Read(ref processExited)))
                         {
                             return;
                         }
@@ -332,7 +343,11 @@ internal static class StreamJsonCliSession
                     invocation.Timeout,
                     standardInput,
                     stdoutLineSink: Tee,
-                    abortCts.Token).ConfigureAwait(false);
+                    abortCts.Token,
+                    // #820: only the caller's own cancellation cuts the output drain short. The internal aborts
+                    // above cancel abortCts, and a child that raced that kill to write its result keeps the normal drain.
+                    operatorCancellationToken: cancellationToken,
+                    onExited: () => Volatile.Write(ref processExited, true)).ConfigureAwait(false);
             }
             catch (System.ComponentModel.Win32Exception launchFailure)
             {

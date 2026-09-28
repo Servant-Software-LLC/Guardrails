@@ -57,6 +57,18 @@ public sealed class ProcessRunner
     /// <param name="standardInput">Text written to the child's stdin (then closed); null = no stdin redirect.</param>
     /// <param name="stdoutLineSink">Invoked for each stdout line as it arrives (line excludes the newline); null = no tee.</param>
     /// <param name="cancellationToken">Cancels the run; the process tree is killed on cancellation.</param>
+    /// <param name="operatorCancellationToken">
+    /// The OPERATOR's cancellation (Ctrl-C, the run's own token), when it differs from
+    /// <paramref name="cancellationToken"/> (#820). Only this token cuts the output drain to
+    /// <see cref="DrainPolicy.CancelledBound"/>: a caller that kills the child for its own reasons (the #452 denial
+    /// fail-fast, the #811 stall, the #800 thrash grace) passes its linked abort token as
+    /// <paramref name="cancellationToken"/> and the run's token here, so the child still gets the normal drain and a
+    /// result it raced the kill to write is not lost. Omitted = <paramref name="cancellationToken"/> is the operator's.
+    /// </param>
+    /// <param name="onExited">
+    /// Invoked once when the child process itself exits, before the output drain (#820). Lets a caller stop
+    /// treating a process that has already gone as one it may still need to end. Must not throw.
+    /// </param>
     public async Task<ProcessResult> RunAsync(
         ResolvedCommand command,
         string workingDirectory,
@@ -64,7 +76,9 @@ public sealed class ProcessRunner
         TimeSpan timeout,
         string? standardInput,
         Action<string>? stdoutLineSink,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CancellationToken operatorCancellationToken = default,
+        Action? onExited = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -109,7 +123,18 @@ public sealed class ProcessRunner
         // are drained separately below, under a bound of their own.
         var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         process.EnableRaisingEvents = true;
-        process.Exited += (_, _) => exited.TrySetResult();
+        process.Exited += (_, _) =>
+        {
+            exited.TrySetResult();
+            try
+            {
+                onExited?.Invoke();
+            }
+            catch (Exception)
+            {
+                // A caller's notification must never take down the event thread.
+            }
+        };
 
         var stopwatch = Stopwatch.StartNew();
         await StartWithTextFileBusyRetryAsync(process, cancellationToken).ConfigureAwait(false);
@@ -146,7 +171,8 @@ public sealed class ProcessRunner
         // Drain the readers so captured output is complete — but BOUNDED (#723). A process the child
         // started that escaped the tree kill, or a background job of a child that exited on its own,
         // can hold the inherited pipes open indefinitely; an unbounded wait here defeated the timeout.
-        DrainOutcome drain = await DrainAsync(stdout, stderr, _drain, cancellationToken).ConfigureAwait(false);
+        CancellationToken drainCut = DrainCutToken(cancellationToken, operatorCancellationToken);
+        DrainOutcome drain = await DrainAsync(stdout, stderr, _drain, drainCut).ConfigureAwait(false);
         stopwatch.Stop();
 
         int exitCode = timedOut ? TimeoutExitCode : SafeExitCode(process);
@@ -156,7 +182,7 @@ public sealed class ProcessRunner
             ProcessEnd end = timedOut ? ProcessEnd.TimedOut
                 : killedOnCancellation ? ProcessEnd.KilledOnCancellation
                 : ProcessEnd.Exited;
-            standardError += DrainIncompleteNote(end, drain.Waited);
+            standardError += DrainIncompleteNote(end, drain.Waited, drain.OutputStillArriving);
         }
 
         return new ProcessResult
@@ -203,7 +229,7 @@ public sealed class ProcessRunner
     /// FACT and leaves the cause open: the harness cannot tell a grandchild holding the pipes from a reader that was
     /// slow to run, so it names the likelier cause as a possibility, not a finding.
     /// </summary>
-    internal static string DrainIncompleteNote(ProcessEnd end, TimeSpan waited)
+    internal static string DrainIncompleteNote(ProcessEnd end, TimeSpan waited, bool outputStillArriving = false)
     {
         string how = end switch
         {
@@ -214,13 +240,18 @@ public sealed class ProcessRunner
 
         return Environment.NewLine +
             $"[guardrails] output truncated: the process {how}, and its output pipes were not closed within " +
-            $"{Math.Ceiling(waited.TotalSeconds):0}s. A process it started may still hold them. An unterminated last " +
+            $"{Math.Ceiling(waited.TotalSeconds):0}s" +
+            (outputStillArriving ? "; output was still arriving when the drain stopped" : string.Empty) +
+            ". A process it started may still hold them. An unterminated last " +
             "line and any later output were not captured." +
             Environment.NewLine;
     }
 
-    /// <summary>What the drain decided: whether both pipes reached EOF, and how long it waited.</summary>
-    internal readonly record struct DrainOutcome(bool Drained, TimeSpan Waited);
+    /// <summary>
+    /// What the drain decided: whether both pipes reached EOF, how long it waited, and whether it stopped at its cap
+    /// while output was still arriving (#820).
+    /// </summary>
+    internal readonly record struct DrainOutcome(bool Drained, TimeSpan Waited, bool OutputStillArriving = false);
 
     /// <summary>
     /// Waits for both readers to reach EOF under <paramref name="policy"/>: until the pipes close, or until
@@ -232,12 +263,30 @@ public sealed class ProcessRunner
     {
         Task both = Task.WhenAll(stdout.Completed, stderr.Completed);
         TimeSpan start = policy.Clock();
-        TimeSpan? cancelledAt = null;
 
         // One registration, not one per wait: signals the loop when cancellation moves the deadline in.
         var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => cancelSignal.TrySetResult());
 
+        // #820: cancelled when the drain returns, so a wait it no longer needs does not leave a timer running for up
+        // to the full idle grace after every process.
+        using var waits = new CancellationTokenSource();
+        try
+        {
+            return await DrainLoopAsync(stdout, stderr, policy, cancellationToken, both, start, cancelSignal, waits.Token)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            await waits.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<DrainOutcome> DrainLoopAsync(
+        OutputCapture stdout, OutputCapture stderr, DrainPolicy policy, CancellationToken cancellationToken,
+        Task both, TimeSpan start, TaskCompletionSource cancelSignal, CancellationToken waits)
+    {
+        TimeSpan? cancelledAt = null;
         while (true)
         {
             if (both.IsCompleted)
@@ -255,13 +304,13 @@ public sealed class ProcessRunner
             TimeSpan deadline = policy.Deadline(start, lastActivity, cancelledAt);
             if (now >= deadline)
             {
-                return new DrainOutcome(false, now - start);
+                return new DrainOutcome(false, now - start, policy.StoppedWhileOutputArriving(start, lastActivity, cancelledAt));
             }
 
             // Wake on EOF, on the deadline, or on cancellation (which moves the deadline in). A line arriving
             // does not wake the wait; the deadline is simply re-read against it when this wait ends.
             // Once cancellation has been observed its signal is spent, so it is left out of later waits.
-            Task delay = Task.Delay(deadline - now, CancellationToken.None);
+            Task delay = Task.Delay(deadline - now, waits);
             if (cancelledAt is null)
             {
                 await Task.WhenAny(both, delay, cancelSignal.Task).ConfigureAwait(false);
@@ -272,6 +321,13 @@ public sealed class ProcessRunner
             }
         }
     }
+
+    /// <summary>
+    /// The token whose cancellation cuts the drain to <see cref="DrainPolicy.CancelledBound"/> (#820): the operator's
+    /// when the caller named one, otherwise the run's own cancellation token.
+    /// </summary>
+    internal static CancellationToken DrainCutToken(CancellationToken cancellation, CancellationToken operatorCancellation) =>
+        operatorCancellation.CanBeCanceled ? operatorCancellation : cancellation;
 
     private static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
@@ -557,8 +613,11 @@ public sealed class ProcessRunner
 /// loaded machine can take seconds to deliver a fast child's output, and a fixed grace measured from exit dropped
 /// ALL of it (the DA measured <c>lines=0</c> at 64–400 concurrent runs). Output still arriving is output worth
 /// waiting for.</item>
-/// <item><see cref="AbsoluteCap"/>: never wait longer than this in total, so a grandchild that keeps writing cannot
-/// hold the harness indefinitely.</item>
+/// <item><see cref="AbsoluteCap"/>: never wait longer than this after the exit or kill, however much output keeps
+/// arriving (#820). A process that escaped the kill and keeps writing (a dev server's logs, say) would otherwise
+/// hold every run for as long as it writes, and its lines could push the child's own failure detail out of the
+/// retry-feedback tail. 45 s: the DA's load probe at 1,000 concurrent children measured a 26 s worst case for the
+/// child's own output to arrive.</item>
 /// <item><see cref="CancelledBound"/>: once the caller has cancelled (Ctrl-C, an abort), stop within this.</item>
 /// </list>
 /// </summary>
@@ -569,9 +628,9 @@ public sealed class ProcessRunner
 internal sealed record DrainPolicy(
     TimeSpan IdleGrace, TimeSpan AbsoluteCap, TimeSpan CancelledBound, Func<TimeSpan> Clock)
 {
-    /// <summary>The production bounds: 30 s idle, 120 s in total, 2 s after cancellation.</summary>
+    /// <summary>The production bounds: 30 s idle, 45 s after the exit or kill in total, 2 s after an operator cancellation.</summary>
     public static DrainPolicy Default { get; } = new(
-        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(2), MonotonicClock);
+        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(45), TimeSpan.FromSeconds(2), MonotonicClock);
 
     /// <summary>Elapsed time on a monotonic clock.</summary>
     public static TimeSpan MonotonicClock() => Stopwatch.GetElapsedTime(0);
@@ -594,4 +653,14 @@ internal sealed record DrainPolicy(
 
         return deadline;
     }
+
+    /// <summary>
+    /// True when the drain stops at <see cref="AbsoluteCap"/> although output was still arriving: a line came after
+    /// the drain began, and the idle deadline it earned lies beyond the cap (#820). False for a silent pipe that simply
+    /// ran out its idle grace, and for a cut by cancellation. Pure, like <see cref="Deadline"/>.
+    /// </summary>
+    public bool StoppedWhileOutputArriving(TimeSpan start, TimeSpan lastActivity, TimeSpan? cancelledAt) =>
+        lastActivity > start
+        && lastActivity + IdleGrace > start + AbsoluteCap
+        && Deadline(start, lastActivity, cancelledAt) == start + AbsoluteCap;
 }
