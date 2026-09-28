@@ -24,8 +24,9 @@ internal static class StreamProgress
     ///   <item><c>tool_progress</c> — Claude Code's heartbeat for a running tool call, about every 30 s with an
     ///         <c>elapsed_time_seconds</c>. A long build or test is therefore NOT silent on the stream. A Bash call has
     ///         Claude Code's own per-call timeout, but other tools (an MCP server's) may wait far longer, so a heartbeat
-    ///         stops counting once its tool has run past <c>heartbeatLimit</c> (the session passes twice its stall
-    ///         bound); the attempt timeout backstops either;</item>
+    ///         stops counting once its tool has run past <c>heartbeatLimit</c> (the session passes
+    ///         <see cref="HeartbeatLimit"/>: twice its stall bound, at least 11 minutes); the attempt timeout backstops
+    ///         either;</item>
     ///   <item><c>system/compact_boundary</c> — a compaction that SUCCEEDED, which is progress (the status lines
     ///         around it are not);</item>
     ///   <item><c>tool_call</c> and <c>thinking</c> — Cursor's tool-call and reasoning events;</item>
@@ -97,11 +98,22 @@ internal static class StreamProgress
     /// <summary>Beat <paramref name="watch"/> when <paramref name="line"/> is stream-json progress. The one call the session makes.</summary>
     internal static void BeatOnStreamJsonProgress(StallWatch? watch, string line)
     {
-        if (watch is not null && IsStreamJsonProgress(line, watch.Bound * 2))
+        if (watch is not null && IsStreamJsonProgress(line, HeartbeatLimit(watch.Bound)))
         {
             watch.Beat();
         }
     }
+
+    /// <summary>
+    /// How long a tool may run before its heartbeats stop counting as progress: twice the stall bound, but never less than
+    /// 11 minutes, because Claude Code's own Bash timeout is 600 s and a Bash call inside it is bounded already (#800
+    /// review W3). Past this, only an MCP tool with a long timeout of its own can still be running.
+    /// </summary>
+    internal static TimeSpan HeartbeatLimit(TimeSpan bound) =>
+        bound * 2 > MinimumHeartbeatLimit ? bound * 2 : MinimumHeartbeatLimit;
+
+    /// <summary>Claude Code's 600 s Bash timeout, plus a minute.</summary>
+    internal static readonly TimeSpan MinimumHeartbeatLimit = TimeSpan.FromMinutes(11);
 
     private static bool HeartbeatIsStale(JsonElement root, TimeSpan? limit) =>
         limit is { } bound

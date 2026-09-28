@@ -26,16 +26,16 @@ public sealed class StallReviewTests
     /// result and the next assistant message, then a <c>Bash</c> tool call with 20 <c>tool_progress</c> heartbeats
     /// (30 s apart in the capture) before its result. Session ids, uuids, tool ids, text and tool output are replaced.
     /// The captures carry no per-line timestamps, so the replay spaces the thinking lines 5 s apart and the heartbeats
-    /// 30 s apart, as captured, against a 6-minute bound: the thinking run lasts about 7 minutes and the tool run 10,
-    /// each past the bound, and both stay alive (the heartbeats' own elapsed times, up to 10 minutes, stay inside the
-    /// twice-the-bound heartbeat limit). A status-only tail then stalls.
+    /// 30 s apart, as captured, against a 2-minute bound: the thinking run lasts about 7 minutes and the tool run 10,
+    /// each well past the bound, and both stay alive (the heartbeats' own elapsed times, up to 10 minutes, stay inside
+    /// the 11-minute heartbeat floor). A status-only tail then stalls.
     /// </summary>
     [Fact]
     public void ARealSession_StaysAliveThroughLongThinkingAndALongTool_AndStallsOnAStatusOnlyTail()
     {
         string[] lines = File.ReadAllLines(TestPaths.Fixture(Path.Combine("claude-live", "stall-replay.jsonl")));
         var clock = new FakeClock();
-        var watch = new StallWatch(TimeSpan.FromMinutes(6), clock.Now);
+        var watch = new StallWatch(TimeSpan.FromMinutes(2), clock.Now);
 
         TimeSpan thinking = TimeSpan.Zero;
         TimeSpan tool = TimeSpan.Zero;
@@ -157,10 +157,11 @@ public sealed class StallReviewTests
 
     [Theory]
     [InlineData(30, true)]
-    [InlineData(240, true)]
-    [InlineData(241, false)]
+    [InlineData(600, true)]    // Claude Code's Bash timeout: always inside the 11-minute floor
+    [InlineData(660, true)]
+    [InlineData(661, false)]
     [InlineData(3007, false)]
-    public void AToolHeartbeatStopsCounting_OnceItsToolHasRunTwiceTheBound(int elapsedSeconds, bool counts)
+    public void AToolHeartbeatStopsCounting_OnceItsToolHasRunPastTheLimit(int elapsedSeconds, bool counts)
     {
         var clock = new FakeClock();
         var watch = new StallWatch(TimeSpan.FromMinutes(2), clock.Now);
@@ -170,6 +171,28 @@ public sealed class StallReviewTests
             $$"""{"type":"tool_progress","tool_name":"mcp__slow__query","elapsed_time_seconds":{{elapsedSeconds}},"heartbeat":true}""");
 
         Assert.Equal(counts ? TimeSpan.Zero : TimeSpan.FromSeconds(10), watch.SilentFor());
+    }
+
+    /// <summary>
+    /// The #800 review's W3 case: stallTimeoutSeconds 120 and a Bash call heartbeating for its full 600 s. Twice the bound
+    /// is only 4 minutes, so without the 11-minute floor the last six minutes of heartbeats would not count and a healthy
+    /// Bash call inside Claude Code's own timeout would be killed.
+    /// </summary>
+    [Fact]
+    public void ABashCallHeartbeatingForItsFull600s_StaysAlive_UnderA120sBound()
+    {
+        var clock = new FakeClock();
+        var watch = new StallWatch(TimeSpan.FromSeconds(120), clock.Now);
+
+        for (int elapsed = 30; elapsed <= 600; elapsed += 30)
+        {
+            AdvanceAndPoll(clock, watch, TimeSpan.FromSeconds(30));
+            Assert.False(watch.Stalled, $"stalled at {elapsed} s");
+            StreamProgress.BeatOnStreamJsonProgress(watch,
+                $$"""{"type":"tool_progress","tool_name":"Bash","elapsed_time_seconds":{{elapsed}},"heartbeat":true}""");
+        }
+
+        Assert.False(watch.Stalled);
     }
 
     // ─── W3: the openai-compat SSE wiring ───────────────────────────────────────────────

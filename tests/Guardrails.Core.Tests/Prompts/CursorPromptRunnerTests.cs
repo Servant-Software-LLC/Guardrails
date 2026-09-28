@@ -579,22 +579,20 @@ public sealed class CursorPromptRunnerTests : IDisposable
     }
 
     /// <summary>
-    /// #800, through the real shared session and a real process: the give-up line arrives and the fake then HANGS for two
-    /// minutes. The session is ended the moment the line is parsed (the summary says the harness ended it), classified
-    /// ContextExhausted rather than an error or a stall, with the thrash carried as its context-management failure.
+    /// #800 review W4: the autocompact give-up is a CLAUDE signal, recognised for the claude dialect only. The same line
+    /// in a Cursor session is not classified as context exhaustion, so a Cursor session's final text can never trip it.
     /// </summary>
     [Fact]
-    public async Task AutocompactThrash_EndsTheSessionAtOnce_AsContextExhausted()
+    public async Task ACursorSessionNeverRecognisesTheClaudeThrashSignal()
     {
         string thrash = File.ReadAllLines(TestPaths.Fixture(Path.Combine("claude-live", "autocompact-thrash.jsonl")))[0];
-        Canned([InitLine, thrash], exitCode: 0, hang: true);
-        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { Timeout = TimeSpan.FromMinutes(5) };
+        Canned([InitLine, thrash], exitCode: 0);
 
-        PromptResult result = await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+        PromptResult result = await Runner().RunAsync(
+            Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
 
-        Assert.Equal(PromptFailureKind.ContextExhausted, result.FailureKind);
-        Assert.Contains("the harness ended the session at once", result.Summary, StringComparison.Ordinal);
-        Assert.Equal("autocompact-thrashing", Assert.IsType<ContextManagementFailure>(result.ContextManagement).Token);
+        Assert.NotEqual(PromptFailureKind.ContextExhausted, result.FailureKind);
+        Assert.Null(result.ContextManagement);
     }
 
     [Fact]

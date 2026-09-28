@@ -1255,14 +1255,14 @@ public sealed class TaskExecutor : ITaskExecutor
         // needs-human with the operator's levers instead of spending the rest of the budget.
         if (!action.Succeeded && action.FailureKind == PromptFailureKind.ContextExhausted && priorThrashes >= 1)
         {
-            int? contextTokens = DispatchBlockFor(task, route)?.ContextTokens;
+            PromptRunnerConfig? thrashBlock = DispatchBlockFor(task, route);
             var thrashFeedback = new StringBuilder();
             thrashFeedback.Append($"# Task '{task.Id}' halted: its context ran out twice in a row\n\n");
             thrashFeedback.Append($"Task: {task.Description}\n\n");
             thrashFeedback.Append($"{action.FailureSummary}\n\n");
             thrashFeedback.Append(
                 "Two attempts in a row filled the model's context faster than Claude Code could compact it. A third try " +
-                "under the same window is unlikely to converge. " + RetryPolicy.ContextLevers(contextTokens) + "\n");
+                "under the same window is unlikely to converge. " + RetryPolicy.ContextLevers(thrashBlock) + "\n");
             if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } thrashSalvage)
             {
                 RetryPolicy.AppendSalvageSection(thrashFeedback, thrashSalvage, SalvageFraming.Escalation);
@@ -1277,7 +1277,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     Outcome = TaskOutcome.NeedsHuman,
                     ActionExitCode = action.ExitCode,
                     Summary = $"{ActionFailureCause(action)}; not retried — the second consecutive attempt that ran out of " +
-                              $"context. {RetryPolicy.ContextLevers(contextTokens)}"
+                              $"context. {RetryPolicy.ContextLevers(thrashBlock)}"
                 },
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
                 segments: AttemptJournaler.SegmentsFor(action)) with { ContextExhausted = true };
@@ -1382,7 +1382,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 PromptFailureKind.Stalled => RetryPolicy.ForStalled(task, attemptNumber, action.Stall, fileWritesRolledBack, salvageRef)
                     + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 // #800: targeted advice — bounded reads, no whole-file cat, a "Wasted call" is a cache hit.
-                PromptFailureKind.ContextExhausted => RetryPolicy.ForContextExhausted(task, attemptNumber, fileWritesRolledBack, salvageRef),
+                PromptFailureKind.ContextExhausted => RetryPolicy.ForContextExhausted(task, attemptNumber, fileWritesRolledBack, salvageRef)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
 
@@ -1398,6 +1399,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 PromptFailureKind.Timeout => AttemptOutcome.Timeout,
                 PromptFailureKind.OutputCap => AttemptOutcome.OutputCap,
                 PromptFailureKind.MaxTurns => AttemptOutcome.MaxTurns,
+                // #800: never a timeout, even when the give-up coincided with the clock: more time does not help a
+                // session whose context is exhausted, so the next attempt's timeout is not extended.
+                PromptFailureKind.ContextExhausted => AttemptOutcome.ActionFailed,
                 _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
             };
 
@@ -1407,9 +1411,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",
                 PromptFailureKind.MaxTurns => $"{cause}; turn budget auto-raised for retry; guardrails skipped",
                 PromptFailureKind.Timeout => $"{cause} — likely under-sized/under-budgeted; guardrails skipped",
-                // #815 review W4: nothing at all came back, which indicts the runner or its backend, not the task.
                 PromptFailureKind.ContextExhausted =>
-                    $"{cause}; guardrails skipped. If it recurs: {RetryPolicy.ContextLevers(DispatchBlockFor(task, route)?.ContextTokens)}",
+                    $"{cause}; guardrails skipped. If it recurs: {RetryPolicy.ContextLevers(DispatchBlockFor(task, route))}",
+                // #815 review W4: nothing at all came back, which indicts the runner or its backend, not the task.
                 PromptFailureKind.Stalled when action.Stall is { NoProgressAtAll: true } =>
                     $"{cause} — the runner produced no output at all, so check the gateway or backend; guardrails skipped",
                 _ => $"{cause}; guardrails skipped"

@@ -6001,8 +6001,8 @@ DISPATCHED block (the block whose CLI actually runs, the same `DispatchNameFor` 
 
 **Only PROGRESS restarts the silence window (`StreamProgress`).** On a `stream-json` session (claude, cursor) a
 line is progress when it is `assistant`, `result`, `user` carrying a `tool_result` block, `tool_progress` (Claude
-Code's tool heartbeat, until its tool has run twice the stall bound: a Bash call has Claude Code's own per-call
-timeout, an MCP tool may not), `system/thinking_tokens` with `estimated_tokens_delta > 0`, `system/compact_boundary` (a
+Code's tool heartbeat, until its tool has run twice the stall bound or 11 minutes, whichever is longer: a Bash call
+has Claude Code's own 600 s per-call timeout, an MCP tool may not), `system/thinking_tokens` with `estimated_tokens_delta > 0`, `system/compact_boundary` (a
 compaction that SUCCEEDED), Cursor's `tool_call` or `thinking`, or `stream_event` (Claude partial messages, which do
 not arrive today because the harness does not pass `--include-partial-messages`). Every other `system` line
 (`init`, `status` including `compacting`, hooks, task bookkeeping), `rate_limit_event`, a `user` line without a tool
@@ -6030,22 +6030,33 @@ summary (and `action-result.json`'s `summary`) as `— context compaction failed
 `## Context management failed` section to `feedback.md` telling the retry to carry less. A session that recovered
 and succeeded is not reported.
 
-**Autocompact thrashing ends the attempt at once (issue #800).** The second member of the same classification
-(`autocompact-thrashing`). Claude Code gives up with "Autocompact is thrashing: the context refilled to the limit
-within 3 turns of the previous compact, 3 times in a row", as a synthetic assistant message carrying
-`"api_error":"autocompact_thrashing"` and, when the CLI exits on its own, a result carrying
-`"terminal_reason":"rapid_refill_breaker"` (a result whose text opens with that sentence is the fallback). Any of the
-three is enough. A session in that state cannot make progress, so the session ends it the moment the line is parsed
-(the #452 abort path, not the timeout or the stall bound) and reports `PromptFailureKind.ContextExhausted`, checked
-before every other classification because it is the cause of whatever follows. The attempt is journalled
-`action-failed` with a `context exhausted` summary that names the operator's levers: the block's `contextTokens`
-(with its value) raised toward the backend's per-slot window, splitting the task, and narrowing the Bash grant so file
-reads go through `Read`. `feedback.md` gets `## The session ran out of context`: read files with `Read` using an
-offset and a limit, never print a whole file through Bash, treat a "Wasted call — file unchanged" reply as a cache
-hit rather than an error, and filter build and test output. It is rollback-aware and carries the salvage section, like
-a timeout. **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174
-short-circuit shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A
-breakdown session reports it as `context-exhausted`.
+**Autocompact thrashing ends the attempt (issue #800).** The second member of the same classification
+(`autocompact-thrashing`), recognised for the **claude dialect only** (`ClaudeSignalClassifier`, the claude
+quarantine), so a Cursor session's final text can never trip it. Claude Code gives up with "Autocompact is thrashing:
+the context refilled to the limit within 3 turns of the previous compact, 3 times in a row", as a synthetic assistant
+message carrying `"api_error":"autocompact_thrashing"` at the top level (`parent_tool_use_id` null, never a
+subagent's), and, when the CLI exits on its own, a result carrying `"terminal_reason":"rapid_refill_breaker"`. The
+fallback is an ERROR result (`is_error: true`) whose text opens with that sentence; a successful result that merely
+mentions it never counts, and a give-up never overrides a result already parsed as a success.
+
+- **The session ends it.** On the give-up line the session arms a **10 s grace period**. If the CLI writes its own
+  result first (it normally does, at once), the session exits on its own and keeps the result's usage, turns and cost.
+  If not (a version that hangs), the harness ends the session, and the summary says so. Either way the attempt is not
+  left to the timeout or the stall bound.
+- **Classified first.** It reports `PromptFailureKind.ContextExhausted`, checked before every other classification
+  because it is the cause of whatever follows: a give-up that coincides with the timeout is ContextExhausted, and is
+  never counted as a timeout, so the next attempt's clock is not extended.
+- **Summary and feedback.** The attempt is journalled `action-failed` with a `context exhausted` summary naming the
+  operator's levers. On a local backend (a claude gateway or `openai-compat` block) that is the block's `contextTokens`
+  (with its value) raised toward the backend's per-slot window, splitting the task, and narrowing the Bash grant so
+  file reads go through `Read`; on a cloud block, whose window is the model's own, it is splitting the task or having
+  it read less. `feedback.md` gets `## The session ran out of context`: read files with `Read` using an offset and a
+  limit, never print a whole file through Bash, treat a "Wasted call — file unchanged" reply as a cache hit rather
+  than an error, and filter build and test output. It is rollback-aware, carries the salvage section like a timeout,
+  and names any tool call still running (#778).
+- **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174 short-circuit
+  shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
+  session reports it as `context-exhausted`.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
 returns, before its attempt settles, which writes the §8.1 `attempt-stalled` row (and an `AttemptStalled` line in

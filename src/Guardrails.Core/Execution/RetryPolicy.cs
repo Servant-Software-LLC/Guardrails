@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Guardrails.Core.Model;
@@ -1716,12 +1717,21 @@ public static class RetryPolicy
     /// (named with its value when known), splitting the task, and narrowing the Bash grant so file reads go through
     /// <c>Read</c>, whose truncation and dedup keep them small.
     /// </summary>
-    public static string ContextLevers(int? contextTokens) =>
-        (contextTokens is { } tokens
-            ? $"Raise the runner block's contextTokens (now {tokens:N0}) toward the backend's per-slot window"
-            : "Give the model a larger context window (a gateway block's contextTokens, up to the backend's per-slot window)")
-        + ", split the task into smaller ones, or narrow the block's Bash grant (for example Bash(dotnet *)) so file " +
-        "reads go through the Read tool.";
+    public static string ContextLevers(PromptRunnerConfig? block)
+    {
+        const string Narrow = "narrow the block's Bash grant (for example Bash(dotnet *)) so file reads go through the Read tool";
+
+        // A cloud block has no contextTokens to raise: its window is the model's own, so the levers are the task's size.
+        if (block is null || !(block.IsClaudeGateway || block.Kind == PromptRunnerKind.OpenAiCompat))
+        {
+            return $"Split the task into smaller ones, or have it read less: {Narrow}.";
+        }
+
+        string raise = block.ContextTokens is { } tokens
+            ? string.Create(CultureInfo.InvariantCulture, $"Raise the runner block's contextTokens (now {tokens:N0}) toward the backend's per-slot window")
+            : "Set the runner block's contextTokens toward the backend's per-slot window";
+        return $"{raise}, split the task into smaller ones, or {Narrow}.";
+    }
 
     /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
     internal const string StallHeading = "## The session went silent and was stopped";

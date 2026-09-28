@@ -27,17 +27,20 @@ public sealed class AutocompactThrashTests
     {
         string[] lines = RealLines();
 
-        ClaudeResult both = ClaudeStreamParser.ParseAll(string.Join('\n', lines));
+        ClaudeResult both = ClaudeStreamParser.ParseAll(string.Join('\n', lines), recognizeThrash: true);
         ContextManagementFailure thrash = Assert.IsType<ContextManagementFailure>(both.Thrashing);
         Assert.Equal(ContextManagementFailureKind.AutocompactThrashing, thrash.Kind);
         Assert.Equal("autocompact-thrashing", thrash.Token);
         Assert.StartsWith("Autocompact is thrashing", thrash.Detail, StringComparison.Ordinal);
 
         // Either line alone is enough: the CLI does not always get as far as its result.
-        Assert.NotNull(ClaudeStreamParser.ParseAll(lines[0]).Thrashing);
-        Assert.NotNull(ClaudeStreamParser.ParseAll(lines[1]).Thrashing);
+        Assert.NotNull(ClaudeStreamParser.ParseAll(lines[0], recognizeThrash: true).Thrashing);
+        Assert.NotNull(ClaudeStreamParser.ParseAll(lines[1], recognizeThrash: true).Thrashing);
 
-        var parser = new ClaudeStreamParser();
+        // Only the claude dialect recognises it: a parser that was not asked to (Cursor's) never reports it.
+        Assert.Null(ClaudeStreamParser.ParseAll(string.Join('\n', lines)).Thrashing);
+
+        var parser = new ClaudeStreamParser(recognizeThrash: true);
         Assert.False(parser.ContextExhausted);
         parser.Feed(lines[0]);
         Assert.True(parser.ContextExhausted);
@@ -48,10 +51,14 @@ public sealed class AutocompactThrashTests
     [InlineData("""{"type":"result","subtype":"success","is_error":true,"terminal_reason":"rapid_refill_breaker"}""", true)]
     [InlineData("""{"type":"assistant","api_error":"autocompact_thrashing","message":{"content":[]}}""", true)]
     [InlineData("""{"type":"result","subtype":"success","is_error":true,"result":"API Error: 500"}""", false)]
+    [InlineData("""{"type":"result","subtype":"success","is_error":false,"result":"Autocompact is thrashing detection is now wired into the parser."}""", false)]
+    [InlineData("""{"type":"result","subtype":"success","result":"Autocompact is thrashing: the context refilled"}""", false)]
+    [InlineData("""{"type":"assistant","api_error":"autocompact_thrashing","parent_tool_use_id":"toolu_sub","message":{"content":[]}}""", false)]
+    [InlineData("""{"type":"assistant","api_error":"autocompact_thrashing","parent_tool_use_id":null,"message":{"content":[]}}""", true)]
     [InlineData("""{"type":"assistant","message":{"content":[{"type":"text","text":"Autocompact is thrashing, apparently"}]}}""", false)]
     [InlineData("""{"type":"system","subtype":"status","status":"compacting"}""", false)]
     public void OnlyTheStructuredSignalsOrTheResultTextCount(string line, bool thrashing) =>
-        Assert.Equal(thrashing, ClaudeStreamParser.ParseAll(line).Thrashing is not null);
+        Assert.Equal(thrashing, ClaudeStreamParser.ParseAll(line, recognizeThrash: true).Thrashing is not null);
 
     // ─── feedback and levers ────────────────────────────────────────────────────────────
 
@@ -78,11 +85,45 @@ public sealed class AutocompactThrashTests
     }
 
     [Fact]
-    public void TheLeversNameContextTokensWithItsValue_WhenKnown()
+    public void TheLeversNameContextTokensWithItsValue_OnALocalBlock_AndTheTaskOnACloudOne()
     {
-        Assert.Contains("contextTokens (now 65,536)", RetryPolicy.ContextLevers(65536), StringComparison.Ordinal);
-        Assert.Contains("split the task", RetryPolicy.ContextLevers(null), StringComparison.Ordinal);
-        Assert.Contains("Bash(dotnet *)", RetryPolicy.ContextLevers(null), StringComparison.Ordinal);
+        var gateway = new PromptRunnerConfig
+        {
+            Name = "qwen", Command = "claude", Kind = PromptRunnerKind.Claude, BaseUrl = "http://127.0.0.1:4000",
+            ContextTokens = 65536, Settings = new PromptRunnerSettings()
+        };
+        var cloud = new PromptRunnerConfig
+        {
+            Name = "claude", Command = "claude", Kind = PromptRunnerKind.Claude, Settings = new PromptRunnerSettings()
+        };
+
+        string local = RetryPolicy.ContextLevers(gateway);
+        Assert.Contains("contextTokens (now 65,536)", local, StringComparison.Ordinal);
+        Assert.Contains("Bash(dotnet *)", local, StringComparison.Ordinal);
+
+        string hosted = RetryPolicy.ContextLevers(cloud);
+        Assert.DoesNotContain("contextTokens", hosted, StringComparison.Ordinal);
+        Assert.StartsWith("Split the task", hosted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheContextTokensFigureIsTheSameInEveryCulture()
+    {
+        var gateway = new PromptRunnerConfig
+        {
+            Name = "qwen", Command = "claude", Kind = PromptRunnerKind.Claude, BaseUrl = "http://127.0.0.1:4000",
+            ContextTokens = 65536, Settings = new PromptRunnerSettings()
+        };
+        System.Globalization.CultureInfo previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            Assert.Contains("(now 65,536)", RetryPolicy.ContextLevers(gateway), StringComparison.Ordinal);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previous;
+        }
     }
 
     // ─── the executor: classified, retried with targeted feedback, escalated on repeat ──
@@ -94,16 +135,22 @@ public sealed class AutocompactThrashTests
         try
         {
             PlanDefinition plan = Fixture.WritePlan(root, retries: 1);
-            var runner = new SequenceRunner(Thrashed(), Succeeded());
+            var runner = new SequenceRunner(
+                Thrashed() with { InFlightToolCalls = [new InFlightToolCall("Bash", "cat -n src/Big.cs")] }, Succeeded());
 
             RunReport report = await Fixture.RunSerialAsync(plan, runner, Ct);
 
             Assert.Equal(2, runner.Invocations.Count);
             Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
 
+            // Never a timeout: the retry runs on the same clock, not an extended one.
+            Assert.Equal(runner.Invocations[0].Timeout, runner.Invocations[1].Timeout);
+
             string feedback = File.ReadAllText(Assert.Single(Directory.GetFiles(root, "feedback.md", SearchOption.AllDirectories)));
             Assert.Contains(RetryPolicy.ContextExhaustedHeading, feedback, StringComparison.Ordinal);
             Assert.DoesNotContain(RetryPolicy.ContextManagementHeading, feedback, StringComparison.Ordinal);
+            Assert.Contains(RetryPolicy.InFlightCallsHeading, feedback, StringComparison.Ordinal);
+            Assert.Contains("cat -n src/Big.cs", feedback, StringComparison.Ordinal);
 
             string actionResult = File.ReadAllText(
                 Assert.Single(Directory.GetFiles(root, "action-result.json", SearchOption.AllDirectories),
