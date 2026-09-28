@@ -184,29 +184,58 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // The segment commit is a real, reachable object regardless of the FF/non-FF outcome below.
         segment.RecordedCommitSha = GitIn(segment.WorktreePath, "rev-parse", "HEAD").Trim();
 
-        // Try fast-forward merge into the integration worktree.
-        try
+        // Try fast-forward merge into the integration worktree. A refusal here is the ordinary
+        // "not a fast-forward" case, but git's words are kept (#750): if the non-FF merge below then
+        // fails for no visible reason, what the FF attempt said is part of the evidence.
+        var ff = TryGitInWithStderr(integPath, "merge", "--ff-only", segBranch);
+        if (ff.exitCode == 0)
         {
-            GitIn(integPath, "merge", "--ff-only", segBranch);
             return IntegrationResult.FastForward;
-        }
-        catch (InvalidOperationException)
-        {
-            // FF-only failed; fall through to non-FF merge.
         }
 
         // Non-FF: save the integration HEAD for potential rollback, then do a --no-commit merge
         // so the Scheduler can run re-verify on the merged bytes before committing.
         _preMergeIntegHead = GitIn(integPath, "rev-parse", "HEAD").Trim();
-        var (_, mergeExit) = TryGitIn(integPath, "merge", "--no-commit", "--no-ff", segBranch);
-        if (mergeExit == 0) return IntegrationResult.Merged;
+        var merge = TryGitInWithStderr(integPath, "merge", "--no-commit", "--no-ff", segBranch);
+        if (merge.exitCode == 0) return IntegrationResult.Merged;
 
         // Non-zero exit: check whether MERGE_HEAD exists (= conflict) vs some other git error.
-        var (_, mergeHeadExit) = TryGitIn(integPath, "rev-parse", "MERGE_HEAD");
-        if (mergeHeadExit == 0) return IntegrationResult.Conflict;
+        var mergeHead = TryGitInWithStderr(integPath, "rev-parse", "MERGE_HEAD");
+        if (mergeHead.exitCode == 0) return IntegrationResult.Conflict;
 
+        // #750: the throw carries what git SAID. This message is the abort headline, and its exception
+        // is abort.log's detail, so git's own explanation reaches both instead of a bare "failed".
         throw new InvalidOperationException(
-            $"git merge --no-commit --no-ff {segBranch} (in {integPath}) failed unexpectedly.");
+            $"git merge --no-commit --no-ff {segBranch} (in {integPath}) failed unexpectedly: it exited "
+            + $"{merge.exitCode} and left no MERGE_HEAD, so this is not a merge conflict."
+            + GitOutputDetail("git merge", merge.stdout, merge.stderr)
+            + GitOutputDetail($"the MERGE_HEAD probe (exit {mergeHead.exitCode})", mergeHead.stdout, mergeHead.stderr)
+            + GitOutputDetail($"the --ff-only attempt before it (exit {ff.exitCode})", ff.stdout, ff.stderr));
+    }
+
+    /// <summary>The longest stretch of one git stream an exception message quotes (#750).</summary>
+    private const int GitOutputDetailCap = 4000;
+
+    /// <summary>
+    /// One git invocation's stdout and stderr, formatted for an exception message (#750): each stream on its
+    /// own line, trimmed, <c>(none)</c> when empty, and capped at <see cref="GitOutputDetailCap"/> characters so
+    /// a verbose git cannot bury the headline.
+    /// </summary>
+    internal static string GitOutputDetail(string label, string stdout, string stderr) =>
+        $"{Environment.NewLine}{label} stderr: {CapGitOutput(stderr)}"
+        + $"{Environment.NewLine}{label} stdout: {CapGitOutput(stdout)}";
+
+    private static string CapGitOutput(string text)
+    {
+        string trimmed = text.Trim();
+        if (trimmed.Length == 0)
+        {
+            return "(none)";
+        }
+
+        return trimmed.Length <= GitOutputDetailCap
+            ? trimmed
+            : trimmed[..GitOutputDetailCap] + $" ... ({trimmed.Length - GitOutputDetailCap} more characters)";
     }
 
     /// <inheritdoc />
@@ -2205,14 +2234,17 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         Directory.CreateDirectory(Path.GetDirectoryName(trialWorktreePath)!);
         Git("worktree", "add", "--detach", trialWorktreePath, userTip);
 
-        var (_, mergeExit) = TryGitIn(trialWorktreePath, "merge", "--no-commit", planTip);
-        if (mergeExit != 0)
+        var merge = TryGitInWithStderr(trialWorktreePath, "merge", "--no-commit", planTip);
+        if (merge.exitCode != 0)
         {
-            var (_, mergeHeadExit) = TryGitIn(trialWorktreePath, "rev-parse", "MERGE_HEAD");
-            if (mergeHeadExit != 0)
+            var mergeHead = TryGitInWithStderr(trialWorktreePath, "rev-parse", "MERGE_HEAD");
+            if (mergeHead.exitCode != 0)
             {
                 throw new InvalidOperationException(
-                    $"git merge --no-commit {planTip} (in {trialWorktreePath}) failed unexpectedly.");
+                    $"git merge --no-commit {planTip} (in {trialWorktreePath}) failed unexpectedly: it exited "
+                    + $"{merge.exitCode} and left no MERGE_HEAD, so this is not a merge conflict."
+                    + GitOutputDetail("git merge", merge.stdout, merge.stderr)
+                    + GitOutputDetail($"the MERGE_HEAD probe (exit {mergeHead.exitCode})", mergeHead.stdout, mergeHead.stderr));
             }
 
             string detail = ConflictingPaths(trialWorktreePath);
