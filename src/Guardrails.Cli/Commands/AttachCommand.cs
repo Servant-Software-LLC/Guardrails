@@ -299,14 +299,29 @@ public static class AttachCommand
                 string? runner = OptionalString(node, "runner");
                 string? tier = OptionalString(node, "tier");
                 string? tierSourceToken = OptionalString(node, "tierSource");
-                AttemptProvenance? provenance = model is null && runner is null && tier is null && tierSourceToken is null
+
+                // #787: the #782 fields ride the same line and are carried through. A replayed gateway attempt
+                // has no cost, so without its tokens and gateway identity it would render as costing nothing,
+                // exactly the $0.00 / blank reading #782's tokens-for-cost rule forbids.
+                string? gateway = OptionalString(node, "gateway");
+                string? backendModel = OptionalString(node, "backendModel");
+                int? inputTokens = node["inputTokens"]?.GetValue<int>();
+                int? outputTokens = node["outputTokens"]?.GetValue<int>();
+                AttemptUsage? usage = inputTokens is null && outputTokens is null
+                    ? null
+                    : new AttemptUsage { InputTokens = inputTokens ?? 0, OutputTokens = outputTokens ?? 0 };
+
+                AttemptProvenance? provenance =
+                    model is null && runner is null && tier is null && tierSourceToken is null && gateway is null && backendModel is null
                     ? null
                     : new AttemptProvenance
                     {
                         Model = model,
                         Runner = runner,
                         Tier = tier,
-                        TierSource = tierSourceToken is null ? null : Enum.Parse<TierSource>(tierSourceToken)
+                        TierSource = tierSourceToken is null ? null : Enum.Parse<TierSource>(tierSourceToken),
+                        Gateway = gateway,
+                        BackendModel = backendModel
                     };
 
                 renderer.AttemptFinished(
@@ -319,6 +334,7 @@ public static class AttachCommand
                         Outcome = Enum.Parse<AttemptOutcome>(RequireString(node, "outcome")),
                         LogDir = RequireString(node, "logDir"),
                         CostUsd = node["costUsd"]?.GetValue<decimal>(),
+                        Usage = usage,
                         Turns = node["turns"]?.GetValue<int>(),
                         NeedsHumanKind = OptionalString(node, "needsHumanKind"),
                         Provenance = provenance
