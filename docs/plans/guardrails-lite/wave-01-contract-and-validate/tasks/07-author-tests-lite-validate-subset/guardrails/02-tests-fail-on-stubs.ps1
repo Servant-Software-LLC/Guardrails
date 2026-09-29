@@ -58,8 +58,13 @@ $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 
 $out | ForEach-Object { Write-Output $_ }
 
 # PRECONDITION - the one legitimate early exit. No TRX means the run never happened.
-$trx = Get-ChildItem $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
-       Sort-Object LastWriteTime | Select-Object -Last 1
+# Test-Path FIRST, then -LiteralPath: on a MISSING $resultsDir, `Get-ChildItem <missing> -Filter -Recurse`
+# falls back to walking the parent (all of %TEMP%) and hangs - in exactly the never-ran case this diagnoses.
+$trx = $null
+if (Test-Path -LiteralPath $resultsDir) {
+    $trx = Get-ChildItem -LiteralPath $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
+           Sort-Object LastWriteTime | Select-Object -Last 1
+}
 if (-not $trx) {
     Write-Output "no .trx under $resultsDir - the test run did not happen (test host failed to start, the build failed, or a malformed --filter, which exits 0 with no results). This is NOT a finding about the tests: do NOT rewrite them."
     exit 1
