@@ -24,7 +24,7 @@ independently-authored task folders agree. Do not deviate; if something here is 
 | Contract pinning test | `tests/Guardrails.Core.Tests/Loading/LiteProfileContractTests.cs` |
 | Script host (test infra) | `tests/Guardrails.Integration.Tests/Lite/LiteScriptHost.cs` |
 
-Fixture folders must be copied to the test output or read from the source tree — the host resolves the repo root by walking up to the directory containing `Guardrails.slnx` (or the `.sln`), and tests copy a fixture into a per-test temp dir before running a script against it (scripts may write `state/`). Never write into the source fixture.
+Fixture folders must be copied to the test output or read from the source tree — the host resolves the repo root by walking up to the directory containing `Guardrails.sln` (there is NO .slnx), and tests copy a fixture into a per-test temp dir before running a script against it (scripts may write `state/`). Never write into the source fixture.
 
 ## Kernel script I/O contract (every `scripts/lite/*.ps1`)
 - Prints **exactly one JSON object** to stdout (compressed, UTF-8, last line). Diagnostics for humans go to stderr.
@@ -75,7 +75,7 @@ The corpus for parity = every fixture under `Lite/Fixtures/**` that is a plan fo
 **Red census (#375):** every author-tests task pins test METHOD names in its prompt (one per enumerated behaviour) and its `02-tests-fail-on-stubs.ps1` is the PER-TEST census over the TRX (stacks/dotnet.md §4.4), with the zero-match guard (§4.3) PROVEN to fire. Its `01-build-passes.ps1` builds `tests/Guardrails.Integration.Tests` (or Core.Tests for 01). Implementation tasks: `01-build-passes`, `02-tests-pass` (#179 re-emit, §4.2; zero-match guard; filter names the pair's class), and where useful a structural check (e.g. no `exit 99` / `"stub":true` left in the scripts it owns — a source-shape check with a committed `samples/` pair).
 
 ## Gates
-- `wave-01-contract-and-validate/guardrails/` (wave EXIT, all LOCAL, no scope key): `01-solution-builds.ps1` (dotnet build Guardrails.slnx -c Debug), `02-lite-tests-pass.ps1` (`Category=Lite` across Integration + the Core contract class, #179 re-emit, zero-match guard), `03-no-stubs-remain.ps1` (no `"stub":true` / `exit 99` under `scripts/lite/`).
+- `wave-01-contract-and-validate/guardrails/` (wave EXIT, all LOCAL, no scope key): `01-solution-builds.ps1` (dotnet build Guardrails.sln -c Debug), `02-lite-tests-pass.ps1` (`Category=Lite` across Integration + the Core contract class, #179 re-emit, zero-match guard), `03-no-stubs-remain.ps1` (no `"stub":true` / `exit 99` under `scripts/lite/`).
 - `wave-01-contract-and-validate/preflights/`: none (wave 1; greenfield).
 - Plan root `guardrails-lite/guardrails/01-union-conflict-free.ps1` + `.json` `{"scope":"integration"}`: union-safe conditional — for each file under `scripts/lite/` and `tests/Guardrails.Integration.Tests/Lite/` that EXISTS, fail on line-anchored `(?m)^<<<<<<<` / `(?m)^>>>>>>>`. (GR2028 credit.)
 - `wave-02-run-kernel/`: stub (`tasks/` empty + `brief.md`), authored by the lead.
@@ -90,7 +90,7 @@ Structural claims in prompts: ship the command, not the list (#578). Execute eve
 ## Cross-task APIs (pinned — tests and modules authored by different agents call these)
 **C# — `tests/Guardrails.Integration.Tests/Lite/LiteScriptHost.cs` (task 02), namespace `Guardrails.Integration.Tests.Lite`:**
 - `public static class LiteScriptHost`
-  - `public static string RepoRoot { get; }` — walks up from `AppContext.BaseDirectory` to the dir holding `Guardrails.slnx`.
+  - `public static string RepoRoot { get; }` — walks up from `AppContext.BaseDirectory` to the dir holding `Guardrails.sln`.
   - `public static Task<LiteResult> RunAsync(string scriptName, params string[] args)` — runs `pwsh -NoProfile -File <RepoRoot>/scripts/lite/<scriptName>.ps1 <args>` (scriptName without `.ps1`), 120 s timeout, captures stdout/stderr; parses the LAST non-empty stdout line as JSON.
   - `public static TempPlan CopyFixture(string group, string name)` — copies `Lite/Fixtures/<group>/<name>/` (from the SOURCE tree under RepoRoot) into a fresh temp dir; `TempPlan : IDisposable` with `string Dir`; Dispose deletes it (strip read-only first).
   - `public static TempPlan CopyPlan(string repoRelativePlanDir)` — same, for `examples/...` plan folders.
@@ -103,3 +103,8 @@ Structural claims in prompts: ship the command, not the list (#578). Execute eve
 - Plan object from `Invoke-LiteLoad`: `[pscustomobject]@{ Root; Config (the parsed guardrails.json, PSCustomObject); Waved (bool); Tasks = @([pscustomobject]@{ Id; Dir; Json (parsed task.json); ActionPath (full path or $null); GuardrailFiles = @(full paths, ordinal by name); PreflightFiles = @(...) }); PlanGuardrailFiles; PlanPreflightFiles }`. Tasks sorted Ordinal by Id.
 - `Graph.psm1` and `Subset.psm1` each export exactly `Invoke-LiteRules -Plan <object>` returning diagnostic objects. Stubs return `@()`.
 - `scripts/lite/lib/Hash.psm1` exports `Get-LitePlanDefinitionHash -PlanDir`, `Get-LiteTaskDefinitionHash -PlanDir -TaskId`, `Get-LiteNarrowPlanHash -PlanDir` (each returns `sha256:<hex>`). Stubs throw `NotImplemented`-style: `throw 'stub'`.
+
+## Post-fan-out pins (lead, after agent C)
+- Solution file is `Guardrails.sln` (no `.slnx`).
+- Fixture naming: a deliberately-broken fixture is named `invalid-<code-or-defect>`; clean baselines have no prefix. Parity (task 08) treats `invalid-*` as must-yield-≥1-code on both sides and runs IN PLACE (read-only) over the `validate-load`, `validate-graph`, `validate-subset` groups + the two examples.
+- Parity compares against an explicit `ImplementedByLite` set (Core emits workspace codes Lite never owns); oracle = `Guardrails.Cli.PlanProbe.LoadAndValidate` + `PlanValidator.ReviewMarkerDiagnostics`.
