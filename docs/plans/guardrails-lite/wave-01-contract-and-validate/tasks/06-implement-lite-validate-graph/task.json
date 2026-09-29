@@ -1,0 +1,9 @@
+{
+  "description": "Implement Lite Graph.psm1 so LiteValidateGraphTests pass (Core PlanValidator parity on the graph/scope code set)",
+  "dependsOn": ["04-implement-lite-validate-load", "05-author-tests-lite-validate-graph"],
+  "stableId": "b6w1z9",
+  "writeScope": [
+    "scripts/lite/validate/Graph.psm1",
+    "scripts/lite/validate.ps1"
+  ]
+}

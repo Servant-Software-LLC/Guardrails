@@ -1,0 +1,11 @@
+{
+  "description": "Author failing parity tests (LiteValidateGraphTests) + the committed valid-*/invalid-* fixture corpus + a stub Graph.psm1 for the Lite graph/scope code set",
+  "dependsOn": ["02-add-lite-script-host", "03-author-tests-lite-validate-load"],
+  "stableId": "b5r8t2",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteValidateGraphTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/Fixtures/validate-graph/",
+    "scripts/lite/validate/Graph.psm1"
+  ],
+  "action": { "maxTurns": 75 }
+}
