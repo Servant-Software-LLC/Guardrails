@@ -1,0 +1,11 @@
+{
+  "description": "Author the failing Lite subset-refusal (GR2090), review-marker (GR2025) and Lite-vs-Core validation-parity tests, their fixtures, and the Subset.psm1 stub",
+  "dependsOn": ["02-add-lite-script-host", "03-author-tests-lite-validate-load"],
+  "stableId": "c7k2m9",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteValidateSubsetTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/LiteValidationParityTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/Fixtures/validate-subset/",
+    "scripts/lite/validate/Subset.psm1"
+  ]
+}
