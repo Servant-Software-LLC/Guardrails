@@ -244,6 +244,57 @@ This is the main reason for building Lite in this repo, so it gets its own accep
 
 The parity checks run in the existing CI matrix, next to the harness tests.
 
+## Delivery waves
+
+The breakdown runs these as ordered waves, and each wave is broken down only after the previous one
+has run. Every later wave calls the exact interfaces the earlier one produced: the loop scripts reuse
+the validator's plan loader, and the orchestrator skill calls the kernel scripts' JSON output and exit
+codes. So each wave is authored against real code, not guesses.
+
+### Wave 1: contract and validate
+
+This wave covers the `"profile": "lite"` contract (SSOT, plus a pinning test showing that the harness
+accepts and ignores it) and reserves the Lite-only diagnostic code GR2090. It adds an xUnit host that
+runs the `pwsh` kernel scripts, then builds `validate.ps1` (its load, graph and subset rule modules),
+with a **validation-parity** test against Core's `PlanValidator`. It also builds `Hash.psm1` with
+`plan-hash.ps1` and `mark-reviewed.ps1`, byte-for-byte parity-tested against Core's
+`PlanDefinitionHash`, `TaskDefinitionHash` and `PlanHash`, plus `lock.ps1` and its verify mode.
+
+### Wave 2: run kernel
+
+This wave is the loop. It builds on wave 1's `validate.ps1` loader module, `Hash.psm1` and
+`lock.ps1`:
+- the shared journal module and **step tokens**;
+- `next.ps1`, `start-task.ps1` (deterministic prompt composition), `run-action.ps1`, `check.ps1`
+  (writeScope and script guardrails, failFast) and `record.ps1` (verdicts, retries, needs-human, and
+  the hash-lock recheck);
+- `reset.ps1`, `preflight.ps1`, `terminal-gate.ps1` and `report.ps1`;
+- the non-interactive Lite driver and the **execution-parity** test against `guardrails run` on
+  script-only fixtures.
+
+`state/` uses the harness's file names and shapes (`state/run.json` and friends).
+
+### Wave 3: orchestration surface
+
+This wave builds on wave 2's kernel scripts and their JSON and exit-code contract:
+- the `/guardrails-run` skill;
+- the `task-runner` and `judge` agent definitions;
+- the tamper **PreToolUse** hook and the **Stop** hook. The `lite-hook-delivery` decision is verified
+  here, and the settings.json fallback is used if skill-scoped hooks don't reach subagents;
+- the one-preamble Lite profile in `plan-breakdown`, `guardrails-review` and
+  `guardrails-domain-knowledge`, one task per skill directory;
+- the README section stating that Lite is weaker than the harness.
+
+### Wave 4: distribution and drift CI
+
+This wave covers:
+- the `guardrails-lite-<version>.zip` release asset, with a no-compiled-file check;
+- `install-lite.ps1` and `install-lite.sh`;
+- the no-network lint over `scripts/lite/`;
+- the contract-change tripwire and the subset guarantee;
+- the `SKILL.md` line-budget and verb-coverage checks;
+- the Lite version script.
+
 ## Acceptance
 
 - `examples/hello-guardrails` and `examples/parallel-hello` run end to end under `/guardrails-run` on a
