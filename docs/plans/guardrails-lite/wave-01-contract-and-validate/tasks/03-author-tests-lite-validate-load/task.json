@@ -1,0 +1,12 @@
+{
+  "description": "Author failing parity tests (LiteValidateLoadTests) + the committed valid-*/invalid-* fixture corpus + throwing stubs for Lite validate.ps1 and Load.psm1",
+  "dependsOn": ["02-add-lite-script-host"],
+  "stableId": "b3k9q1",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteValidateLoadTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/Fixtures/validate-load/",
+    "scripts/lite/validate.ps1",
+    "scripts/lite/validate/Load.psm1"
+  ],
+  "action": { "maxTurns": 75 }
+}

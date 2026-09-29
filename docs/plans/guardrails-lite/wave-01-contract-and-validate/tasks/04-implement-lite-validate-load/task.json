@@ -1,0 +1,10 @@
+{
+  "description": "Implement the Lite validate.ps1 dispatcher and Load.psm1 so LiteValidateLoadTests pass (Core PlanLoader/PlanValidator parity on the load code set)",
+  "dependsOn": ["03-author-tests-lite-validate-load"],
+  "stableId": "b4m2x7",
+  "writeScope": [
+    "scripts/lite/validate.ps1",
+    "scripts/lite/validate/Load.psm1"
+  ],
+  "action": { "maxTurns": 75 }
+}
