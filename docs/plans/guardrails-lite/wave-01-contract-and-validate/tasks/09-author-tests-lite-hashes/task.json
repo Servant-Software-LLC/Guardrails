@@ -1,0 +1,13 @@
+{
+  "description": "Author failing parity tests (plus fixtures and throwing stubs) proving Lite's plan-hash.ps1 / mark-reviewed.ps1 reproduce Core's PlanDefinitionHash, TaskDefinitionHash, narrow PlanHash and review marker byte-for-byte",
+  "dependsOn": ["02-add-lite-script-host"],
+  "stableId": "a9h3c6",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteHashParityTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/LiteMarkReviewedTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/Fixtures/hashes/",
+    "scripts/lite/lib/Hash.psm1",
+    "scripts/lite/plan-hash.ps1",
+    "scripts/lite/mark-reviewed.ps1"
+  ]
+}

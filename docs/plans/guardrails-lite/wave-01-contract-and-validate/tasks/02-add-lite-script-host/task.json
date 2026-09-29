@@ -1,0 +1,9 @@
+{
+  "description": "Add LiteScriptHost - the xUnit test infrastructure that runs a Guardrails Lite pwsh script, parses its one-line JSON result and copies fixture/example plans into throwaway temp dirs - with its own self-tests",
+  "dependsOn": [],
+  "stableId": "a2m9x4",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteScriptHost.cs",
+    "tests/Guardrails.Integration.Tests/Lite/LiteScriptHostTests.cs"
+  ]
+}

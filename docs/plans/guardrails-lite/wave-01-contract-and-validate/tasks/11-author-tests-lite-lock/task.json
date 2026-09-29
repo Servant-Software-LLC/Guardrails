@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests (plus a fixture and a throwing stub) for Lite's lock.ps1: write the run lock of definition hashes, refuse a second lock, and -Verify that names every task (or <plan>) whose definition moved",
+  "dependsOn": ["02-add-lite-script-host"],
+  "stableId": "ab7w3n",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Lite/LiteLockTests.cs",
+    "tests/Guardrails.Integration.Tests/Lite/Fixtures/lock/",
+    "scripts/lite/lock.ps1"
+  ]
+}

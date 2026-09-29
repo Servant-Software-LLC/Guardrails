@@ -1,0 +1,6 @@
+{
+  "description": "Implement lock.ps1 (write the run lock of definition hashes, refuse a second lock unless -Force, and -Verify naming every changed task or <plan>) on top of Hash.psm1 so the authored LiteLockTests pass",
+  "dependsOn": ["10-implement-lite-hashes", "11-author-tests-lite-lock"],
+  "stableId": "ac4t6j",
+  "writeScope": ["scripts/lite/lock.ps1"]
+}

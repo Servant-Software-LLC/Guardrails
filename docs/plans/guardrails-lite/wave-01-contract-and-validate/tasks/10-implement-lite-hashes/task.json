@@ -1,0 +1,11 @@
+{
+  "description": "Implement Hash.psm1, plan-hash.ps1 and mark-reviewed.ps1 so Lite reproduces Core's PlanDefinitionHash, TaskDefinitionHash, narrow PlanHash and bare review marker byte-for-byte (fill logic over the stubs)",
+  "dependsOn": ["09-author-tests-lite-hashes"],
+  "stableId": "a0q5r8",
+  "writeScope": [
+    "scripts/lite/lib/Hash.psm1",
+    "scripts/lite/plan-hash.ps1",
+    "scripts/lite/mark-reviewed.ps1"
+  ],
+  "action": { "maxTurns": 75 }
+}
