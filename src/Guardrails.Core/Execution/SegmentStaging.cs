@@ -82,37 +82,11 @@ public static class SegmentStaging
     /// #816: a private <c>GIT_INDEX_FILE</c> to stage into (the serial-mode scope snapshot, <see cref="ScopeDiffBase"/>),
     /// so the repository's own index is never touched. Null — every other caller — stages the repository's index.
     /// </param>
-    public static void StageAll(string repoPath, string? indexFile = null)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = repoPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            // Issue #457: git's stderr (echoed into the thrown message) is UTF-8, not the console code page.
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        if (indexFile is not null)
-        {
-            psi.Environment["GIT_INDEX_FILE"] = indexFile;
-        }
-
-        IReadOnlyList<string> arguments = StageAllArguments();
-        foreach (string arg in arguments)
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        using var proc = Process.Start(psi)!;
-        proc.StandardOutput.ReadToEnd();
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git {string.Join(" ", arguments)} (in {repoPath}) exited {proc.ExitCode}: {stderr.Trim()}");
-        }
-    }
+    /// <param name="cancellationToken">
+    /// #816 review: bounds the call (with <see cref="ScopeGit"/>'s timeout) so a hung git can never wedge a run.
+    /// </param>
+    public static void StageAll(string repoPath, string? indexFile = null, CancellationToken cancellationToken = default) =>
+        // #816 review: through ScopeGit, which drains stderr concurrently. Reading stdout to its end first deadlocked
+        // once git's per-file line-ending warnings filled the stderr pipe (~35 files under core.autocrlf=true).
+        ScopeGit.Run(repoPath, indexFile, StageAllArguments(), cancellationToken);
 }

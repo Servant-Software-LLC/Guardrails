@@ -419,7 +419,12 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   `write-scope-check.log`). **Write-time denial:** a prompt action on a hook-capable runner (claude, incl.
   gateway) also gets the `WriteScopeHook` PreToolUse hook in both modes, refusing an out-of-scope
   `Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the workspace (never Bash; `.guardrails-agent-io/` and
-  `.guardrails-staging/` always allowed), naming the scope and the needsHuman route.
+  `.guardrails-staging/` always allowed), naming the scope and the needsHuman route. Review follow-ups: serial
+  snapshot git runs in RAW-BYTES mode (`core.autocrlf=false` + `--attr-source=<empty tree>`) so reverts are
+  byte-exact; editing the checkout mid-serial-run is unsupported but LOUD (run-start Note; revert text says the
+  changes may not be the agent's); serial needs-human/tamper/wall halts revert too; the snapshot tree is journaled
+  (`tasks.<id>.scopeSnapshotTree`) so a resume after a kill/crash reconciles the workspace first; a check that could
+  not run says `write scope NOT checked this attempt` in the summary and on the console.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode

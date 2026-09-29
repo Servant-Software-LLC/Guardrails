@@ -307,6 +307,12 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         _inner.OutOfScopeStripped(task, stripped);
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    public void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths) =>
+        _inner.InterruptedAttemptScopeReverted(task, paths);
+
     public void WaveStarting(WaveNode wave, int index, int total) =>
         _inner.WaveStarting(wave, index, total);
 

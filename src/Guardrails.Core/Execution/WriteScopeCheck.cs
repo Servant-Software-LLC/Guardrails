@@ -40,7 +40,8 @@ public static class WriteScopeCheck
     /// #816): a segment's taskBase in worktree mode, or the serial-mode snapshot tree staged through a private
     /// index. One implementation, so the two modes can never disagree about what an offense is.
     /// </summary>
-    public static WriteScopeCheckResult Check(ScopeDiffBase diffBase, IReadOnlyList<string>? scope)
+    public static WriteScopeCheckResult Check(
+        ScopeDiffBase diffBase, IReadOnlyList<string>? scope, CancellationToken cancellationToken = default)
     {
         string repoPath = diffBase.RepoPath;
         string taskBase = diffBase.Base;
@@ -49,7 +50,7 @@ public static class WriteScopeCheck
         // the silent unbounded-write loophole this closes.
         scope ??= [];
 
-        string diffOutput;
+        IReadOnlyList<(char Status, string Path)> changes;
         try
         {
             // Stage the action's writes so new/untracked files surface in the staged diff, then diff
@@ -59,9 +60,8 @@ public static class WriteScopeCheck
             // guardrail's `npm ci` node_modules is uniformly invisible to harness git, so it can never
             // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
             // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
-            SegmentStaging.StageAll(repoPath, diffBase.IndexFile);
-            diffOutput = RunGitWithIndex(
-                repoPath, diffBase.IndexFile, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            SegmentStaging.StageAll(repoPath, diffBase.IndexFile, cancellationToken);
+            changes = StagedChanges(diffBase, cancellationToken);
         }
         catch (InvalidOperationException ex)
         {
@@ -79,20 +79,10 @@ public static class WriteScopeCheck
 
         var offending = new List<WriteScopeOffense>();
         var inScope = new List<string>();
-        foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach ((char status, string path) in changes)
         {
-            string line = rawLine.Trim();
-            int tabIdx = line.IndexOf('\t');
-            if (tabIdx < 0) continue;
-
-            // git diff --name-status prints a single status letter (A/M/D — renames are disabled via
-            // --no-renames, so no multi-char "R100"-style scores appear here) before the tab.
-            string statusField = line[..tabIdx].Trim();
-            char status = statusField.Length > 0 ? statusField[0] : '?';
-
-            string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
             // #816: the serial snapshot's harness-owned plan dirs (logs/, state/) are never the agent's write.
-            if (string.IsNullOrEmpty(path) || diffBase.IsHarnessOwned(path)) continue;
+            if (diffBase.IsHarnessOwned(path)) continue;
 
             if (!WriteScope.IsInScope(path, scope))
             {
@@ -116,6 +106,36 @@ public static class WriteScopeCheck
             OffendingPaths = offending,
             InScopePaths = inScope
         };
+    }
+
+    /// <summary>
+    /// The staged index's changes against the base as (status, path) pairs, read with <c>-z</c> (#816 review): a
+    /// NUL-separated listing is never C-quoted, so a non-ASCII or otherwise unusual path (<c>docs/café.md</c>) is
+    /// judged — and later reverted — by its real name rather than a quoted escape that names no file.
+    /// <c>git diff --name-status</c> prints a single status letter per path (renames are disabled via
+    /// <c>--no-renames</c>, so no multi-char "R100"-style scores appear).
+    /// </summary>
+    private static List<(char Status, string Path)> StagedChanges(ScopeDiffBase diffBase, CancellationToken cancellationToken)
+    {
+        string output = ScopeGit.Run(
+            diffBase.RepoPath, diffBase.IndexFile,
+            ["diff", "--cached", "--name-status", "--no-renames", "-z", diffBase.Base], cancellationToken);
+
+        var changes = new List<(char, string)>();
+        string[] fields = output.Split('\0');
+        for (int i = 0; i + 1 < fields.Length; i += 2)
+        {
+            string statusField = fields[i].Trim();
+            string path = fields[i + 1].Replace('\\', '/');
+            if (statusField.Length == 0 || path.Length == 0)
+            {
+                continue;
+            }
+
+            changes.Add((statusField[0], path));
+        }
+
+        return changes;
     }
 
     /// <summary>
@@ -272,18 +292,9 @@ public static class WriteScopeCheck
         try
         {
             SegmentStaging.StageAll(repoPath);
-            string diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
-            foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            foreach ((_, string path) in StagedChanges(ScopeDiffBase.ForSegment(repoPath, taskBase), default))
             {
-                string line = rawLine.Trim();
-                int tabIdx = line.IndexOf('\t');
-                if (tabIdx < 0) continue;
-
-                string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-                if (path.Length > 0)
-                {
-                    changed.Add(path);
-                }
+                changed.Add(path);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException
@@ -324,24 +335,22 @@ public static class WriteScopeCheck
     /// </summary>
     public static string CaptureOffendingPatch(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
-        string repoPath = diffBase.RepoPath;
-        string taskBase = diffBase.Base;
         List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
         var batches = new List<string>();
         try
         {
             // Batched so a very large offending set cannot overflow a child's command line. The paths are disjoint,
             // so the batches' patches concatenate into one applyable patch.
-            for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+            foreach (List<string> batch in Batches(paths))
             {
                 // --no-renames: each file header then names ONE path twice, which is how the next attempt's composer
                 // reads back which paths a kept copy touches (#707 review W4).
                 var args = new List<string>
                 {
-                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
+                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", diffBase.Base, "--"
                 };
-                args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
-                batches.Add(RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]));
+                args.AddRange(batch);
+                batches.Add(ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args));
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
@@ -352,8 +361,20 @@ public static class WriteScopeCheck
         return string.Concat(batches);
     }
 
-    /// <summary>How many paths one <see cref="CaptureOffendingPatch"/> git child is handed.</summary>
+    /// <summary>
+    /// How many paths one git child is handed — patch capture, the existence probe and the revert alike (#816
+    /// review NIT 9): well under the Windows command-line limit even for long paths, so a large offending set can
+    /// never overflow a child's argv.
+    /// </summary>
     private const int PatchPathBatchSize = 100;
+
+    private static IEnumerable<List<string>> Batches(IReadOnlyList<string> paths)
+    {
+        for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+        {
+            yield return paths.Skip(i).Take(PatchPathBatchSize).ToList();
+        }
+    }
 
     /// <summary>
     /// Restore each path in <paramref name="offendingPaths"/> to its <paramref name="taskBase"/>
@@ -370,8 +391,8 @@ public static class WriteScopeCheck
     /// has no base blob to check out — it is removed with <c>git rm -f -- &lt;path&gt;</c>, deleting it
     /// from the index and the working tree.</item>
     /// </list>
-    /// Membership at base is probed per-path with <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>;
-    /// only the offending paths are touched, so a same-attempt in-scope edit survives the revert.
+    /// Membership at base is probed with <c>git ls-tree</c> over the offending paths (batched); only the
+    /// offending paths are touched, so a same-attempt in-scope edit survives the revert.
     /// </remarks>
     public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths) =>
         ScopedRevert(ScopeDiffBase.ForSegment(repoPath, taskBase), offendingPaths);
@@ -379,105 +400,67 @@ public static class WriteScopeCheck
     /// <summary>
     /// <see cref="ScopedRevert(string, string, IReadOnlyList{WriteScopeOffense})"/> against any
     /// <see cref="ScopeDiffBase"/> (issue #816). In serial mode the checkout and the removal go through the
-    /// snapshot's PRIVATE index, so they rewrite the working tree and never the operator's own index.
+    /// snapshot's PRIVATE index in raw-bytes mode (<see cref="ScopeGit"/>), so they write back exactly the bytes
+    /// the snapshot hashed and never touch the operator's own index. Every git child is handed at most
+    /// <see cref="PatchPathBatchSize"/> paths. Throws <see cref="InvalidOperationException"/> on a git failure.
     /// </summary>
-    public static void ScopedRevert(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    public static void ScopedRevert(
+        ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths, CancellationToken cancellationToken = default)
     {
-        if (offendingPaths.Count == 0) return;
+        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
+        if (paths.Count == 0) return;
 
-        string repoPath = diffBase.RepoPath;
-        string taskBase = diffBase.Base;
-
-        var existedAtBase = new List<string>();
-        var addedSinceBase = new List<string>();
-        foreach (WriteScopeOffense offense in offendingPaths)
-        {
-            if (ExistsAtBase(repoPath, taskBase, offense.Path))
-                existedAtBase.Add(offense.Path);
-            else
-                addedSinceBase.Add(offense.Path);
-        }
+        HashSet<string> existing = ExistingAtBase(diffBase, paths, cancellationToken);
+        List<string> existedAtBase = paths.Where(existing.Contains).ToList();
+        List<string> addedSinceBase = paths.Where(p => !existing.Contains(p)).ToList();
 
         // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
-        if (existedAtBase.Count > 0)
+        foreach (List<string> batch in Batches(existedAtBase))
         {
-            var args = new List<string> { "checkout", taskBase, "--" };
-            args.AddRange(existedAtBase);
-            RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]);
+            var args = new List<string> { "--literal-pathspecs", "checkout", diffBase.Base, "--" };
+            args.AddRange(batch);
+            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
         }
 
         // Newly-added files: no base blob exists, so git checkout would fail ("did not match any file");
         // remove them from the index and the working tree instead.
-        if (addedSinceBase.Count > 0)
+        foreach (List<string> batch in Batches(addedSinceBase))
         {
-            var args = new List<string> { "rm", "-f", "--" };
-            args.AddRange(addedSinceBase);
-            RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]);
+            var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
+            args.AddRange(batch);
+            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
         }
     }
 
     /// <summary>
-    /// True when <paramref name="path"/> exists in <paramref name="taskBase"/>'s tree (so it can be
-    /// restored from there). Uses <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>, which exits 0
-    /// when the blob exists and non-zero otherwise; a non-zero exit therefore means "added since base".
+    /// Which of <paramref name="paths"/> exist in the base tree (so they can be restored from there): one
+    /// <c>git ls-tree -r -z --name-only</c> per batch rather than a <c>cat-file -e</c> per path. Paths are
+    /// forward-slashed and repo-relative on both sides, and the listing is NUL-separated so it is never quoted.
     /// </summary>
-    private static bool ExistsAtBase(string repoPath, string taskBase, string path)
+    private static HashSet<string> ExistingAtBase(
+        ScopeDiffBase diffBase, IReadOnlyList<string> paths, CancellationToken cancellationToken)
     {
-        var psi = new ProcessStartInfo("git")
+        var existing = new HashSet<string>(StringComparer.Ordinal);
+        foreach (List<string> batch in Batches(paths))
         {
-            WorkingDirectory = repoPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            // Issue #457: pin UTF-8 on every git stream (this one is exit-code-only, kept uniform).
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        psi.ArgumentList.Add("cat-file");
-        psi.ArgumentList.Add("-e");
-        psi.ArgumentList.Add($"{taskBase}:{path}");
-        using var proc = Process.Start(psi)!;
-        proc.StandardOutput.ReadToEnd();
-        proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-        return proc.ExitCode == 0;
+            var args = new List<string> { "--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", diffBase.Base, "--" };
+            args.AddRange(batch);
+            string output = ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
+            foreach (string path in output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            {
+                existing.Add(path);
+            }
+        }
+
+        return existing;
     }
 
     // Runs git and FAILS CLOSED on a non-zero exit (WS_2): the caller must never mistake an
     // empty stdout from a failed git invocation for "no changes". Throws so Check can convert
-    // the failure into Passed=false and ScopedRevert surfaces a bad revert loudly.
+    // the failure into Passed=false and ScopedRevert surfaces a bad revert loudly. #816 review: through
+    // ScopeGit, which drains both streams concurrently and bounds the call.
     private static string RunGit(string workingDir, params string[] args) =>
-        RunGitWithIndex(workingDir, indexFile: null, args);
-
-    // #816: the same runner with an optional private GIT_INDEX_FILE (the serial-mode snapshot's index).
-    private static string RunGitWithIndex(string workingDir, string? indexFile, params string[] args)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            // Issue #457: this captures `git diff --name-only` / `git status` PATHS, which may be
-            // non-ASCII; an unpinned decode would corrupt the write-scope verdict's file names.
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        if (indexFile is not null)
-        {
-            psi.Environment["GIT_INDEX_FILE"] = indexFile;
-        }
-
-        foreach (string arg in args) psi.ArgumentList.Add(arg);
-        using var proc = Process.Start(psi)!;
-        string stdout = proc.StandardOutput.ReadToEnd();
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(" ", args)} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
-        return stdout;
-    }
+        ScopeGit.Run(workingDir, indexFile: null, args);
 }
 
 /// <summary>

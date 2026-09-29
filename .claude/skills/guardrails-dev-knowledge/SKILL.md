@@ -295,6 +295,10 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `GIT_INDEX_FILE` (never the operator's index) — the plan's `logs/`/`state/` are dropped by PREFIX in
   `WriteScopeCheck.Check`, NOT by an exclude pathspec (git refuses an exclude naming a `.gitignore`d dir, which
   faulted the whole run when tried). `WriteScopeHookTests` runs the real generated script like the containment tests.
+  **Every scope/staging git call goes through `ScopeGit`** (drains stdout+stderr concurrently, timeout +
+  cancellation, `core.safecrlf=false`, `core.quotePath=false`; raw-bytes mode for a private index). Never read a
+  child's stdout to its end before draining stderr: under Git for Windows' system `core.autocrlf=true`, `git add`
+  emits a warning per LF file and ~35 of them filled the stderr pipe and deadlocked the snapshot (#816 review).
 - **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
   injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
   `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches

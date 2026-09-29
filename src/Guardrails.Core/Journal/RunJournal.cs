@@ -286,6 +286,35 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Record (non-null) or clear (null) <see cref="TaskJournalEntry.ScopeSnapshotTree"/> for
+    /// <paramref name="taskId"/> and persist (issue #816). Best-effort exactly like
+    /// <see cref="MarkAttemptInFlight"/>: returns null on success, else why the write failed (the in-memory update
+    /// is kept, so the journal's next persist carries it). Never touches the task's status.
+    /// </summary>
+    public string? SetScopeSnapshotTree(string taskId, string? tree)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            if (string.Equals(entry.ScopeSnapshotTree, tree, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            UpdateTask(taskId, entry with { ScopeSnapshotTree = tree });
+            try
+            {
+                Persist();
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ex.Message;
+            }
+        }
+    }
+
+    /// <summary>
     /// Test seam (#798 W2): invoked just before <see cref="MarkAttemptInFlight"/> persists, so a test can make that
     /// one write fail the way a held <c>run.json</c> does, without also breaking every other journal write.
     /// </summary>
@@ -505,13 +534,17 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string? bucket) =>
         RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash, bucket: bucket);
 
-    /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
+    /// <summary>
+    /// Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist. #816: also drops
+    /// a leftover <see cref="TaskJournalEntry.ScopeSnapshotTree"/> — a human who reset the task owns the workspace
+    /// now, and a resume must not revert their edits against a dead attempt's snapshot.
+    /// </summary>
     public void ResetTask(string taskId)
     {
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Pending, InFlightAttempt = null });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Pending, InFlightAttempt = null, ScopeSnapshotTree = null });
             Persist();
         }
     }

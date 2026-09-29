@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using Guardrails.Core.Io;
 
 namespace Guardrails.Core.Execution;
@@ -61,6 +59,7 @@ public sealed class ScopeDiffBase : IDisposable
     public static ScopeDiffBase ForSegment(string worktreePath, string taskBase) =>
         new(worktreePath, taskBase, indexFile: null, harnessOwnedPrefixes: []);
 
+
     /// <summary>
     /// Why the serial snapshot cannot be taken in <paramref name="workspace"/>, or null when it can: the workspace
     /// must be the top level of a git work tree (the scope globs are workspace-relative, and git reports paths
@@ -71,9 +70,9 @@ public sealed class ScopeDiffBase : IDisposable
         string topLevel;
         try
         {
-            topLevel = Git(workspace, indexFile: null, "rev-parse", "--show-toplevel").Trim();
+            topLevel = ScopeGit.Run(workspace, indexFile: null, ["rev-parse", "--show-toplevel"]).Trim();
         }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or IOException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
         {
             return $"the workspace '{workspace}' is not a git work tree";
         }
@@ -84,45 +83,102 @@ public sealed class ScopeDiffBase : IDisposable
     }
 
     /// <summary>
-    /// Snapshot <paramref name="workspace"/> for a serial attempt (see the type remarks). Returns null when git
-    /// fails for any reason — the caller then runs the attempt without the retrospective check, and says so; a
-    /// snapshot failure must never fail the attempt itself.
+    /// Snapshot <paramref name="workspace"/> for a serial attempt (see the type remarks), in raw-bytes mode
+    /// (<see cref="ScopeGit"/>) so a revert later writes back exactly the bytes that were on disk. On any git
+    /// failure returns null with <paramref name="failure"/> set — the caller runs the attempt without the
+    /// retrospective check and says so LOUDLY; a snapshot failure must never fail the attempt itself.
     /// </summary>
-    public static ScopeDiffBase? TryCaptureSerial(string workspace, string planDirectory)
+    public static ScopeDiffBase? TryCaptureSerial(
+        string workspace, string planDirectory, out string? failure, CancellationToken cancellationToken = default)
+    {
+        string indexFile = NewPrivateIndex(workspace, cancellationToken, out failure);
+        if (failure is not null)
+        {
+            return null;
+        }
+
+        try
+        {
+            SegmentStaging.StageAll(workspace, indexFile, cancellationToken);
+            string tree = ScopeGit.Run(workspace, indexFile, ["write-tree"], cancellationToken).Trim();
+            return new ScopeDiffBase(workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            TryDelete(indexFile);
+            failure = $"git could not snapshot the workspace before the attempt ({ex.Message})";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A serial base over a snapshot tree an EARLIER process journaled (#816 review, Q2b): an attempt that never
+    /// ended — the harness was killed, crashed, or the host slept — left its snapshot in <c>run.json</c>, and the
+    /// resumed task diffs the workspace against it before its next attempt starts. Null (with
+    /// <paramref name="failure"/>) when git cannot set up the private index or no longer has the tree.
+    /// </summary>
+    public static ScopeDiffBase? TryFromSerialTree(
+        string workspace, string planDirectory, string tree, out string? failure)
+    {
+        string indexFile = NewPrivateIndex(workspace, CancellationToken.None, out failure);
+        if (failure is not null)
+        {
+            return null;
+        }
+
+        try
+        {
+            ScopeGit.Run(workspace, indexFile, ["cat-file", "-e", tree + "^{tree}"]);
+            return new ScopeDiffBase(workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            TryDelete(indexFile);
+            failure = $"the journaled snapshot tree {tree} is no longer readable ({ex.Message})";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A private index file under the system temp dir, seeded from the real index for SPEED only (the stat cache):
+    /// whatever the real index holds is overwritten by the staging for every path it covers, and nothing but this
+    /// class ever touches the copy.
+    /// </summary>
+    private static string NewPrivateIndex(string workspace, CancellationToken cancellationToken, out string? failure)
     {
         string indexFile = Path.Combine(Path.GetTempPath(), $"gr-scope-index-{Guid.NewGuid():N}");
         try
         {
-            string realIndex = Path.GetFullPath(
-                Path.Combine(workspace, Git(workspace, indexFile: null, "rev-parse", "--git-path", "index").Trim()));
+            string realIndex = Path.GetFullPath(Path.Combine(
+                workspace, ScopeGit.Run(workspace, null, ["rev-parse", "--git-path", "index"], cancellationToken).Trim()));
             if (File.Exists(realIndex))
             {
-                // Seeded for SPEED only (the stat cache): whatever the real index holds is overwritten by the
-                // staging below for every path it covers, and the excluded paths stay identical between the two
-                // snapshots because nothing but this class ever touches this private copy.
                 File.Copy(realIndex, indexFile, overwrite: true);
             }
 
-            SegmentStaging.StageAll(workspace, indexFile);
-            string tree = Git(workspace, indexFile, "write-tree").Trim();
-            return new ScopeDiffBase(workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory));
+            failure = null;
+            return indexFile;
         }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or IOException
-                                      or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             TryDelete(indexFile);
-            return null;
+            failure = $"git could not prepare a private index ({ex.Message})";
+            return indexFile;
         }
     }
 
     /// <summary>
     /// The plan's harness-written directories as workspace-relative prefixes, when the plan folder sits inside
     /// the workspace: <c>logs/</c> (every attempt's artifacts, written while the attempt runs) and <c>state/</c>
-    /// (<c>run.json</c>, <c>state.json</c>). Empty when the plan folder lives elsewhere.
+    /// (<c>run.json</c>, <c>state.json</c>). Empty when the plan folder lives elsewhere. Both endpoints are
+    /// canonicalised (<see cref="RealPath.Resolve"/>) first, as <c>TaskExecutor.ResolveWorkingDirectory</c> does, so
+    /// a symlinked temp root (macOS <c>/var</c> → <c>/private/var</c>) cannot make a nested plan folder look
+    /// outside the workspace.
     /// </summary>
     internal static IReadOnlyList<string> PlanOwnedPrefixes(string workspace, string planDirectory)
     {
-        string relative = Path.GetRelativePath(Path.GetFullPath(workspace), Path.GetFullPath(planDirectory))
+        string relative = Path.GetRelativePath(
+                RealPath.Resolve(Path.GetFullPath(workspace)), RealPath.Resolve(Path.GetFullPath(planDirectory)))
             .Replace('\\', '/');
         if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative))
         {
@@ -155,40 +211,5 @@ public sealed class ScopeDiffBase : IDisposable
         {
             // Best-effort: a stray temp file is harmless.
         }
-    }
-
-    /// <summary>Run git with an optional private index, failing closed (throws) on a non-zero exit.</summary>
-    internal static string Git(string workingDir, string? indexFile, params string[] args)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        if (indexFile is not null)
-        {
-            psi.Environment["GIT_INDEX_FILE"] = indexFile;
-        }
-
-        foreach (string arg in args)
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        using var proc = Process.Start(psi)!;
-        Task<string> stderr = proc.StandardError.ReadToEndAsync();
-        string stdout = proc.StandardOutput.ReadToEnd();
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git {string.Join(" ", args)} (in {workingDir}) exited {proc.ExitCode}: {stderr.Result.Trim()}");
-        }
-
-        return stdout;
     }
 }

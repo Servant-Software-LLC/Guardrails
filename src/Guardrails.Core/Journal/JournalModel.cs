@@ -672,6 +672,20 @@ public sealed record TaskJournalEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public InFlightAttemptRecord? InFlightAttempt { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>tasks.&lt;id&gt;.scopeSnapshotTree</c> (issue #816): the git tree id of the serial-mode write-scope
+    /// snapshot taken as this task's CURRENT attempt started — present only while that attempt has not ended
+    /// normally. An attempt that ends (settled, retried, cancelled) clears it after its own end-of-attempt check; a
+    /// value that survives into a later process therefore marks an attempt that never ended — the harness was
+    /// killed, crashed, or the host slept — and the resumed task diffs the workspace against it (reverting and
+    /// reporting out-of-scope changes) before its next attempt starts. Deliberately NOT on
+    /// <see cref="InFlightAttempt"/>: the resume rules drop that marker at load (it belongs to the previous
+    /// process), which is exactly when this is needed. ABSENT in worktree mode, when no snapshot was taken, and in
+    /// every journal written before this field existed — a resume then simply skips the check.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScopeSnapshotTree { get; init; }
 }
 
 /// <summary>

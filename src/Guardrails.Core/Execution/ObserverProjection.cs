@@ -316,6 +316,35 @@ public sealed class ObserverProjection : IRunObserver
         _inner.OutOfScopeStripped(task, stripped);
     }
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "WriteScopeNotChecked",
+            ["taskId"] = task.Id,
+            ["attempt"] = attempt,
+            ["reason"] = reason
+        });
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+    }
+
+    public void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths)
+    {
+        var reverted = new JsonArray();
+        foreach (WriteScopeOffense offense in paths)
+        {
+            reverted.Add(JsonValue.Create(offense.Path));
+        }
+
+        Append(new JsonObject
+        {
+            ["member"] = "InterruptedAttemptScopeReverted",
+            ["taskId"] = task.Id,
+            ["revertedPaths"] = reverted
+        });
+        _inner.InterruptedAttemptScopeReverted(task, paths);
+    }
+
     public void DecisionRecorded(DecisionEntry entry)
     {
         Append(new JsonObject

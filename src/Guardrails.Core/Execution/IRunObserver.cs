@@ -189,6 +189,21 @@ public interface IRunObserver
     void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
 
     /// <summary>
+    /// Issue #816 review (WEAK 6): this attempt's <c>writeScope</c> was NOT fully checked or enforced — the serial
+    /// snapshot could not be taken, the end-of-attempt check hit a git error, or a revert failed — for
+    /// <paramref name="reason"/>. Also stated in the attempt's summary and <c>write-scope-check.log</c>; raised here
+    /// so it reaches the console as it happens rather than only a file. Default no-op.
+    /// </summary>
+    void WriteScopeNotChecked(TaskNode task, int attempt, string reason) { }
+
+    /// <summary>
+    /// Issue #816: out-of-scope changes were reverted OUTSIDE an ordinary attempt — a resumed task found them
+    /// against the snapshot journaled by an attempt that never ended (the harness was killed, crashed, or the host
+    /// slept). <paramref name="paths"/> are the reverted paths. Default no-op.
+    /// </summary>
+    void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths) { }
+
+    /// <summary>
     /// An autonomy-policy decision was recorded to the unified <c>decisions[]</c> log (SSOT §2.1/§7): the
     /// <paramref name="entry"/> carries the <c>boundary</c> (M1 emits only <c>drift</c> — a safe
     /// definition-drift auto-resolved at the pre-DAG gate, §7.2), the policy in force, how it resolved, and

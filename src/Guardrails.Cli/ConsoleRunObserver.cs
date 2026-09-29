@@ -165,6 +165,26 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        lock (_gate)
+        {
+            // #816 review WEAK 6: a scope check that could not run must be said where the operator is looking.
+            _output.WriteLine($"  [write-scope] {task.Id}: attempt {attempt} — write scope NOT checked: {reason}");
+        }
+    }
+
+    public void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths)
+    {
+        lock (_gate)
+        {
+            string list = string.Join(", ", paths.Select(o => $"{o.Status} {o.Path}"));
+            _output.WriteLine(
+                $"  [write-scope] {task.Id}: an attempt interrupted in an earlier run left {paths.Count} change(s) " +
+                $"outside its writeScope; reverted before resuming (copy kept in the task's log dir): {list}");
+        }
+    }
+
     public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)

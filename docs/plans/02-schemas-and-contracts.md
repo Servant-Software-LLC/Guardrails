@@ -1233,7 +1233,28 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   verdict or written. The plan's own `logs/` and `state/` (when the plan folder is inside the workspace) are
   dropped from that diff by prefix (git refuses an exclude pathspec naming a `.gitignore`d directory). Phase 2
   (the post-guardrail strip) and #707 rule 2 (commit trailers) stay worktree-only: serial mode commits nothing per
-  task. **The limit:** the snapshot needs the workspace to be the top level of a git work tree. Where it is not,
+  task. **Raw bytes (review Q3):** every git call on the private index runs with `core.autocrlf=false` and
+  `--attr-source=<empty tree>` (git 2.40+; omitted on an older git, where a `.gitattributes` conversion can still
+  apply), so the snapshot hashes, and a revert writes back, exactly the bytes that were on disk. Every scope git
+  call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to
+  its end first deadlocked once `core.autocrlf=true` line-ending warnings filled the stderr pipe, ~35 files), adds
+  `core.safecrlf=false` and `core.quotePath=false`, lists changes with `-z`, hands git at most 100 paths per
+  child, and is bounded by a timeout plus the attempt's cancellation. **Shared checkout (review Q1):** editing the
+  checkout during a serial run is NOT supported but is LOUD — `guardrails run` prints a run-start `Note:` that
+  anything changing during an attempt outside the running task's writeScope is reverted whoever changed it (bytes
+  kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
+  writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
+  **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
+  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert and append the
+  `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths to their summary.
+  **Interrupted attempts (review Q2b):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7) when
+  the attempt starts and cleared when it ends; a value found at the next task start marks an attempt that never
+  ended (kill, crash, host sleep), and the task diffs the workspace against it first — reverting, keeping a copy in
+  the task's log dir, and handing `interrupted-attempt-scope.md` to its first attempt as previous-attempt feedback
+  (not fed to #707's repeat rule). `guardrails reset` drops it. **Loud when not checked (review WEAK 6):** a
+  snapshot that fails, an end-of-attempt git error or a failed revert is reported on the console
+  (`IRunObserver.WriteScopeNotChecked`), in `write-scope-check.log` and in the attempt summary
+  (`write scope NOT checked this attempt: <reason>`). **The limit:** the snapshot needs the workspace to be the top level of a git work tree. Where it is not,
   no retrospective check runs, and that is LOUD: `guardrails run` prints a run-start `Note:` line, and each
   attempt's log dir carries `write-scope-check.log` saying the scope was NOT checked and why. The write-time hook
   below still applies there.
@@ -2995,6 +3016,11 @@ fails the write, loudly, with a message naming the likely cause.
       // reset, block, or resume load — a marker from a previous process describes an attempt nobody runs).
       // ABSENT (never null noise) whenever nothing is in flight — which is the shape of this example task,
       // shown populated here only to document it — and in every journal written before the field existed.
+      // #816: "scopeSnapshotTree": "<tree sha>" — OPTIONAL, serial mode only: the write-scope snapshot of the
+      //   task's current attempt (§3.4), set when it starts and removed when it ends. Kept by the resume load
+      //   (unlike inFlightAttempt), because a value surviving into a later process marks an attempt that never
+      //   ended; the resumed task reconciles the workspace against it first. Dropped by `guardrails reset`.
+      //   ABSENT otherwise and in older journals, which then skip that check.
       "inFlightAttempt": {
         "attempt": 4,               // the JOURNAL number: one past the highest recorded attempt, so it continues
                                     //   across resumes and `guardrails reset`. The same N as this attempt's

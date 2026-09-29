@@ -738,7 +738,8 @@ public static class RetryPolicy
     /// </param>
     public static string ForWriteScopeViolation(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck,
-        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null, string? outOfScopePatchPath = null)
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null, string? outOfScopePatchPath = null,
+        bool sharedWorkspace = false)
     {
         // #705: whether the attempt left ANY in-scope work is the check's own fact, not the snapshot's — a snapshot
         // taken after the revert can be non-empty with nothing of the agent's in it. With no in-scope change there
@@ -753,6 +754,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
         AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
 
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
@@ -817,7 +819,8 @@ public static class RetryPolicy
     /// </param>
     /// <param name="actionKind">A prompt action is also shown the needsHuman door.</param>
     public static string ForOutOfScopeWritesReverted(
-        WriteScopeCheckResult scopeCheck, string? outOfScopePatchPath, bool reverted, ActionKind actionKind)
+        WriteScopeCheckResult scopeCheck, string? outOfScopePatchPath, bool reverted, ActionKind actionKind,
+        bool sharedWorkspace = false)
     {
         if (scopeCheck.OffendingPaths.Count == 0)
         {
@@ -828,12 +831,13 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("## Out-of-scope writes were reverted");
         text.AppendLine();
-        text.AppendLine("This attempt also changed the path(s) below, which fall OUTSIDE this task's writeScope. The harness");
+        text.AppendLine("The path(s) below changed during this attempt and fall OUTSIDE this task's writeScope. The harness");
         text.AppendLine("checks the scope at the end of EVERY attempt, however the attempt ends, and a change outside it is");
         text.AppendLine(reverted
             ? "never carried forward: these were REVERTED to their pre-attempt content before this retry."
             : "never carried forward — but reverting these failed, so they are still on disk. Restore each to its pre-attempt content first.");
         AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
         text.AppendLine();
@@ -858,6 +862,26 @@ public static class RetryPolicy
         }
 
         return text.ToString();
+    }
+
+    /// <summary>
+    /// #816 review Q1: in SERIAL mode the attempt ran in the operator's own checkout, where anything that changed while
+    /// it ran counts as changed "during the attempt" — including an edit a person or another process made. Editing that
+    /// checkout during a serial run is not supported, but the text must not blame the agent for what it may not have
+    /// done. Worktree mode appends nothing: a segment is the agent's alone.
+    /// </summary>
+    private static void AppendSharedWorkspaceCaveat(StringBuilder text, bool sharedWorkspace)
+    {
+        if (!sharedWorkspace)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine("This run is serial: the attempt ran in the operator's own checkout, so the list above is every path that");
+        text.AppendLine("changed while it ran, outside the writeScope — it may include edits made outside the agent (by a person or");
+        text.AppendLine("another process in this checkout). Editing this checkout during a serial run is not supported; such edits");
+        text.AppendLine("are reverted like the agent's, and their bytes are kept in the copy named below.");
     }
 
     /// <summary>
@@ -936,7 +960,7 @@ public static class RetryPolicy
     /// </param>
     public static string ForWriteScopeGapHalt(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null,
-        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null)
+        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null, bool sharedWorkspace = false)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
         IReadOnlyList<string> tests = RepeatedTests(gap);
@@ -982,6 +1006,8 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
         AppendOffenses(text, scopeCheck.OffendingPaths, gap);
+        // #816 review Q1: in serial mode the repeat may be an edit made outside the agent — say so before anyone acts.
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
         text.AppendLine();
