@@ -390,6 +390,7 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.ContextExhausted,
                     ContextManagement = thrashing,
+                    Compactions = result.Compactions,
                     BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
                     RefusedCommands = permissionScanner?.RefusedCommands ?? [],
                     Summary =
@@ -420,6 +421,7 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Stalled,
                     ContextManagement = result.CompactionFailure,
+                    Compactions = result.Compactions,
                     Stall = new StallReport(stall.Bound, silentFor, stall.SuspendsObserved, stall.Beats),
                     Summary =
                         $"STALLED — no progress (model output, reasoning, a tool call, heartbeat or result) for {silentFor.TotalMinutes:F1}m " +
@@ -458,6 +460,7 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Error,
                     ContextManagement = result.CompactionFailure,
+                    Compactions = result.Compactions,
                     BlockedWritePaths = permissionScanner.BlockedWritePaths,
                     RefusedCommands = permissionScanner.RefusedCommands,
                     Summary =
@@ -510,6 +513,7 @@ internal static class StreamJsonCliSession
 
                 // #811: a failed compaction, carried whatever the outcome; the harness names it on a failed attempt.
                 ContextManagement = result.CompactionFailure,
+                Compactions = result.Compactions,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
                 RefusedCommands = permissionScanner?.RefusedCommands ?? [],

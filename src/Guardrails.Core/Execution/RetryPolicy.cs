@@ -1807,6 +1807,18 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The previous attempt filled the model's context faster than it could be compacted, so it was");
         text.AppendLine("stopped. On this attempt, keep what you read small:");
+        AppendKeepContextSmall(text, fileWritesRolledBack, salvageRef);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #800 / #817: the bounded-read advice both context diagnoses give (the retry must carry less), then the
+    /// rollback-aware line on where the previous attempt's partial work is.
+    /// </summary>
+    private static void AppendKeepContextSmall(StringBuilder text, bool fileWritesRolledBack, SalvageRef? salvageRef)
+    {
         text.AppendLine();
         text.AppendLine("- Read files with the Read tool, and pass an offset and a limit for anything long. Do NOT print whole");
         text.AppendLine("  files through Bash (`cat`, `type`, `Get-Content`).");
@@ -1828,10 +1840,6 @@ public static class RetryPolicy
         {
             text.AppendLine("Its PARTIAL WORK is preserved in your workspace: continue from it rather than starting over.");
         }
-
-        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
-        AppendSalvageSection(text, salvageRef);
-        return text.ToString();
     }
 
     /// <summary>The heading <see cref="ForContextExhausted"/> uses (pinned by tests).</summary>
@@ -1857,6 +1865,47 @@ public static class RetryPolicy
             : "Set the runner block's contextTokens toward the backend's per-slot window";
         return $"{raise}, split the task into smaller ones, or {Narrow}.";
     }
+
+    /// <summary>
+    /// #817: what an attempt diagnosed as CONTEXT THRASH (<see cref="ContextThrash"/>) is told, in place of the
+    /// max-turns, timeout, stall or action-failure text its failure kind would otherwise get. Those texts blame the
+    /// budget ("the harness has RAISED the turn budget"); here the budget was spent re-reading what compaction dropped,
+    /// so more of it would only compact more, and the harness did not raise it. Rollback-aware, with the salvage section,
+    /// like <see cref="ForContextExhausted"/>, whose bounded-read advice it shares.
+    /// </summary>
+    public static string ForContextThrash(
+        TaskNode task, int attempt, ContextThrash thrash, Prompts.PromptFailureKind failureKind, PromptRunnerConfig? block,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
+    {
+        string ended = failureKind switch
+        {
+            Prompts.PromptFailureKind.MaxTurns => "ran out of turns",
+            Prompts.PromptFailureKind.Timeout => "timed out",
+            Prompts.PromptFailureKind.Stalled => "went silent and was stopped",
+            _ => "failed"
+        };
+
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        text.AppendLine(ContextThrashHeading);
+        text.AppendLine();
+        text.AppendLine($"The previous attempt {ended} after its context was compacted over and over ({thrash.Describe()}).");
+        text.AppendLine("Each compaction drops the files you had read, so the attempt kept re-reading them. That, not the turn");
+        text.AppendLine("budget or the clock, is what used up the attempt: more turns or more time would only compact more, so the");
+        text.AppendLine("harness has NOT raised either for this attempt. On this attempt, keep what you read small:");
+        AppendKeepContextSmall(text, fileWritesRolledBack, salvageRef);
+        text.AppendLine();
+        text.AppendLine("If the task cannot be done without holding more than the context fits (it needs several large files");
+        text.AppendLine("open at once), STOP and write {\"needsHuman\": \"context thrash: <what does not fit>\"} to");
+        text.AppendLine("GUARDRAILS_STATE_OUT rather than burning another attempt. The operator's levers, not yours to change:");
+        text.AppendLine(ContextLevers(block));
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForContextThrash"/> uses (pinned by tests).</summary>
+    internal const string ContextThrashHeading = "## CONTEXT THRASH: the attempt spent its budget re-reading what compaction dropped";
 
     /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
     internal const string StallHeading = "## The session went silent and was stopped";

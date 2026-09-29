@@ -333,14 +333,17 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // A timeout outcome means the task needed more clock; count it so the NEXT attempt's
             // timeout is extended (issue #119) — a same-clock retry just re-times-out.
-            if (attempt.Outcome is AttemptOutcome.Timeout)
+            // #817: except when the attempt was diagnosed as CONTEXT THRASH (here and for max-turns below): its budget was
+            // spent re-reading what compaction dropped, so more clock or more turns would only compact more. The #800
+            // precedent: a context-exhausted attempt never extends the clock either.
+            if (attempt.Outcome is AttemptOutcome.Timeout && !attempt.ContextThrash)
             {
                 timeoutRetries++;
             }
 
             // A max-turns outcome means the task needed more TURNS; count it so the NEXT attempt's
             // turn budget is raised (issue #129 / #94) — a same-budget retry just re-exhausts.
-            if (attempt.Outcome is AttemptOutcome.MaxTurns)
+            if (attempt.Outcome is AttemptOutcome.MaxTurns && !attempt.ContextThrash)
             {
                 maxTurnsRetries++;
             }
@@ -1260,9 +1263,10 @@ public sealed class TaskExecutor : ITaskExecutor
         // #782 §4: the gateway facts ride the SAME fold (one `with`, for the reason given above), and widen its guard
         // the same way the digest did — a gateway dispatch whose stream echoed no model must still record which
         // gateway, and which backend, served it.
+        // #817: the compaction counts ride the same fold, for the same reason — facts the runner learned after launch.
         string? observedModel = action.ObservedModel;
         if (provenance is { } launched
-            && (observedModel is { } || action.ModelDigest is { } || action.Gateway is { }))
+            && (observedModel is { } || action.ModelDigest is { } || action.Gateway is { } || action.Compactions is { }))
         {
             provenance = launched with
             {
@@ -1272,7 +1276,11 @@ public sealed class TaskExecutor : ITaskExecutor
                     : launched.RequestedModel,
                 ModelDigest = action.ModelDigest ?? launched.ModelDigest,
                 Gateway = action.Gateway ?? launched.Gateway,
-                BackendModel = action.BackendModel ?? launched.BackendModel
+                BackendModel = action.BackendModel ?? launched.BackendModel,
+                Compactions = action.Compactions?.Compactions ?? launched.Compactions,
+                CompactionFailures = action.Compactions is { Failures: > 0 } counts
+                    ? counts.Failures
+                    : launched.CompactionFailures
             };
 
             // Re-mirror it, for the reason the judge fold re-mirrors below: on the guardrail-FAILED path
@@ -1769,7 +1777,14 @@ public sealed class TaskExecutor : ITaskExecutor
             (bool fileWritesRolledBack, SalvageRef? salvageRef) =
                 StashIfRollingBack(task, worktree, attemptNumber, isFinal);
 
-            string feedback = action.FailureKind switch
+            // #817: an attempt that compacted heavily for its turns is CONTEXT THRASH, whatever budget it hit, and its own
+            // feedback, summary and (in the loop above) no budget raise replace the budget-blaming ones below.
+            ContextThrash? thrash = ContextThrash.Diagnose(action);
+            string feedback = thrash is not null
+                ? RetryPolicy.ForContextThrash(
+                      task, attemptNumber, thrash, action.FailureKind, DispatchBlockFor(task, route), fileWritesRolledBack, salvageRef)
+                  + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls)
+                : action.FailureKind switch
             {
                 // #778: the kind-specific texts do not carry the action's own feedback, so a call the session was
                 // still running when it was stopped is named here (neutrally — it was cut off, not refused).
@@ -1790,7 +1805,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // #811: a context-management failure (a compaction that failed) is named whatever the failure kind:
             // it explains a stall, a timeout or an error alike, and the remedy (carry less) is the same.
-            if (action.FailureKind != PromptFailureKind.ContextExhausted)
+            if (action.FailureKind != PromptFailureKind.ContextExhausted && thrash is null)
             {
                 feedback += RetryPolicy.ForContextManagement(action.ContextManagement);
             }
@@ -1811,7 +1826,9 @@ public sealed class TaskExecutor : ITaskExecutor
             };
 
             string cause = ActionFailureCause(action);
-            string summary = action.FailureKind switch
+            string summary = thrash is not null
+                ? $"{cause} — {thrash.SummaryClause(DispatchBlockFor(task, route))} Guardrails skipped."
+                : action.FailureKind switch
             {
                 PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",
                 PromptFailureKind.MaxTurns => $"{cause}; turn budget auto-raised for retry; guardrails skipped",
@@ -1847,7 +1864,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 with
                 {
                     SilentStall = action.FailureKind == PromptFailureKind.Stalled && action.Stall is { NoProgressAtAll: true },
-                    ContextExhausted = action.FailureKind == PromptFailureKind.ContextExhausted
+                    ContextExhausted = action.FailureKind == PromptFailureKind.ContextExhausted,
+                    ContextThrash = thrash is not null
                 };
         }
 

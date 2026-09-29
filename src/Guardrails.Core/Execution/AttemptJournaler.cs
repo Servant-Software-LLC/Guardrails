@@ -1018,4 +1018,6 @@ internal sealed record AttemptResult(
     string? ActionOutputFingerprint = null,
     string? TransientResetHint = null,
     bool SilentStall = false,
-    bool ContextExhausted = false);
+    bool ContextExhausted = false,
+    // #817: the failed action was diagnosed as context thrash, so the loop raises neither its turn budget nor its clock.
+    bool ContextThrash = false);
