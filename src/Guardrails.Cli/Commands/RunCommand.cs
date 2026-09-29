@@ -483,6 +483,17 @@ public static class RunCommand
             io.Out.WriteLine($"Note: {withheld}");
         }
 
+        // #816: a serial run checks every attempt's writeScope against a git snapshot of the workspace. Where there is
+        // no git work tree rooted at the workspace that check cannot run; say so at the start rather than let the
+        // scope go unenforced without a word (each attempt's log dir repeats it in write-scope-check.log).
+        if (!worktreeMode && ScopeDiffBase.SerialUnavailableReason(probe.Plan.Workspace) is { } scopeUnchecked)
+        {
+            io.Out.WriteLine(
+                $"Note: writeScope will NOT be checked when attempts end — {scopeUnchecked}. Only an out-of-scope " +
+                "Write/Edit on a hook-capable runner is refused; run from the top level of a git repository to have " +
+                "every attempt checked.");
+        }
+
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
         // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):

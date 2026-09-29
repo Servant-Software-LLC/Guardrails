@@ -273,7 +273,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   in-worktree write, #464; adding a spelling is a data change, not a control-flow one) + a `containment-settings.json` into the attempt's log dir (never
   inside the segment — must not pollute `git status`); `ActionRunner`/`GuardrailRunner` append
   `--settings <path>` to `PromptRunnerSettings.ExtraArgs` ONLY when a real segment worktree is
-  present (`worktreeRoot` param non-null; null in serial mode — no `--settings` there). The hook's
+  present (`worktreeRoot` param non-null; null in serial mode — where, since #816, a prompt ACTION still gets
+  `--settings` for the write-scope hook alone). The hook's
   path-escape decision REUSES `WorkspaceContainment.Escapes`'s rule (re-expressed in shell/PowerShell
   since the hook runs as a Claude-spawned OS process, not a .NET callback) — any future change to the
   escape rule must be made in `WorkspaceContainment.Escapes` (unit-tested) AND both script templates
@@ -284,6 +285,16 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   a `## Worktree safety` advisory section with the stash-free alternative. `WorktreeContainmentHookWiringTests`
   (Integration.Tests) proves the end-to-end plumbing (settings file generated + `--settings` actually
   reaches a fake-CLI's argv) through a real worktree-mode run.
+- **Write-scope hook + end-of-attempt check (`WriteScopeHook`, `ScopeDiffBase`, issue #816, SSOT §3.4/§9.4)**:
+  the scope test in the hook scripts is NEVER a second glob implementation — `WriteScope.ToAnchoredPatterns`
+  compiles `IsInScope`'s rule to anchored ERE/.NET-common patterns and the scripts only apply them
+  (`WriteScopePatternTests` pins agreement, including a seeded generative corpus); a change to the matcher must
+  keep that test green. Worktree mode composes the hook into `containment-settings.json` (one `--settings`);
+  serial mode writes `write-scope-settings.json` alone. The retrospective check takes a `ScopeDiffBase`: the
+  segment's taskBase in worktree mode, or in serial mode a per-attempt snapshot tree staged through a PRIVATE
+  `GIT_INDEX_FILE` (never the operator's index) — the plan's `logs/`/`state/` are dropped by PREFIX in
+  `WriteScopeCheck.Check`, NOT by an exclude pathspec (git refuses an exclude naming a `.gitignore`d dir, which
+  faulted the whole run when tried). `WriteScopeHookTests` runs the real generated script like the containment tests.
 - **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
   injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
   `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches

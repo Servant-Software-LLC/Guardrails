@@ -147,19 +147,85 @@ public static class WriteScope
         return false;
     }
 
+    /// <summary>
+    /// Issue #816: <see cref="IsInScope"/>'s rule compiled to anchored regular expressions, one or two per scope
+    /// entry, for the write-scope PreToolUse hook (<c>Prompts.WriteScopeHook</c>), which runs as a bash or
+    /// PowerShell script and so cannot call this class. A workspace-relative, forward-slashed path is in scope
+    /// exactly when some pattern matches it CASE-INSENSITIVELY (the matcher's <c>OrdinalIgnoreCase</c>). The
+    /// translation lives HERE, beside the matcher, so the scripts carry data rather than a second glob
+    /// implementation; <c>WriteScopePatternTests</c> proves the two agree over a corpus.
+    /// <para>The dialect is the common subset of POSIX ERE (bash <c>[[ =~ ]]</c>) and .NET regex: literal
+    /// characters escaped with a backslash, <c>[^/]</c>, <c>*</c>, <c>+</c>, groups and anchors — nothing else.
+    /// A segment <c>**</c> is ONE or more whole segments; <c>*</c> inside a segment is any run of non-<c>/</c>
+    /// characters. The directory/file normalisation and the #262 dotfile-literal arm are the matcher's own.</para>
+    /// </summary>
+    public static IReadOnlyList<string> ToAnchoredPatterns(IReadOnlyList<string> scope)
+    {
+        var patterns = new List<string>();
+        foreach (string glob in scope)
+        {
+            if (IsDotfileLiteralEntry(glob))
+            {
+                patterns.Add("^" + EscapeForPattern(glob) + "$");
+            }
+
+            string[] segments = Normalize(glob).Split('/');
+            var pattern = new System.Text.StringBuilder("^");
+            for (int i = 0; i < segments.Length; i++)
+            {
+                if (i > 0)
+                {
+                    pattern.Append('/');
+                }
+
+                pattern.Append(segments[i] == "**"
+                    ? "[^/]+(/[^/]+)*"
+                    : string.Join("[^/]*", segments[i].Split('*').Select(EscapeForPattern)));
+            }
+
+            patterns.Add(pattern.Append('$').ToString());
+        }
+
+        return patterns;
+    }
+
+    /// <summary>
+    /// Backslash-escape every character that is special in POSIX ERE or .NET regex outside a bracket expression,
+    /// so <paramref name="literal"/> matches itself in both (issue #816). <c>]</c> and <c>}</c> are literal in both
+    /// outside a bracket or a bound, and escaping them is undefined in POSIX ERE, so they are left alone.
+    /// </summary>
+    public static string EscapeForPattern(string literal)
+    {
+        var escaped = new System.Text.StringBuilder(literal.Length * 2);
+        foreach (char c in literal)
+        {
+            if (c is '\\' or '.' or '^' or '$' or '|' or '?' or '*' or '+' or '(' or ')' or '[' or '{')
+            {
+                escaped.Append('\\');
+            }
+
+            escaped.Append(c);
+        }
+
+        return escaped.ToString();
+    }
+
+    // #262's dotfile-literal precondition, without the path comparison (MatchesDotfileLiteral below applies it).
+    private static bool IsDotfileLiteralEntry(string glob)
+    {
+        if (glob.Contains('*') || glob.EndsWith('/')) return false;
+        int lastSlash = glob.LastIndexOf('/');
+        string lastSeg = lastSlash >= 0 ? glob[(lastSlash + 1)..] : glob;
+        return lastSeg.StartsWith('.') && !HasFileExtension(lastSeg);
+    }
+
     // #262: true when <paramref name="glob"/> is a bare (no-'*', no trailing-slash) entry whose FINAL
     // segment is a leading-dot dotfile with no interior extension (so Normalize misclassifies it as a
     // directory), AND <paramref name="path"/> equals it exactly under the matcher's OrdinalIgnoreCase
     // rule. A dotfile that DOES carry an interior extension ('.env.local') is already normalised as a
     // file literal by Normalize, so it needs no special arm here.
-    private static bool MatchesDotfileLiteral(string glob, string path)
-    {
-        if (glob.Contains('*') || glob.EndsWith('/')) return false;
-        int lastSlash = glob.LastIndexOf('/');
-        string lastSeg = lastSlash >= 0 ? glob[(lastSlash + 1)..] : glob;
-        if (!lastSeg.StartsWith('.') || HasFileExtension(lastSeg)) return false;
-        return string.Equals(path, glob, Cmp);
-    }
+    private static bool MatchesDotfileLiteral(string glob, string path) =>
+        IsDotfileLiteralEntry(glob) && string.Equals(path, glob, Cmp);
 
     /// <summary>Returns true if any path exists that is claimed by both <paramref name="a"/> and <paramref name="b"/>.</summary>
     public static bool Overlaps(IReadOnlyList<string> a, IReadOnlyList<string> b)

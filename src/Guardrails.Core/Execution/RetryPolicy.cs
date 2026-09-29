@@ -607,11 +607,11 @@ public static class RetryPolicy
         //
         // The reason the write-side verbs stay out is REACH, not enforcement: reading a blob and writing
         // it back with the editing tool is the only per-file route available to a plan whose allowedTools
-        // grant no git WRITE verbs. It is NOT more strongly enforced than a git write — neither route is
-        // checked against writeScope at write time. `WriteScope.IsInScope` is consulted in exactly three
-        // places: `HarnessWrite` (the harness's OWN write), `StagingMover` (a path match) and the
-        // RETROSPECTIVE `WriteScopeCheck`; `WorktreeContainmentHook` enforces worktree containment only.
-        // Whichever route the agent takes, the same retroactive check over the FINAL state catches it.
+        // grant no git WRITE verbs. Since #816 the editing-tool route IS checked against writeScope at write
+        // time (the `WriteScopeHook` PreToolUse hook, compiled from `WriteScope.ToAnchoredPatterns`), while a
+        // git or other Bash write is not; `WorktreeContainmentHook` still enforces worktree containment only.
+        // Whichever route the agent takes, the same retrospective `WriteScopeCheck` catches it — and since #816
+        // that check runs at the end of EVERY attempt, not only one whose action succeeded.
         if (patchPath is not null)
         {
             text.AppendLine($"- A few changed lines in a file that already existed — READ THE PATCH: `{patchPath}`.");
@@ -796,6 +796,67 @@ public static class RetryPolicy
         }
 
         AppendSalvageSection(text, offeredSalvage);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Issue #816: the section appended to the feedback of an attempt that ended WITHOUT reaching the write-scope
+    /// check's ordinary place (after a successful action) — a timeout, a turn cap, a failed action, a staging failure,
+    /// a rejected fragment or harness write — when that attempt had changed paths outside the scope. The harness
+    /// ran the same check at the attempt's end instead, kept a copy of the offending bytes (#705) and reverted them,
+    /// so whatever the next attempt continues from (the serial workspace, or a worktree salvage) no longer holds them.
+    /// Kept in its own section, appended after the failure-specific text, so that text is untouched: the partial
+    /// work it tells the agent to continue from is still there, minus these paths.
+    /// Returns "" when the check found nothing to revert.
+    /// </summary>
+    /// <param name="scopeCheck">The end-of-attempt check; its offending paths are the ones reverted.</param>
+    /// <param name="outOfScopePatchPath">The #705 kept copy, or null when none was written.</param>
+    /// <param name="reverted">
+    /// False only when the revert itself failed (a git error). The paths are then still on disk, and the text says
+    /// so rather than claiming a revert that did not happen.
+    /// </param>
+    /// <param name="actionKind">A prompt action is also shown the needsHuman door.</param>
+    public static string ForOutOfScopeWritesReverted(
+        WriteScopeCheckResult scopeCheck, string? outOfScopePatchPath, bool reverted, ActionKind actionKind)
+    {
+        if (scopeCheck.OffendingPaths.Count == 0)
+        {
+            return "";
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine("## Out-of-scope writes were reverted");
+        text.AppendLine();
+        text.AppendLine("This attempt also changed the path(s) below, which fall OUTSIDE this task's writeScope. The harness");
+        text.AppendLine("checks the scope at the end of EVERY attempt, however the attempt ends, and a change outside it is");
+        text.AppendLine(reverted
+            ? "never carried forward: these were REVERTED to their pre-attempt content before this retry."
+            : "never carried forward — but reverting these failed, so they are still on disk. Restore each to its pre-attempt content first.");
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+        text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
+        text.AppendLine("Do not write those paths again: a change outside the scope is reverted on every attempt, and it fails");
+        text.AppendLine("an attempt that otherwise finishes. Never edit a file another task authored — the tests that grade");
+        text.AppendLine("this task above all — to make it fit your implementation; make your implementation fit it.");
+
+        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
+        {
+            text.AppendLine();
+            text.AppendLine($"Before reverting, the harness kept a copy of those change(s) at `{keptCopy.Replace('\\', '/')}`.");
+            text.AppendLine("That copy is for a human deciding whether this task's writeScope should grow — not for you:");
+            text.AppendLine("re-applying it is reverted again.");
+        }
+
+        if (actionKind == ActionKind.Prompt)
+        {
+            text.AppendLine();
+            text.AppendLine("If this task cannot be done without changing a path outside that scope, do not write it again.");
+            text.AppendLine("Write `{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead, so a human can widen the writeScope in task.json.");
+        }
+
         return text.ToString();
     }
 

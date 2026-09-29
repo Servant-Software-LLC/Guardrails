@@ -77,7 +77,12 @@ public static class SegmentStaging
     /// contract (the write-scope check catches this to fail/keep-open; <see cref="GitWorktreeProvider"/>
     /// lets it propagate as an integration fault, #150).
     /// </summary>
-    public static void StageAll(string repoPath)
+    /// <param name="repoPath">The working tree to stage.</param>
+    /// <param name="indexFile">
+    /// #816: a private <c>GIT_INDEX_FILE</c> to stage into (the serial-mode scope snapshot, <see cref="ScopeDiffBase"/>),
+    /// so the repository's own index is never touched. Null — every other caller — stages the repository's index.
+    /// </param>
+    public static void StageAll(string repoPath, string? indexFile = null)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -89,7 +94,13 @@ public static class SegmentStaging
             StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
             StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
-        foreach (string arg in StageAllArguments())
+        if (indexFile is not null)
+        {
+            psi.Environment["GIT_INDEX_FILE"] = indexFile;
+        }
+
+        IReadOnlyList<string> arguments = StageAllArguments();
+        foreach (string arg in arguments)
         {
             psi.ArgumentList.Add(arg);
         }
@@ -101,7 +112,7 @@ public static class SegmentStaging
         if (proc.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"git {string.Join(" ", StageAllArguments())} (in {repoPath}) exited {proc.ExitCode}: {stderr.Trim()}");
+                $"git {string.Join(" ", arguments)} (in {repoPath}) exited {proc.ExitCode}: {stderr.Trim()}");
         }
     }
 }

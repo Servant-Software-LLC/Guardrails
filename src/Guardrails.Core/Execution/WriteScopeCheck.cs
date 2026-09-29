@@ -32,8 +32,18 @@ public static class WriteScopeCheck
     /// Staging the index is not a content rewrite — no tracked file's bytes change — and the Scheduler's
     /// integration step stages + commits the same tree on the pass path anyway.
     /// </remarks>
-    public static WriteScopeCheckResult Check(string repoPath, string taskBase, IReadOnlyList<string>? scope)
+    public static WriteScopeCheckResult Check(string repoPath, string taskBase, IReadOnlyList<string>? scope) =>
+        Check(ScopeDiffBase.ForSegment(repoPath, taskBase), scope);
+
+    /// <summary>
+    /// <see cref="Check(string, string, IReadOnlyList{string})"/> against any <see cref="ScopeDiffBase"/> (issue
+    /// #816): a segment's taskBase in worktree mode, or the serial-mode snapshot tree staged through a private
+    /// index. One implementation, so the two modes can never disagree about what an offense is.
+    /// </summary>
+    public static WriteScopeCheckResult Check(ScopeDiffBase diffBase, IReadOnlyList<string>? scope)
     {
+        string repoPath = diffBase.RepoPath;
+        string taskBase = diffBase.Base;
         // #389: fail-closed on null — an absent scope is treated as an EMPTY scope (writes nothing
         // allowed), so any change becomes an offense. Previously null was an early PASS = "no check",
         // the silent unbounded-write loophole this closes.
@@ -49,8 +59,9 @@ public static class WriteScopeCheck
             // guardrail's `npm ci` node_modules is uniformly invisible to harness git, so it can never
             // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
             // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
-            SegmentStaging.StageAll(repoPath);
-            diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            SegmentStaging.StageAll(repoPath, diffBase.IndexFile);
+            diffOutput = RunGitWithIndex(
+                repoPath, diffBase.IndexFile, "diff", "--cached", "--name-status", "--no-renames", taskBase);
         }
         catch (InvalidOperationException ex)
         {
@@ -80,7 +91,8 @@ public static class WriteScopeCheck
             char status = statusField.Length > 0 ? statusField[0] : '?';
 
             string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-            if (string.IsNullOrEmpty(path)) continue;
+            // #816: the serial snapshot's harness-owned plan dirs (logs/, state/) are never the agent's write.
+            if (string.IsNullOrEmpty(path) || diffBase.IsHarnessOwned(path)) continue;
 
             if (!WriteScope.IsInScope(path, scope))
             {
@@ -302,8 +314,18 @@ public static class WriteScopeCheck
     /// the attempt or stand in the way of the revert. The WS_2 git-error sentinel is not a path and is skipped.
     /// </summary>
     public static string CaptureOffendingPatch(
-        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths) =>
+        CaptureOffendingPatch(ScopeDiffBase.ForSegment(repoPath, taskBase), offendingPaths);
+
+    /// <summary>
+    /// <see cref="CaptureOffendingPatch(string, string, IReadOnlyList{WriteScopeOffense})"/> against any
+    /// <see cref="ScopeDiffBase"/> (issue #816) — the index <see cref="Check(ScopeDiffBase, IReadOnlyList{string})"/>
+    /// just staged, whichever one that is.
+    /// </summary>
+    public static string CaptureOffendingPatch(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
+        string repoPath = diffBase.RepoPath;
+        string taskBase = diffBase.Base;
         List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
         var batches = new List<string>();
         try
@@ -319,7 +341,7 @@ public static class WriteScopeCheck
                     "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
                 };
                 args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
-                batches.Add(RunGit(repoPath, [.. args]));
+                batches.Add(RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]));
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
@@ -351,9 +373,20 @@ public static class WriteScopeCheck
     /// Membership at base is probed per-path with <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>;
     /// only the offending paths are touched, so a same-attempt in-scope edit survives the revert.
     /// </remarks>
-    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths) =>
+        ScopedRevert(ScopeDiffBase.ForSegment(repoPath, taskBase), offendingPaths);
+
+    /// <summary>
+    /// <see cref="ScopedRevert(string, string, IReadOnlyList{WriteScopeOffense})"/> against any
+    /// <see cref="ScopeDiffBase"/> (issue #816). In serial mode the checkout and the removal go through the
+    /// snapshot's PRIVATE index, so they rewrite the working tree and never the operator's own index.
+    /// </summary>
+    public static void ScopedRevert(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
         if (offendingPaths.Count == 0) return;
+
+        string repoPath = diffBase.RepoPath;
+        string taskBase = diffBase.Base;
 
         var existedAtBase = new List<string>();
         var addedSinceBase = new List<string>();
@@ -370,7 +403,7 @@ public static class WriteScopeCheck
         {
             var args = new List<string> { "checkout", taskBase, "--" };
             args.AddRange(existedAtBase);
-            RunGit(repoPath, [.. args]);
+            RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]);
         }
 
         // Newly-added files: no base blob exists, so git checkout would fail ("did not match any file");
@@ -379,7 +412,7 @@ public static class WriteScopeCheck
         {
             var args = new List<string> { "rm", "-f", "--" };
             args.AddRange(addedSinceBase);
-            RunGit(repoPath, [.. args]);
+            RunGitWithIndex(repoPath, diffBase.IndexFile, [.. args]);
         }
     }
 
@@ -413,7 +446,11 @@ public static class WriteScopeCheck
     // Runs git and FAILS CLOSED on a non-zero exit (WS_2): the caller must never mistake an
     // empty stdout from a failed git invocation for "no changes". Throws so Check can convert
     // the failure into Passed=false and ScopedRevert surfaces a bad revert loudly.
-    private static string RunGit(string workingDir, params string[] args)
+    private static string RunGit(string workingDir, params string[] args) =>
+        RunGitWithIndex(workingDir, indexFile: null, args);
+
+    // #816: the same runner with an optional private GIT_INDEX_FILE (the serial-mode snapshot's index).
+    private static string RunGitWithIndex(string workingDir, string? indexFile, params string[] args)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -426,6 +463,11 @@ public static class WriteScopeCheck
             StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
             StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
+        if (indexFile is not null)
+        {
+            psi.Environment["GIT_INDEX_FILE"] = indexFile;
+        }
+
         foreach (string arg in args) psi.ArgumentList.Add(arg);
         using var proc = Process.Start(psi)!;
         string stdout = proc.StandardOutput.ReadToEnd();
