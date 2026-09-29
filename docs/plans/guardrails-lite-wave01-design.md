@@ -86,3 +86,20 @@ version 1, maxParallelism 4, retries 2, interpreters ps1→pwsh, promptRunners c
 ## Authoring rules every agent MUST follow (from /plan-breakdown — the full skill is in your context)
 Harness-contract header verbatim in every prompt (state key = wave-qualified id `wave-01-contract-and-validate/<folder>`); Scope boundary paragraph in every test-author prompt; pinned test class + method names; `$ErrorActionPreference='Stop'` + `$PSNativeCommandUseErrorActionPreference=$false` opening every .ps1 guardrail and explicit `exit`; `# catches:` line; multi-line failure `if` blocks; #179 re-emit on tests-pass; no `-v q` on dotnet test; `$env:DOTNET_CLI_UI_LANGUAGE='en'`; zero-match guard on executed count, proven to fire; measured baseline counts on required-present clauses (#478); `.md` targets strip `<!-- -->`; committed `samples/` pairs for source-shape code checks honouring `GR_SUBJECT`/argv[0]; `stableId` minted (lowercase base36, unique — prefix yours: A-agent uses `a…`, B `b…`, C `c…`); `writeScope` exactly as the table; one `action.prompt.md` per task; `maxTurns: 75` on 08 (parity closure) and 10 (byte-exact hash port) via `task.json` `"action": {"maxTurns": 75}`.
 Structural claims in prompts: ship the command, not the list (#578). Execute every runnable guardrail against valid+invalid samples in a TEMP dir (#302) and record the results in your hand-back.
+
+## Cross-task APIs (pinned — tests and modules authored by different agents call these)
+**C# — `tests/Guardrails.Integration.Tests/Lite/LiteScriptHost.cs` (task 02), namespace `Guardrails.Integration.Tests.Lite`:**
+- `public static class LiteScriptHost`
+  - `public static string RepoRoot { get; }` — walks up from `AppContext.BaseDirectory` to the dir holding `Guardrails.slnx`.
+  - `public static Task<LiteResult> RunAsync(string scriptName, params string[] args)` — runs `pwsh -NoProfile -File <RepoRoot>/scripts/lite/<scriptName>.ps1 <args>` (scriptName without `.ps1`), 120 s timeout, captures stdout/stderr; parses the LAST non-empty stdout line as JSON.
+  - `public static TempPlan CopyFixture(string group, string name)` — copies `Lite/Fixtures/<group>/<name>/` (from the SOURCE tree under RepoRoot) into a fresh temp dir; `TempPlan : IDisposable` with `string Dir`; Dispose deletes it (strip read-only first).
+  - `public static TempPlan CopyPlan(string repoRelativePlanDir)` — same, for `examples/...` plan folders.
+- `public sealed record LiteResult(int ExitCode, System.Text.Json.JsonElement? Json, string Stdout, string Stderr)` with helper `public IReadOnlyList<string> DiagnosticCodes()` (reads `Json.diagnostics[*].code`, empty if absent).
+- Skip rule: if `pwsh` is not on PATH, tests `Assert.Skip("pwsh not found")` — use `TestShell`'s existing detection pattern (tests/Guardrails.Integration.Tests/TestShell.cs).
+
+**PowerShell — validator modules:**
+- `scripts/lite/validate.ps1 <planDir>` (dispatcher, task 04): `Import-Module Load.psm1`; `$r = Invoke-LiteLoad -PlanDir $planDir` → `@{ Plan = <plan|$null>; Diagnostics = @(...) }`; if `$r.Plan` is non-null, for each of `Graph.psm1`, `Subset.psm1` that EXISTS in `scripts/lite/validate/`, import it and append `Invoke-LiteRules -Plan $r.Plan`. Emit the JSON, exit 1 iff any error.
+- Diagnostic object: `[pscustomobject]@{ code='GR####'; severity='error'|'warning'; message='...'; path=<planDir-relative string or $null> }`.
+- Plan object from `Invoke-LiteLoad`: `[pscustomobject]@{ Root; Config (the parsed guardrails.json, PSCustomObject); Waved (bool); Tasks = @([pscustomobject]@{ Id; Dir; Json (parsed task.json); ActionPath (full path or $null); GuardrailFiles = @(full paths, ordinal by name); PreflightFiles = @(...) }); PlanGuardrailFiles; PlanPreflightFiles }`. Tasks sorted Ordinal by Id.
+- `Graph.psm1` and `Subset.psm1` each export exactly `Invoke-LiteRules -Plan <object>` returning diagnostic objects. Stubs return `@()`.
+- `scripts/lite/lib/Hash.psm1` exports `Get-LitePlanDefinitionHash -PlanDir`, `Get-LiteTaskDefinitionHash -PlanDir -TaskId`, `Get-LiteNarrowPlanHash -PlanDir` (each returns `sha256:<hex>`). Stubs throw `NotImplemented`-style: `throw 'stub'`.
