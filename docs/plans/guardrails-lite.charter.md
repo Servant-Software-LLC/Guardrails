@@ -196,9 +196,10 @@ What a Cursor Lite would be missing, compared with Claude Code Lite:
 | Nesting | subagents can't start subagents | one level of nesting | No loss. (Cursor could run the orchestrator as a subagent, but we keep one design.) |
 | Headless/CLI run | `claude -p` | `cursor-agent`: approval flags differ, and #773 (no-flag shell rejected, yet exits 0) | Lite is interactive-only anyway. It matters only for the execution-parity driver, which runs no model. |
 
-**Recommendation:** v1 targets Claude Code, and Cursor comes next, starting with a spike on the one
-unknown that decides it: does `preToolUse` fire for a subagent's `Write`? Tracked in #824. See the
-`lite-cursor-host` question.
+**Decided (`lite-cursor-host`):** v1 targets Claude Code only. Cursor comes next, starting with a
+spike on the one unknown that decides it: does `preToolUse` fire for a subagent's `Write`? Tracked in
+#824. v1 doesn't build any Cursor glue, but nothing in the kernel may assume Claude Code, so the Cursor
+work stays glue-only.
 
 ### Considered: MCP Apps
 
@@ -326,5 +327,5 @@ Filed as **#824**, which the subset table cites.
   "options": ["Claude Code only in v1; Cursor next, after a spike on subagent hook coverage (#824)", "Both hosts in v1, with the hash lock as Cursor's only guaranteed tamper layer", "Claude Code only; no Cursor plans"],
   "recommended": "Claude Code only in v1; Cursor next, after a spike on subagent hook coverage (#824)",
   "rationale": "The kernel is host-neutral, so Cursor costs only the glue (hooks.json plus a hook that matches both sets of tool names). But two of its gaps weaken the guarantees this plan leads with: a Stop hook that can't block, and an undocumented question about whether preToolUse fires inside subagents. Shipping both in v1 would make the weaker host part of the same promise. A spike answers the subagent question in about an hour, and Cursor then joins with a documented, not guessed, gap list.",
-  "target": "human" }
+  "target": "human", "answer": ["Claude Code only in v1; Cursor next, after a spike on subagent hook coverage (#824)"] }
 :::
