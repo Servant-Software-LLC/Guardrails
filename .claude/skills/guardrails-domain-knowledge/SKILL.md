@@ -434,10 +434,13 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 - **Context thrash (#817, SSOT §9)**: every prompt attempt's compaction EPISODES (not `compacting` status lines,
   which Claude Code repeats while one compaction runs) and failed compactions ride `provenance.compactions` /
   `provenance.compactionFailures` (absent when zero), `attempt-finished`, and the bundle SUMMARY outcome cell. A
-  failed max-turns / timeout / stall / generic-error attempt with >= 3 compactions AND >= 1 per 12 turns (floor
-  alone when no turn count) is CONTEXT THRASH: its feedback and summary replace the budget-blaming text (naming the
-  block's `contextTokens` and "split the task"), and it does NOT raise the next attempt's `maxTurns` or clock. The
-  journal outcome stays `max-turns`/`timeout`/`action-failed`.
+  failed max-turns / timeout / stall / generic-error attempt with >= 3 compactions AND >= 1 per 12 turns is CONTEXT
+  THRASH (turns = `num_turns`, else an ESTIMATE from distinct assistant message ids, else the floor alone; the ratio
+  rests on few samples from one 64K plan). Its feedback replaces the budget-blaming text (a generic error keeps its
+  own feedback and gets the thrash section appended), its summary names the block's `contextTokens` and "split the
+  task", and it does NOT raise the next attempt's `maxTurns` or clock. #800 exhaustion and #817 thrash share one
+  consecutive count: two in a row, any mix, settle needs-human. The journal outcome stays `max-turns`/`timeout`/
+  `action-failed`.
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode
   rollback instead of pure discard, and exposes it to the retry as a first-class, AGENT-CONTROLLED input.
   Immediately BEFORE the F2 reset above, the attempt's full working tree (including uncommitted writes) is

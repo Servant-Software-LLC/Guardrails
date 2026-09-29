@@ -15,4 +15,10 @@ namespace Guardrails.Core.Prompts;
 /// </summary>
 /// <param name="Compactions">The number of compaction episodes, including any still running when the stream ended.</param>
 /// <param name="Failures">How many of them reported <c>"compact_result":"failed"</c>.</param>
-public sealed record CompactionCounts(int Compactions, int Failures);
+/// <param name="EstimatedTurns">
+/// An ESTIMATE of the session's turns: the distinct top-level assistant <c>message.id</c>s in the stream (a subagent's,
+/// carrying a <c>parent_tool_use_id</c>, excluded), or null when there were none. It exists for the attempt whose stream
+/// ended without a result line (a timeout, a stall) and so has no <c>num_turns</c>; on real streams it came within one of
+/// the reported count (75 vs 76, 50 vs 51). Never journalled, and never presented as exact.
+/// </param>
+public sealed record CompactionCounts(int Compactions, int Failures, int? EstimatedTurns = null);

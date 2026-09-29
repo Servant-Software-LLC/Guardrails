@@ -8,12 +8,15 @@ namespace Guardrails.Core.Execution;
 /// The #817 diagnosis: a FAILED attempt (max-turns, timeout, stall or a generic action failure) whose context was
 /// compacted so often, relative to the turns it took, that re-reading what each compaction dropped is what spent its
 /// budget. The cause is then the context window, not the turn cap or the clock, so the retry is told CONTEXT THRASH
-/// instead of "turn budget", and the harness does not raise the next attempt's turn budget or extend its clock.
+/// instead of "turn budget", the harness does not raise the next attempt's turn budget or extend its clock, and a
+/// second consecutive attempt under context pressure (this, or #800's context exhaustion) settles needs-human.
 /// </summary>
 /// <param name="Compactions">The attempt's compaction episodes (<see cref="CompactionCounts.Compactions"/>).</param>
 /// <param name="Failures">How many of them failed.</param>
-/// <param name="Turns">The runner's turn count, or null when it reported none (a timeout or stall ends with no result).</param>
-public sealed record ContextThrash(int Compactions, int Failures, int? Turns)
+/// <param name="Turns">The turn count the ratio was applied to, or null when neither a reported nor an estimated one exists.</param>
+/// <param name="TurnsEstimated">True when <paramref name="Turns"/> is <see cref="CompactionCounts.EstimatedTurns"/>, not the runner's report.</param>
+/// <param name="Kind">How the attempt ended, which decides what the text says was (not) raised.</param>
+public sealed record ContextThrash(int Compactions, int Failures, int? Turns, bool TurnsEstimated, PromptFailureKind Kind)
 {
     /// <summary>
     /// The absolute floor: fewer compactions than this are never thrash, however few turns the attempt took. Three is
@@ -23,9 +26,10 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns)
 
     /// <summary>
     /// The ratio: thrash when the attempt compacted at least once per this many turns
-    /// (<c>compactions × TurnsPerCompaction ≥ turns</c>). Twelve comes from the #817 dogfood streams, counted in
-    /// episodes: the thrashing attempts compacted 9 times in 76 turns (max-turns) and 8 in 81, while attempts that
-    /// worked normally compacted 2 in 36 and 3 in 51. When the turn count is unknown the floor alone decides.
+    /// (<c>compactions × TurnsPerCompaction ≥ turns</c>). Calibrated on few samples from ONE plan on a 64K window (the
+    /// #817 dogfood): the attempt that ran out of turns after 9 compactions in 76 turns must be caught; one that compacted
+    /// twice in 36 turns and succeeded must not be. When the runner reported no turns, the ratio is applied to the
+    /// estimate (<see cref="CompactionCounts.EstimatedTurns"/>); only when that is missing too does the floor decide alone.
     /// </summary>
     public const int TurnsPerCompaction = 12;
 
@@ -44,8 +48,10 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns)
             return null;
         }
 
-        return IsThrash(counts.Compactions, action.Turns)
-            ? new ContextThrash(counts.Compactions, counts.Failures, action.Turns)
+        int? turns = action.Turns ?? counts.EstimatedTurns;
+        return IsThrash(counts.Compactions, turns)
+            ? new ContextThrash(
+                counts.Compactions, counts.Failures, turns, action.Turns is null && turns is not null, action.FailureKind)
             : null;
     }
 
@@ -54,13 +60,15 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns)
         compactions >= MinCompactions
         && (turns is not { } t || (long)compactions * TurnsPerCompaction >= t);
 
-    /// <summary>The counts in words: <c>9 compactions in 76 turns, 1 failed</c>.</summary>
+    /// <summary>The counts in words: <c>9 compactions in 76 turns, 1 failed</c>, or <c>in about 30 turns (estimated)</c>.</summary>
     public string Describe()
     {
         string text = string.Create(CultureInfo.InvariantCulture, $"{Compactions} compactions");
         if (Turns is { } turns)
         {
-            text += string.Create(CultureInfo.InvariantCulture, $" in {turns} turns");
+            text += TurnsEstimated
+                ? string.Create(CultureInfo.InvariantCulture, $" in about {turns} turns (estimated)")
+                : string.Create(CultureInfo.InvariantCulture, $" in {turns} turns");
         }
 
         return Failures > 0
@@ -69,10 +77,21 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns)
     }
 
     /// <summary>
+    /// What more budget would not have fixed, naming only the budget this kind of stop actually hit: the turn cap for a
+    /// max-turns stop, the clock for a timeout. "Further" because an earlier, non-thrash attempt may already have raised it.
+    /// </summary>
+    public string BudgetSentence() => Kind switch
+    {
+        PromptFailureKind.MaxTurns => "raising maxTurns will not help, so it was not raised further",
+        PromptFailureKind.Timeout => "extending the timeout will not help, so it was not extended further",
+        _ => "more turns or more time will not help"
+    };
+
+    /// <summary>
     /// The attempt summary's clause (the line that becomes the needs-human reason on the final attempt), naming the
     /// cause and the operator's levers for <paramref name="block"/>.
     /// </summary>
     public string SummaryClause(PromptRunnerConfig? block) =>
-        $"CONTEXT THRASH ({Describe()}): the context window is too small for this task's working set, so raising " +
-        $"maxTurns or the timeout will not help and neither was raised. {RetryPolicy.ContextLevers(block)}";
+        $"CONTEXT THRASH ({Describe()}): the context window is too small for this task's working set; " +
+        $"{BudgetSentence()}. {RetryPolicy.ContextLevers(block)}";
 }

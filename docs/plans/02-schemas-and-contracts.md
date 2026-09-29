@@ -6190,7 +6190,7 @@ mentions it never counts, and a give-up never overrides a result already parsed 
   than an error, and filter build and test output. It is rollback-aware, carries the salvage section like a timeout,
   and names any tool call still running (#778).
 - **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174 short-circuit
-  shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
+  shape; since #817 a CONTEXT THRASH attempt counts too, below); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
   session reports it as `context-exhausted`.
 
 **Compactions are counted, and heavy compaction is diagnosed as CONTEXT THRASH (issue #817).** Claude Code can keep
@@ -6211,25 +6211,41 @@ or the clock does, and before #817 the harness then blamed the budget and raised
   unchanged.
 - **The diagnosis (`ContextThrash`).** A FAILED prompt action whose kind is max-turns, timeout, stalled or a generic
   action error is context thrash when it compacted **at least 3 times** AND **at least once per 12 turns**
-  (`compactions × 12 ≥ turns`); when the runner reported no turn count (a timeout or a stall ends without a result
-  line) the floor alone decides. The ratio comes from the #817 dogfood streams: the thrashing attempts compacted 9
-  times in 76 turns and 8 in 81; attempts that worked normally compacted 2 in 36 and 3 in 51. An output cap, a context
-  overflow, #800's context exhaustion, a transient pause and a runner-configuration fault each keep their own, more
-  specific diagnosis.
-- **What changes when it fires.** `feedback.md` gets `## CONTEXT THRASH: the attempt spent its budget re-reading what
-  compaction dropped` IN PLACE of the max-turns / timeout / stall / action-failure text (which blames the budget): the
-  counts, that more turns or time would only compact more, #800's bounded-read advice, an instruction to write
+  (`compactions × 12 ≥ turns`). The turns are the runner's `num_turns`; when a stream ends without a result line (a
+  timeout or a stall) they are an ESTIMATE, the distinct top-level assistant `message.id`s in the stream (a subagent's
+  excluded), which on real streams came within one of the reported count. The estimate is never journalled and is
+  always shown as one (`in about 30 turns (estimated)`). Only when neither exists does the floor of 3 decide alone. An
+  output cap, a context overflow, #800's context exhaustion, a transient pause and a runner-configuration fault each keep
+  their own, more specific diagnosis.
+  **The calibration rests on few samples from ONE plan on a 64K window** (the #817 dogfood, counted in episodes): the
+  attempt that ran out of turns after 9 compactions in 76 turns must be diagnosed, and one that compacted twice in 36
+  turns and succeeded must not. The other nearby points do not calibrate it: 8 in 81 was a #800 give-up (context
+  exhaustion, excluded above), and 3 in 51 ended at the turn cap, so it is not an example of normal work either. Revisit
+  both constants when more runs have been measured.
+- **What changes when it fires.** For a max-turns, timeout or stall stop, `feedback.md` gets `## CONTEXT THRASH: the
+  attempt spent its budget re-reading what compaction dropped` IN PLACE of the text that kind would otherwise get (which
+  blames the budget): the counts, why more budget would not help, #800's bounded-read advice, an instruction to write
   `needsHuman` if the working set cannot fit, and the operator's levers; it is rollback-aware and carries the salvage
-  section. The `## Context management failed` section is not appended (the thrash text names the failures). The
-  attempt summary, which is the needs-human / final reason, reads `… — CONTEXT THRASH (9 compactions in 76 turns, 1
-  failed): the context window is too small for this task's working set, so raising maxTurns or the timeout will not
-  help and neither was raised.` followed by the #800 levers (the block's `contextTokens` with its value on a local
-  block, splitting the task, narrowing the Bash grant). The journal outcome is unchanged (`max-turns`, `timeout`,
-  `action-failed`): it records how the attempt ended; the diagnosis records why.
+  section. For a generic action ERROR the runner's own feedback (its result text, refused tool calls) is KEPT and the
+  thrash section is APPENDED to it, because the error may have a cause of its own. The `## Context management failed`
+  section is not appended either way (the thrash text names the failures). The attempt summary, which is the needs-human
+  / final reason, reads `… — CONTEXT THRASH (9 compactions in 76 turns, 1 failed): the context window is too small for
+  this task's working set; raising maxTurns will not help, so it was not raised further.` followed by the #800 levers
+  (the block's `contextTokens` with its value on a local block, splitting the task, narrowing the Bash grant). It names
+  only the budget that kind of stop hit: the clock for a timeout (`extending the timeout will not help, so it was not
+  extended further`), neither for a stall or an error. "Further", because an earlier non-thrash attempt may already
+  have raised it. The failed-compaction count appears once, in the thrash clause, not again as `— context compaction
+  failed (…)`. The journal outcome is unchanged (`max-turns`, `timeout`, `action-failed`): it records how the attempt
+  ended; the diagnosis records why.
 - **No budget raise.** A thrash-diagnosed attempt does not count toward the #129 turn-budget raise or the #119
   timeout extension, so the retry runs on the same `maxTurns` and clock. Raising either lets the same working set
   compact more times (each compaction on a local backend re-reads the whole window, minutes at a time), which is the
   #817 evidence: the retry "thrashed the same way with more turns". #800 made the same call for context exhaustion.
+- **Two consecutive context-pressure attempts settle `needs-human`.** #800's give-up and #817's thrash share ONE count
+  of consecutive attempts that ran out of context, so any two in a row (thrash then thrash, thrash then #800, #800 then
+  thrash) settle the task `needs-human` with the levers, and neither kind resets the other's count; any other outcome
+  does. The second attempt keeps its own journal outcome, and a thrash halt names the counts. Without it a frozen budget
+  would repeat the same thrash until the retries ran out.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
 returns, before its attempt settles, which writes the §8.1 `attempt-stalled` row (and an `AttemptStalled` line in

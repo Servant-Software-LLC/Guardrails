@@ -1807,17 +1807,16 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The previous attempt filled the model's context faster than it could be compacted, so it was");
         text.AppendLine("stopped. On this attempt, keep what you read small:");
-        AppendKeepContextSmall(text, fileWritesRolledBack, salvageRef);
+        AppendBoundedReadBullets(text);
+        text.AppendLine();
+        AppendPartialWorkLine(text, fileWritesRolledBack, salvageRef);
         AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
         AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
-    /// <summary>
-    /// #800 / #817: the bounded-read advice both context diagnoses give (the retry must carry less), then the
-    /// rollback-aware line on where the previous attempt's partial work is.
-    /// </summary>
-    private static void AppendKeepContextSmall(StringBuilder text, bool fileWritesRolledBack, SalvageRef? salvageRef)
+    /// <summary>#800 / #817: the bounded-read advice both context diagnoses give (the retry must carry less).</summary>
+    private static void AppendBoundedReadBullets(StringBuilder text)
     {
         text.AppendLine();
         text.AppendLine("- Read files with the Read tool, and pass an offset and a limit for anything long. Do NOT print whole");
@@ -1826,7 +1825,11 @@ public static class RetryPolicy
         text.AppendLine("  earlier result instead of reading the file again another way.");
         text.AppendLine("- Filter build and test output to the errors (for example with a filtered test run) instead of printing");
         text.AppendLine("  all of it, and do not re-read files you have already read.");
-        text.AppendLine();
+    }
+
+    /// <summary>#800 / #817: the rollback-aware line on where the previous attempt's partial work is.</summary>
+    private static void AppendPartialWorkLine(StringBuilder text, bool fileWritesRolledBack, SalvageRef? salvageRef)
+    {
         if (fileWritesRolledBack && salvageRef is not null)
         {
             text.AppendLine("Its partial work was reverted from your working tree, but it was NOT discarded — see");
@@ -1867,17 +1870,41 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// #817: what an attempt diagnosed as CONTEXT THRASH (<see cref="ContextThrash"/>) is told, in place of the
-    /// max-turns, timeout, stall or action-failure text its failure kind would otherwise get. Those texts blame the
-    /// budget ("the harness has RAISED the turn budget"); here the budget was spent re-reading what compaction dropped,
-    /// so more of it would only compact more, and the harness did not raise it. Rollback-aware, with the salvage section,
-    /// like <see cref="ForContextExhausted"/>, whose bounded-read advice it shares.
+    /// #817: what an attempt diagnosed as CONTEXT THRASH (<see cref="ContextThrash"/>) is told when it ran out of turns,
+    /// timed out or stalled, IN PLACE of the text those kinds would otherwise get: that text blames the budget ("the
+    /// harness has RAISED the turn budget"), where here the budget was spent re-reading what compaction dropped.
+    /// Rollback-aware, with the salvage section, like <see cref="ForContextExhausted"/>, whose bounded-read advice it
+    /// shares. A generic action error keeps its own feedback and gets <see cref="ForContextThrashSection"/> appended.
     /// </summary>
     public static string ForContextThrash(
-        TaskNode task, int attempt, ContextThrash thrash, Prompts.PromptFailureKind failureKind, PromptRunnerConfig? block,
+        TaskNode task, int attempt, ContextThrash thrash, PromptRunnerConfig? block,
         bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
-        string ended = failureKind switch
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        AppendContextThrashBody(text, thrash, block);
+        text.AppendLine();
+        AppendPartialWorkLine(text, fileWritesRolledBack, salvageRef);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #817 review W2: the CONTEXT THRASH section alone, APPENDED to a generic action error's own feedback (the runner's
+    /// result text, any refused tool calls) rather than replacing it: that error may have a cause of its own.
+    /// </summary>
+    public static string ForContextThrashSection(ContextThrash thrash, PromptRunnerConfig? block)
+    {
+        var text = new StringBuilder();
+        text.AppendLine();
+        AppendContextThrashBody(text, thrash, block);
+        return text.ToString();
+    }
+
+    private static void AppendContextThrashBody(StringBuilder text, ContextThrash thrash, PromptRunnerConfig? block)
+    {
+        string ended = thrash.Kind switch
         {
             Prompts.PromptFailureKind.MaxTurns => "ran out of turns",
             Prompts.PromptFailureKind.Timeout => "timed out",
@@ -1885,23 +1912,19 @@ public static class RetryPolicy
             _ => "failed"
         };
 
-        var text = new StringBuilder();
-        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine(ContextThrashHeading);
         text.AppendLine();
         text.AppendLine($"The previous attempt {ended} after its context was compacted over and over ({thrash.Describe()}).");
         text.AppendLine("Each compaction drops the files you had read, so the attempt kept re-reading them. That, not the turn");
-        text.AppendLine("budget or the clock, is what used up the attempt: more turns or more time would only compact more, so the");
-        text.AppendLine("harness has NOT raised either for this attempt. On this attempt, keep what you read small:");
-        AppendKeepContextSmall(text, fileWritesRolledBack, salvageRef);
+        text.AppendLine($"budget or the clock, is what used up the attempt: {thrash.BudgetSentence()}.");
+        text.AppendLine("On this attempt, keep what you read small:");
+        AppendBoundedReadBullets(text);
         text.AppendLine();
         text.AppendLine("If the task cannot be done without holding more than the context fits (it needs several large files");
         text.AppendLine("open at once), STOP and write {\"needsHuman\": \"context thrash: <what does not fit>\"} to");
-        text.AppendLine("GUARDRAILS_STATE_OUT rather than burning another attempt. The operator's levers, not yours to change:");
+        text.AppendLine("GUARDRAILS_STATE_OUT rather than burning another attempt. A second attempt in a row that runs out of");
+        text.AppendLine("context is not retried. The operator's levers, not yours to change:");
         text.AppendLine(ContextLevers(block));
-        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
-        AppendSalvageSection(text, salvageRef);
-        return text.ToString();
     }
 
     /// <summary>The heading <see cref="ForContextThrash"/> uses (pinned by tests).</summary>

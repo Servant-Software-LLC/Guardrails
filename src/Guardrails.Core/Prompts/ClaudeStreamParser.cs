@@ -133,6 +133,9 @@ public sealed class ClaudeStreamParser
     private bool _compactionOpen;
     private bool _compactionJustClosed;
 
+    // #817 review W1: distinct top-level assistant message ids, the turn ESTIMATE for a stream with no result line.
+    private readonly HashSet<string> _assistantMessageIds = new(StringComparer.Ordinal);
+
     // #800: Claude Code's "Autocompact is thrashing" give-up, recognised only for the claude dialect (a Cursor session's
     // final text can never trigger it). Volatile because the session's tee reads them on the reader thread right after
     // Feed to arm its grace timer, and the timer reads _resultSeen from the pool.
@@ -238,6 +241,14 @@ public sealed class ClaudeStreamParser
             // in ClaudeSignalClassifier, the claude quarantine.
             if (type == "assistant")
             {
+                if (TryGetNonEmptyString(root, "parent_tool_use_id") is null
+                    && root.TryGetProperty("message", out JsonElement assistantMessage)
+                    && assistantMessage.ValueKind == JsonValueKind.Object
+                    && TryGetNonEmptyString(assistantMessage, "id") is { } messageId)
+                {
+                    _assistantMessageIds.Add(messageId);
+                }
+
                 if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactGiveUp(root))
                 {
                     MarkThrashing(AssistantText(root));
@@ -301,7 +312,10 @@ public sealed class ClaudeStreamParser
 
         // A failure is always a compaction too (its close counts one when no `compacting` line opened it), so the
         // failure count never exceeds the compaction count.
-        Compactions = _compactions > 0 ? new CompactionCounts(_compactions, _compactionFailures) : null
+        Compactions = _compactions > 0
+            ? new CompactionCounts(
+                _compactions, _compactionFailures, _assistantMessageIds.Count > 0 ? _assistantMessageIds.Count : null)
+            : null
     };
 
     /// <summary>
