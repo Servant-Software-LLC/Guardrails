@@ -1,0 +1,10 @@
+{
+  "description": "Record the Lite profile contract: document the optional \"profile\": \"lite\" guardrails.json key and reserve GR2090 (LiteUnsupportedFeature) in the SSOT and DiagnosticCodes.cs, and pin the harness's accept-and-ignore behaviour with a test",
+  "dependsOn": [],
+  "stableId": "a1k7p2",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs",
+    "tests/Guardrails.Core.Tests/Loading/LiteProfileContractTests.cs"
+  ]
+}
