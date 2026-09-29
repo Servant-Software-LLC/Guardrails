@@ -1,0 +1,12 @@
+{
+  "description": "Implement Subset.psm1 (GR2090 subset refusal + GR2025 review nudge) and close every Lite-vs-Core validation-parity gap across the three validate modules",
+  "dependsOn": [
+    "04-implement-lite-validate-load",
+    "06-implement-lite-validate-graph",
+    "07-author-tests-lite-validate-subset",
+    "10-implement-lite-hashes"
+  ],
+  "stableId": "c8p4x1",
+  "writeScope": ["scripts/lite/validate/"],
+  "action": { "maxTurns": 75 }
+}
