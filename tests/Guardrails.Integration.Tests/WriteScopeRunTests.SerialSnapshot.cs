@@ -271,6 +271,58 @@ public sealed partial class WriteScopeRunTests
     }
 
     [Fact]
+    public async Task Worktree_APassingGuardrailThatLinksADirectoryOut_DoesNotFaultTheRun_AndIsReportedLoudly_Issue816()
+    {
+        // Phase 2 (the post-guardrail scope-clean) strips a passing guardrail's out-of-scope side effects. If one of
+        // them is a directory replaced by a link out of the segment, the linked-ancestor guard refuses to revert
+        // through it — and that refusal must be reported, never escape as a fault that aborts the run.
+        using var repo = new TempGitRepo();
+        repo.Commit("data/x.txt", "ORIGINAL");
+        string outside = Path.Combine(Path.GetTempPath(), "gr-outside-dir-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "x.txt"), "OUTSIDE");
+        try
+        {
+            string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("01-impl", ["src/Impl.cs"]));
+            string guardrails = Path.Combine(planDir, "tasks", "01-impl", "guardrails");
+            if (OperatingSystem.IsWindows())
+            {
+                File.WriteAllText(Path.Combine(guardrails, "02-link.ps1"),
+                    "Remove-Item -Recurse -Force data\n" +
+                    $"cmd /c mklink /J data \"{outside}\" | Out-Null\n" +
+                    "exit 0\n");
+            }
+            else
+            {
+                string script = Path.Combine(guardrails, "02-link.sh");
+                File.WriteAllText(script, $"#!/usr/bin/env bash\nrm -rf data && ln -s '{outside}' data\nexit 0\n");
+                File.SetUnixFileMode(script,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            }
+
+            var agent = new ScriptedAgent((_, _, invocation) => WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "done"));
+
+            (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+            Assert.Null(report.Abort); // not an infrastructure fault
+            TaskResult task = Assert.Single(report.Tasks);
+            // Never written through, and never DELETED through either: a junction left in the segment was measured to
+            // lose this file to the segment's later git operations, which is why phase 2 removes the link itself.
+            Assert.True(File.Exists(Path.Combine(outside, "x.txt")), $"outside file gone; summary: {task.Summary}");
+            Assert.Equal("OUTSIDE", File.ReadAllText(Path.Combine(outside, "x.txt")));
+            Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+            Assert.DoesNotContain("NOT checked", task.Summary);
+            // The link was a side effect to strip, and the plan branch carries the ORIGINAL file, not the outside one.
+            Assert.Equal("ORIGINAL", TempGitRepo.Git(repo.RepoPath, "show", $"{PlanBranch(repo)}:data/x.txt"));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LinkedAncestor_FindsAJunctionOrSymlinkOnThePath_AndIgnoresAMissingOne_Issue816()
     {
         using var repo = new TempGitRepo();
@@ -293,6 +345,13 @@ public sealed partial class WriteScopeRunTests
             Directory.Delete(outside, recursive: true);
         }
     }
+
+    /// <summary>The run's plan branch (the only <c>guardrails/…</c> branch a single worktree run leaves).</summary>
+    private static string PlanBranch(TempGitRepo repo) =>
+        TempGitRepo.Git(repo.RepoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/guardrails/")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .First(b => !b.Contains("/attempt-", StringComparison.Ordinal))
+            .Trim();
 
     /// <summary>A directory link that needs no privileges: a junction on Windows, a symlink elsewhere.</summary>
     private static void LinkDirectory(string link, string target)

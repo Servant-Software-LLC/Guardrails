@@ -1245,11 +1245,16 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   fault-tolerant per path (a failed batch is bisected): one unhashable or vanished file loses only its own
   byte-exact restore (listed in `write-scope-check.log`), never the snapshot. **Linked ancestors (fourth review):**
   in BOTH modes, every revert — raw restore, `git checkout`, `git rm` — first walks the path's ancestor directories
-  from the workspace root and REFUSES a path under a directory that is now a symlink or a Windows junction (git
-  follows a junction as a directory, so even its own checkout of a tracked file writes through — measured). A
-  refused path stays on disk and is reported like any failed revert. Removals run FIRST, so a symlink that replaced
-  a directory (which git sees as a new path) is removed before its former children are recreated inside the
-  workspace. (A raw-bytes snapshot mode was tried and
+  from the workspace root, and when a directory on the way is now a symlink or a Windows junction (git follows a
+  junction as a directory, so even its own checkout of a tracked file writes through — measured) it REMOVES THE
+  LINK ENTRY itself (never its target) and restores the path inside the workspace. Leaving the link was measured
+  to be worse: every later git operation on the tree (the segment commit, a retry's reset, the worktree's removal)
+  deletes or rewrites the outside file through it. Only a link that cannot be removed makes the path REFUSED — left
+  on disk, reported like any failed revert. Removals run FIRST, so a symlink that replaced a directory (which git
+  sees as a new path) is removed before its former children are recreated. A phase-2 (post-guardrail) strip that
+  cannot finish is reported loudly on the attempt (`write scope NOT checked this attempt: …`) and never aborts the
+  run as a fault. Detection reads `LinkTarget` only — not the ReparsePoint attribute, which non-link reparse points
+  (OneDrive Files-On-Demand folders) also carry. (A raw-bytes snapshot mode was tried and
   removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
   tracked files and an identical re-save read as a change.) Every scope git
   call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to

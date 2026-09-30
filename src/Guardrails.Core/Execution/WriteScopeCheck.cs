@@ -418,16 +418,26 @@ public static class WriteScopeCheck
         // junction as if it were a directory (so `data/x.txt` reads as merely modified), and a leaf-only check cannot
         // see it. Every path is therefore checked, component by component from the workspace root, immediately before
         // it is touched, and a path under a linked ancestor is REFUSED — left on disk and reported, never written.
+        //
+        // #816 final review: the link itself is REMOVED first (the entry only — never what it points at), and the path
+        // then restored inside the workspace where it belongs. The directory's replacement by a link IS an
+        // out-of-scope change under the offending path, and leaving it in place was measured to be worse than
+        // refusing: every later git operation on the tree (the segment commit, a retry's reset, the worktree's own
+        // removal) follows a junction straight through, deleting or rewriting the outside file. Only when the link
+        // cannot be removed is the path refused — left on disk, reported, never written.
         var refused = new List<string>();
         bool Safe(string path)
         {
-            if (LinkedAncestor(diffBase.RepoPath, path) is not { } linked)
+            while (LinkedAncestor(diffBase.RepoPath, path) is { } linked)
             {
-                return true;
+                if (!TryRemoveLink(Path.Combine(diffBase.RepoPath, linked.Replace('/', Path.DirectorySeparatorChar))))
+                {
+                    refused.Add($"{path} (under '{linked}', which is now a link that could not be removed)");
+                    return false;
+                }
             }
 
-            refused.Add($"{path} (under '{linked}', which is now a link)");
-            return false;
+            return true;
         }
 
         // Newly-added paths FIRST — no base blob exists, so they are removed from the index and the working tree.
@@ -505,7 +515,41 @@ public static class WriteScopeCheck
     /// ends the walk: nothing below it exists to be linked. The root itself is not checked — the workspace is allowed
     /// to be reached through a link (macOS <c>/var</c> → <c>/private/var</c>).
     /// </summary>
-    internal static string? LinkedAncestor(string root, string relativePath)
+    internal static string? LinkedAncestor(string root, string relativePath) => LinkedAncestorCore(root, relativePath);
+
+    /// <summary>
+    /// #816 final review: remove the link at <paramref name="linkPath"/> — the ENTRY only, never what it points at (a
+    /// junction or directory symlink is deleted non-recursively, a dangling or file link as a file). Returns false,
+    /// deleting nothing, when the path is not a link or the removal fails.
+    /// </summary>
+    internal static bool TryRemoveLink(string linkPath)
+    {
+        try
+        {
+            var directory = new DirectoryInfo(linkPath);
+            if (directory.LinkTarget is null)
+            {
+                return false; // not a link: never delete a real directory here
+            }
+
+            if (directory.Exists)
+            {
+                directory.Delete(recursive: false); // a junction / directory symlink: removes the link entry only
+            }
+            else
+            {
+                new FileInfo(linkPath).Delete(); // a dangling or file-typed link
+            }
+
+            return new DirectoryInfo(linkPath).LinkTarget is null && !Directory.Exists(linkPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static string? LinkedAncestorCore(string root, string relativePath)
     {
         string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         string current = root;
@@ -513,9 +557,9 @@ public static class WriteScopeCheck
         {
             current = Path.Combine(current, segments[i]);
             var directory = new DirectoryInfo(current);
-            bool isLink = directory.LinkTarget is not null
-                          || (directory.Exists && directory.Attributes.HasFlag(FileAttributes.ReparsePoint));
-            if (isLink)
+            // LinkTarget covers symlinks, dangling symlinks and junctions. Deliberately NOT the ReparsePoint attribute:
+            // non-link reparse points (a OneDrive Files-On-Demand folder) carry it too and would be refused falsely.
+            if (directory.LinkTarget is not null)
             {
                 return string.Join('/', segments[..(i + 1)]);
             }

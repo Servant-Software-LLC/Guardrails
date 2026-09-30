@@ -2513,12 +2513,23 @@ public sealed class TaskExecutor : ITaskExecutor
         if (task.WriteScope is { } postGuardrailScope && IsRealGitSegment(worktree))
         {
             IReadOnlyList<string> scopeGlobs = WithImplicitStagingScope(postGuardrailScope, task.StagingOutputs);
-            IReadOnlyList<WriteScopeOffense> stripped = WriteScopeCheck.StripOutOfScope(
-                worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
-            if (stripped.Count > 0)
+            try
             {
-                AttemptArtifacts.WriteScopeCleanNote(logDir, stripped);
-                _observer.OutOfScopeStripped(task, stripped);
+                IReadOnlyList<WriteScopeOffense> stripped = WriteScopeCheck.StripOutOfScope(
+                    worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
+                if (stripped.Count > 0)
+                {
+                    AttemptArtifacts.WriteScopeCleanNote(logDir, stripped);
+                    _observer.OutOfScopeStripped(task, stripped);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+            {
+                // #816 final review: a strip that could not finish — typically a path refused because its directory is
+                // now a link out of the segment — must not abort the run as an infrastructure fault. The attempt keeps
+                // its verdict; the failure is reported loudly (console, write-scope-check.log, the attempt summary) by
+                // RunAttemptAsync, off this note.
+                scopeNotes.NotChecked = $"the post-guardrail scope-clean could not strip every out-of-scope path ({ex.Message})";
             }
         }
 
