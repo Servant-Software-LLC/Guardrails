@@ -216,6 +216,17 @@ public static class BundleCommand
             return Refuse(io, "--out and --dir are mutually exclusive.");
         }
 
+        // #814: a root ("C:\", "C:", "\\srv\share\", "/") or a "."/".." last segment is never a sane bundle destination,
+        // and it has no name to mark under --no-redact. Refused, redacted or not, before anything is read.
+        foreach ((string flag, string? value) in new[] { ("--out", args.Out), ("--dir", args.Dir) })
+        {
+            if (value is not null && !HasNamedLastSegment(value))
+            {
+                return Refuse(io, $"{flag} {value} is not a usable bundle destination: its last path segment is a root, '.' or '..'. "
+                    + $"Name a {(flag == "--out" ? "file" : "folder")} inside it instead.");
+            }
+        }
+
         // #814 W1: --no-redact ALWAYS marks what it writes. An explicit --out or --dir gets the -UNREDACTED suffix too,
         // so an unscrubbed bundle is never named like a scrubbed one; every later check sees the marked path.
         if (args.NoRedact)
@@ -415,6 +426,31 @@ public static class BundleCommand
             _ => $"-tasks-{distinctTasks.Count.ToString(CultureInfo.InvariantCulture)}",
         };
         return name + (noRedact ? UnredactedSuffix : string.Empty) + ".zip";
+    }
+
+    /// <summary>
+    /// Whether a <c>--out</c>/<c>--dir</c> value ends in a real name: not empty, <c>.</c> or <c>..</c> as typed, and not
+    /// a root once resolved (<c>C:\</c>, <c>C:</c>, <c>\\srv\share\</c>, <c>/</c>, or <c>a/..</c> reaching one).
+    /// </summary>
+    public static bool HasNamedLastSegment(string path)
+    {
+        string typed = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+        if (typed.Length == 0 || typed is "." or "..")
+        {
+            return false;
+        }
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+
+        return Path.GetFileName(Path.TrimEndingDirectorySeparator(full)).Length > 0;
     }
 
     /// <summary>The <c>-UNREDACTED</c> suffix of a <c>--no-redact</c> bundle's name.</summary>

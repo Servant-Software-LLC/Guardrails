@@ -541,6 +541,52 @@ public sealed class BundleCliTests
         Assert.Equal(Path.Combine(parent, expectedLeaf), BundleCommand.MarkUnredacted(Path.Combine(parent, leaf), directory));
     }
 
+    /// <summary>Destinations with no name to write or mark: roots (OS-specific spellings) and "."/"..".</summary>
+    public static TheoryData<string, string, bool> UnnamedDestinations()
+    {
+        var roots = new List<string> { ".", "..", "./", "../", "/" };
+        if (OperatingSystem.IsWindows())
+        {
+            roots.AddRange([@"C:\", "C:", @"\\srv\share\", @"\\srv\share"]);
+        }
+
+        var data = new TheoryData<string, string, bool>();
+        foreach (string root in roots)
+        {
+            foreach (string flag in new[] { "--out", "--dir" })
+            {
+                data.Add(flag, root, false);
+                data.Add(flag, root, true);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(UnnamedDestinations))]
+    [Trait("Category", "Bundle")]
+    public async Task ARootOrDotDestination_IsRefusedBeforeAnythingIsRead_RedactedOrNot(string flag, string destination, bool noRedact)
+    {
+        // #814: a root has no last segment, so --no-redact's marking once produced the bare relative "-UNREDACTED" and
+        // wrote it into the CWD. A root, "." or ".." is never a sane bundle destination: refused, nothing written.
+        using var run = new SyntheticRun();
+        var host = new RecordingHost(run.Home, run.Environment);
+        string strayMarked = Path.Combine(Environment.CurrentDirectory, BundleCommand.UnredactedSuffix);
+        string[] args = noRedact
+            ? ["bundle", run.PlanDir, flag, destination, "--no-redact"]
+            : ["bundle", run.PlanDir, flag, destination];
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, args);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains($"{flag} {destination} is not a usable bundle destination", io.ErrorText, StringComparison.Ordinal);
+        host.AssertNothingWasRead();
+        Assert.Empty(io.OutText);
+        Assert.False(Directory.Exists(strayMarked) || File.Exists(strayMarked), $"something was written at {strayMarked}");
+        Assert.False(Directory.Exists(Path.Combine(run.Home, BundleCommand.DefaultDirectoryName)));
+    }
+
     [Fact]
     [Trait("Category", "Bundle")]
     public void MarkUnredacted_ADirWithATrailingSeparator_MarksItsLastSegment()

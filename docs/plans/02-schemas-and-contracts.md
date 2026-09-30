@@ -10644,7 +10644,9 @@ create.
 **Argument refusals** (all exit `1`, all **before anything is read**): `--out` together with `--dir`;
 `--lean` together with `--include-worktree-diff`; a `--task` id the plan does not declare (named); a
 `--run` value that is not a single path segment (a separator, `.`/`..`, a rooted value, an invalid file-name
-character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty
+character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; an `--out` or
+`--dir` whose last segment is a root (`C:\`, `C:`, `\\srv\share\`, `/`, or a path resolving to one) or `.`/`..`,
+redacted or not, since it has no name to write or to mark `-UNREDACTED` (#814); a non-empty
 existing `--dir`; a destination under the plan directory or the worktree root (§17.8, refused **even with
 `--force-path`**); and the path refusal of §17.8.
 
