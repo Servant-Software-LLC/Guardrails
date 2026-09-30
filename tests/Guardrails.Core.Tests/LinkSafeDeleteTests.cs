@@ -144,14 +144,14 @@ public sealed class LinkSafeDeleteTests : IDisposable
     }
 
     [Fact]
-    public void RemoveLinks_SkipGitDirectory_LeavesGitInternalsUnwalked()
+    public void RemoveLinks_SkipRootGitDirectory_LeavesTheRootsGitInternalsUnwalked()
     {
         string outside = TestLinks.OutsideFolder(_base, "outside");
         string tree = Path.Combine(_base, "tree");
         TestLinks.DirectoryLink(Path.Combine(tree, ".git", "not-walked"), outside);
         TestLinks.DirectoryLink(Path.Combine(tree, "node_modules", "pkg"), outside);
 
-        LinkSweepResult sweep = LinkSafeTree.RemoveLinks(tree, skipGitDirectory: true);
+        LinkSweepResult sweep = LinkSafeTree.RemoveLinks(tree, skipRootGitDirectory: true);
 
         Assert.True(sweep.Safe);
         Assert.Equal([Path.Combine(tree, "node_modules", "pkg")], sweep.Removed);
@@ -186,36 +186,135 @@ public sealed class LinkSafeDeleteTests : IDisposable
         Assert.Equal(21, TestLinks.FileCount(outside));
     }
 
+    [Fact]
+    public void RemoveLinks_ANestedRepositorysGitDirectory_IsWalked_OnlyTheRootsIsSkipped()
+    {
+        // #826 review WEAK 1: skipping EVERY `.git` let a junction inside a vendored checkout's .git/ survive the
+        // sweep and be deleted through by git (reproduced 21 → 0).
+        string outside = TestLinks.OutsideFolder(_base, "outside");
+        string tree = Path.Combine(_base, "tree");
+        string nested = Path.Combine(tree, "vendor", "lib", ".git", "hooks-link");
+        TestLinks.DirectoryLink(nested, outside);
+
+        LinkSweepResult sweep = LinkSafeTree.RemoveLinks(tree, skipRootGitDirectory: true);
+
+        Assert.True(sweep.Safe);
+        Assert.Equal([nested], sweep.Removed);
+        Assert.Equal(21, TestLinks.FileCount(outside));
+    }
+
+    [Fact]
+    public void FindLinks_ListsEveryLink_AndRemovesNothing()
+    {
+        string outside = TestLinks.OutsideFolder(_base, "outside");
+        string tree = Path.Combine(_base, "tree");
+        string link = Path.Combine(tree, "a", "link");
+        TestLinks.DirectoryLink(link, outside);
+
+        LinkSweepResult found = LinkSafeTree.FindLinks(tree);
+
+        Assert.Empty(found.Removed);
+        Assert.Equal([link], found.Unremoved);
+        Assert.True(LinkSafeTree.IsLink(link));
+    }
+
     /// <summary>
-    /// The shared-primitive guarantee, held at the source: every recursive delete in the harness is
-    /// <see cref="SafeDelete"/>, and the only <c>git worktree remove</c> call sits behind the link sweep.
-    /// A new <c>Directory.Delete(…, recursive: true)</c> or a bare <c>worktree remove</c> would reopen #826.
+    /// The shared-primitive guarantee, held at the source (#826 review WEAK 3): every recursive delete in the
+    /// harness is <see cref="SafeDelete"/>, no <c>git worktree remove</c> runs anywhere, and every git verb that
+    /// deletes or writes a working tree through a link (<c>reset --hard</c>, <c>clean</c>) sits behind a link
+    /// guard in <c>GitWorktreeProvider</c>. The scanner is proven against each evasion below.
     /// </summary>
     [Fact]
-    public void Source_EveryRecursiveDelete_GoesThroughTheLinkSafePrimitive()
+    public void Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive()
     {
         string src = Path.Combine(RepoRoot(), "src");
-        var recursiveDeletes = new List<string>();
-        var worktreeRemoves = new List<string>();
+        var violations = new List<string>();
         foreach (string file in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
-            string text = File.ReadAllText(file);
-            string name = Path.GetFileName(file);
-            if (Regex.IsMatch(text, @"Directory\.Delete\([^;]*recursive:\s*true") && name != "SafeDelete.cs")
-            {
-                recursiveDeletes.Add(name);
-            }
-
-            worktreeRemoves.AddRange(Regex.Matches(text, @"""worktree"",\s*""remove""").Select(_ => name));
+            violations.AddRange(LinkSafetyScan.Violations(Path.GetFileName(file), File.ReadAllText(file)));
         }
 
-        Assert.Empty(recursiveDeletes);
-        Assert.Equal(["GitWorktreeProvider.cs", "GitWorktreeProvider.cs"], worktreeRemoves); // both inside RemoveWorktreeLinkSafe
-        string provider = File.ReadAllText(Path.Combine(src, "Guardrails.Core", "Execution", "GitWorktreeProvider.cs"));
-        int sweep = provider.IndexOf("LinkSafeTree.RemoveLinks(worktreePath, skipGitDirectory: true)", StringComparison.Ordinal);
-        int firstRemove = Regex.Match(provider, @"""worktree"",\s*""remove""").Index;
-        Assert.True(sweep > 0 && sweep < firstRemove, "the link sweep must precede every git worktree remove");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Theory]
+    [InlineData("X.cs", "Directory.Delete(path, true);")]
+    [InlineData("X.cs", "Directory.Delete(path, recursive: true);")]
+    [InlineData("X.cs", "new DirectoryInfo(p).Delete(true);")]
+    [InlineData("X.cs", "dir.Delete(recursive: true);")]
+    [InlineData("X.cs", "GitIn(wt, \"worktree\", \"remove\", \"--force\", wt);")]
+    [InlineData("X.cs", "Run(\"git worktree remove --force x\");")]
+    [InlineData("X.cs", "GitIn(wt, \"reset\", \"--hard\", sha);")]
+    [InlineData("X.cs", "Run(\"git reset --hard HEAD\");")]
+    [InlineData("X.cs", "GitIn(wt, \"clean\", \"-fd\");")]
+    [InlineData("X.cs", "Run(\"git clean -fdx\");")]
+    [InlineData("X.cs", "psi.ArgumentList.Add(\"--hard\");")]   // Scheduler's pre-review best-effort rollback shape
+    [InlineData("X.cs", "psi.ArgumentList.Add(\"clean\");")]
+    [InlineData("SafeDelete.cs", "Directory.Delete(path, recursive: true);")]            // allowed file, but no sweep before it
+    [InlineData("GitWorktreeProvider.cs", "GitIn(wt, \"worktree\", \"remove\", wt);")]  // never allowed, guard or not
+    // The #826 review BLOCKER as it shipped in c17a7b1f: an unguarded reset + clean in the allowed file.
+    [InlineData("GitWorktreeProvider.cs",
+        "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
+    public void Scanner_CatchesEveryEvasion(string file, string code) =>
+        Assert.NotEmpty(LinkSafetyScan.Violations(file, code));
+
+    [Theory]
+    [InlineData("SafeDelete.cs", "var s = LinkSafeTree.RemoveLinks(path, clearReadOnly: true);\nif (!s.Safe) throw x;\nDirectory.Delete(path, recursive: true);")]
+    [InlineData("GitWorktreeProvider.cs", "DisarmLinksBeforeGitRewrite(worktreePath);\nGitIn(worktreePath, \"reset\", \"--hard\", taskBase);\nGitIn(worktreePath, \"clean\", \"-fd\");")]
+    [InlineData("X.cs", "// a comment may say git reset --hard or Directory.Delete(p, true)\n/// <c>git clean -fd</c>")]
+    public void Scanner_AcceptsGuardedCallsAndMentions(string file, string code) =>
+        Assert.Empty(LinkSafetyScan.Violations(file, code));
+
+    /// <summary>The #826 source rules, as a function of one file's name and text so the rules themselves are testable.</summary>
+    private static class LinkSafetyScan
+    {
+        private const int GuardWindow = 12; // non-comment lines a guard may precede the guarded call by
+
+        private static readonly Regex RecursiveDelete = new(
+            @"Directory\.Delete\([^;]*,\s*(recursive:\s*)?true\s*\)|\.Delete\(\s*(recursive:\s*)?true\s*\)");
+
+        // Argument-list forms ("reset", "--hard" / ArgumentList.Add("--hard")) and one-string command forms
+        // ("git reset --hard …"). A bare "reset --hard" in prose (a diagnostic message) is not a call.
+        private static readonly Regex WorktreeRemove = new(@"""worktree""\s*,\s*""remove""|git worktree remove");
+
+        private static readonly Regex GitRewrite = new(@"""--hard""|git reset --hard|""clean""\s*[,)]|git clean -[a-z]*f");
+
+        internal static List<string> Violations(string fileName, string text)
+        {
+            var violations = new List<string>();
+            List<string> code = text.Split('\n')
+                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal) && !l.TrimStart().StartsWith("*", StringComparison.Ordinal))
+                .ToList();
+            for (int i = 0; i < code.Count; i++)
+            {
+                string line = code[i];
+                string where = $"{fileName}: {line.Trim()}";
+                if (WorktreeRemove.IsMatch(line))
+                {
+                    violations.Add($"git worktree remove follows a junction — use RemoveWorktreeLinkSafe: {where}");
+                }
+
+                if (RecursiveDelete.IsMatch(line)
+                    && !(fileName == "SafeDelete.cs" && GuardedBy(code, i, "LinkSafeTree.RemoveLinks(")))
+                {
+                    violations.Add($"recursive delete outside the link-safe SafeDelete: {where}");
+                }
+
+                if (GitRewrite.IsMatch(line)
+                    && !(fileName == "GitWorktreeProvider.cs"
+                         && GuardedBy(code, i, "DisarmLinksBeforeGitRewrite(", "LinksShadowingTrackedPaths(")))
+                {
+                    violations.Add($"git reset --hard / clean without a link guard first: {where}");
+                }
+            }
+
+            return violations;
+        }
+
+        private static bool GuardedBy(List<string> code, int index, params string[] guards) =>
+            code.Skip(Math.Max(0, index - GuardWindow)).Take(index - Math.Max(0, index - GuardWindow))
+                .Any(l => guards.Any(g => l.Contains(g, StringComparison.Ordinal)));
     }
 
     private static string RepoRoot()

@@ -367,30 +367,31 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // Reset the integration worktree to the pre-merge HEAD, clearing the staged merge state.
         if (!string.IsNullOrEmpty(_preMergeIntegHead))
         {
-            GitIn(integ.IntegrationWorktreePath, "reset", "--hard", _preMergeIntegHead);
+            ResetHardLinkSafe(integ.IntegrationWorktreePath, _preMergeIntegHead); // #826 review: links disarmed first
             _preMergeIntegHead = "";
         }
     }
 
     /// <inheritdoc />
     public void Discard(WorktreeHandle handle) =>
-        // Issue #109: `git worktree remove --force` handles git's own bookkeeping, but on Windows
-        // it can leave the directory on disk when a read-only loose object refuses deletion
-        // (Access Denied); the link-safe SafeDelete sweeps any surviving tree. Issue #826: every link
-        // in the tree is removed as an entry FIRST — git deletes through a junction on Windows.
-        RemoveWorktreeLinkSafe(_repoPath, handle.WorktreePath, throwOnGitFailure: true);
+        // Issue #826: the link-safe delete + a prune — never `git worktree remove`, which deletes through a
+        // junction on Windows. A prune failure throws (Discard's contract: a git failure surfaces).
+        RemoveWorktreeLinkSafe(_repoPath, handle.WorktreePath, prune: true, throwOnGitFailure: true);
 
     /// <summary>
     /// Issue #826 — the ONE way the harness tears a worktree down. <c>git worktree remove --force</c> follows
     /// a directory junction on Windows and deletes EVERY file in its target (measured, git 2.53: a 21-file
     /// outside fixture went to 0), and a link can sit anywhere a task, a build or a package manager put it —
     /// under an ignored <c>node_modules/</c> (<c>npm link</c> / pnpm point at the developer's own source),
-    /// where no write-scope diff ever sees it. So, in order:
+    /// where no write-scope diff ever sees it. So git's delete never runs on a harness tree at all:
     /// <list type="number">
-    /// <item>walk the worktree WITHOUT following links (<see cref="LinkSafeTree.RemoveLinks"/>, skipping
-    /// <c>.git</c> internals) and remove every link ENTRY — never its target;</item>
-    /// <item>only when that left NO link behind, <c>git worktree remove --force</c> (git's bookkeeping);</item>
-    /// <item>sweep whatever git left on disk with the link-safe <see cref="SafeDelete"/> (issue #109).</item>
+    /// <item>the link-safe <see cref="SafeDelete"/> deletes the worktree — its no-follow walk removes every
+    /// link ENTRY (never a target) and clears read-only (#109) IMMEDIATELY before .NET's recursive delete,
+    /// which does not follow links either (measured) — so there is no window between a sweep and a
+    /// link-following delete for a leftover process to recreate a link in (#826 review WEAK 2);</item>
+    /// <item><c>git worktree prune</c> then drops the registration of the now-missing directory (git's
+    /// bookkeeping only — prune deletes no working-tree file). Callers sweeping many worktrees pass
+    /// <paramref name="prune"/> false and prune ONCE (#450).</item>
     /// </list>
     /// A link that cannot be removed REFUSES the whole teardown: the worktree and its registration stay on
     /// disk and a <see cref="LinkRemovalException"/> names every such link — callers report it loudly (the
@@ -398,30 +399,100 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// </summary>
     /// <param name="repoPath">The repo the worktree is registered in (git runs there).</param>
     /// <param name="worktreePath">The worktree to remove.</param>
+    /// <param name="prune">Run <c>git worktree prune</c> after the delete (false: the caller prunes once).</param>
     /// <param name="throwOnGitFailure">
-    /// True for <see cref="Discard"/>'s contract (a non-zero <c>git worktree remove</c> throws); false for the
-    /// best-effort sweeps, which let a later <c>git worktree prune</c> clear an unregistered leftover.
+    /// True for <see cref="Discard"/>'s contract (a failing prune throws); false for the best-effort sweeps.
     /// </param>
     /// <exception cref="LinkRemovalException">A link could not be removed; nothing was deleted.</exception>
-    internal static void RemoveWorktreeLinkSafe(string repoPath, string worktreePath, bool throwOnGitFailure)
+    internal static void RemoveWorktreeLinkSafe(string repoPath, string worktreePath, bool prune, bool throwOnGitFailure)
     {
-        LinkSweepResult sweep = LinkSafeTree.RemoveLinks(worktreePath, skipGitDirectory: true);
-        if (!sweep.Safe)
+        SafeDelete.DeleteDirectory(worktreePath);
+
+        if (!prune)
         {
-            throw new LinkRemovalException(worktreePath, sweep.Unremoved);
+            return;
         }
 
         if (throwOnGitFailure)
         {
-            GitIn(repoPath, "worktree", "remove", "--force", worktreePath);
+            GitIn(repoPath, "worktree", "prune");
         }
         else
         {
-            try { GitIn(repoPath, "worktree", "remove", "--force", worktreePath); }
-            catch (InvalidOperationException) { /* not a registered worktree / already gone; pruned by the caller */ }
+            PruneWorktrees(repoPath);
+        }
+    }
+
+    /// <summary>
+    /// Issue #826 review BLOCKER: remove every link in the HARNESS-OWNED tree <paramref name="worktreePath"/>
+    /// (a segment, the integration worktree) before a git command that rewrites it. <c>git reset --hard</c>
+    /// writes a tracked file THROUGH a junction that replaced its tracked parent directory, and <c>git clean
+    /// -fd</c> deletes the target's files as untracked content under that directory (measured: 21 → 1). A link
+    /// that cannot be removed throws <see cref="LinkRemovalException"/> — the rewrite must NOT run; the caller's
+    /// existing git-failure path surfaces it (a retry reset faults the run with the message).
+    /// </summary>
+    internal static void DisarmLinksBeforeGitRewrite(string worktreePath)
+    {
+        LinkSweepResult sweep = LinkSafeTree.RemoveLinks(worktreePath, skipRootGitDirectory: true);
+        if (!sweep.Safe)
+        {
+            throw new LinkRemovalException(worktreePath, sweep.Unremoved, "reset");
+        }
+    }
+
+    /// <summary>
+    /// <c>git reset --hard <paramref name="target"/></c> in a harness-owned worktree, links disarmed first
+    /// (<see cref="DisarmLinksBeforeGitRewrite"/>).
+    /// </summary>
+    internal static void ResetHardLinkSafe(string worktreePath, string target)
+    {
+        DisarmLinksBeforeGitRewrite(worktreePath);
+        GitIn(worktreePath, "reset", "--hard", target);
+    }
+
+    /// <summary>
+    /// <c>git reset --hard <paramref name="target"/></c> in a tree the harness may NOT own — the operator's
+    /// checkout (serial mode) — where a link is theirs and is never removed. A link with paths TRACKED at
+    /// <paramref name="target"/> under it would be written through, so in that case the working tree is left
+    /// alone: only the INDEX is reset (<c>git reset -q</c>, which writes no working-tree file) and a
+    /// <see cref="LinkRemovalException"/> names the links. Otherwise the plain hard reset runs.
+    /// </summary>
+    internal static void ResetHardInOperatorTree(string workspace, string target)
+    {
+        List<string> shadowing = LinksShadowingTrackedPaths(workspace, target);
+        if (shadowing.Count > 0)
+        {
+            GitIn(workspace, "reset", "-q", target);
+            throw new LinkRemovalException(workspace, shadowing, "hard-reset the working tree of");
         }
 
-        SafeDelete.DeleteDirectory(worktreePath);
+        GitIn(workspace, "reset", "--hard", target);
+    }
+
+    /// <summary>
+    /// Every link under <paramref name="workspace"/> (found without removing or following any) that has a path
+    /// tracked at <paramref name="commit"/> beneath it — the links a <c>git reset --hard</c> would write through.
+    /// </summary>
+    private static List<string> LinksShadowingTrackedPaths(string workspace, string commit)
+    {
+        var shadowing = new List<string>();
+        foreach (string link in LinkSafeTree.FindLinks(workspace, skipRootGitDirectory: true).Unremoved)
+        {
+            string rel = Path.GetRelativePath(workspace, link).Replace('\\', '/');
+            if (rel.StartsWith("..", StringComparison.Ordinal) || rel.Contains(" (could not be listed", StringComparison.Ordinal))
+            {
+                shadowing.Add(link); // an unlistable directory: cannot be proven clear
+                continue;
+            }
+
+            var (listing, exit) = TryGitIn(workspace, "--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", commit, "--", rel + "/");
+            if (exit != 0 || listing.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length > 0)
+            {
+                shadowing.Add(link);
+            }
+        }
+
+        return shadowing;
     }
 
     /// <summary>
@@ -592,7 +663,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         string WorktreeOf(string branch) => Path.Combine([worktreeRoot, .. branch["guardrails/".Length..].Split('/')]);
         (HashSet<string> refused, LinkRemovalException? refusal) = TearDownEach(
             segmentBranches.Select(WorktreeOf).Where(Directory.Exists),
-            wt => RemoveWorktreeLinkSafe(repoPath, wt, throwOnGitFailure: false));
+            wt => RemoveWorktreeLinkSafe(repoPath, wt, prune: false, throwOnGitFailure: false));
 
         try { GitIn(repoPath, "worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
 
@@ -670,7 +741,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             // Issue #826: link-safe per worktree; a link-blocked one stays registered and on disk.
             List<string> under = registeredWorktrees.Where(p => RealPath.IsUnder(p, worktreeRoot)).ToList();
             (HashSet<string> refused, refusal) = TearDownEach(
-                under, wt => RemoveWorktreeLinkSafe(repoPath, wt, throwOnGitFailure: false));
+                under, wt => RemoveWorktreeLinkSafe(repoPath, wt, prune: false, throwOnGitFailure: false));
             unregisteredAny = under.Any(p => !refused.Contains(p));
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
@@ -746,8 +817,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <list type="number">
     /// <item>remove the integration worktree checked out on the plan branch — located git-authoritatively
     /// via <see cref="WorktreeForBranch"/> (runId-agnostic), then swept off disk with the SAME pattern
-    /// <see cref="Discard"/>/<see cref="PruneStaleSegmentBranches"/> use (<c>git worktree remove --force</c>
-    /// + issue #109 <see cref="Io.SafeDelete"/> for Windows read-only loose objects);</item>
+    /// <see cref="Discard"/>/<see cref="PruneStaleSegmentBranches"/> use (issue #826: the link-safe
+    /// <see cref="Io.SafeDelete"/> — never <c>git worktree remove</c> — which also clears #109 read-only objects);</item>
     /// <item><c>git worktree prune</c>;</item>
     /// <item><c>git branch -D guardrails/&lt;planName&gt;</c>;</item>
     /// <item>a final disk sweep of any <c>_integration</c> directory a crash orphaned under
@@ -776,7 +847,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             {
                 // Link-safe (#826). A refusal propagates BEFORE the branch delete below: the plan branch stays
                 // checked out in the worktree we left standing, and the caller reports it.
-                RemoveWorktreeLinkSafe(repoPath, integWorktree, throwOnGitFailure: false);
+                RemoveWorktreeLinkSafe(repoPath, integWorktree, prune: false, throwOnGitFailure: false);
             }
         }
         catch (InvalidOperationException)
@@ -834,7 +905,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         string WorktreeOf(string branch) => Path.Combine([_worktreeRoot, runId, .. branch[branchPrefix.Length..].Split('/')]);
         (HashSet<string> refused, LinkRemovalException? refusal) = TearDownEach(
             staleBranches.Select(WorktreeOf).Where(Directory.Exists),
-            wt => RemoveWorktreeLinkSafe(_repoPath, wt, throwOnGitFailure: false));
+            wt => RemoveWorktreeLinkSafe(_repoPath, wt, prune: false, throwOnGitFailure: false));
 
         // Clean up any stale worktree registrations (path removed but git entry lingers).
         Git("worktree", "prune");
@@ -1080,7 +1151,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// commits in the branch reflog (recoverable), so the rewind is destructive but not unrecoverable.
     /// </remarks>
     public void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget) =>
-        GitIn(integ.IntegrationWorktreePath, "reset", "--hard", resetTarget);
+        ResetHardLinkSafe(integ.IntegrationWorktreePath, resetTarget); // #826 review
 
     /// <summary>
     /// Part C (issue #274, SSOT §7.2): build the plan branch's <c>--first-parent</c> trailer history as
@@ -1120,7 +1191,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     {
         if (WorktreeForBranch(repoPath, planBranch) is { } wt && Directory.Exists(wt))
         {
-            GitIn(wt, "reset", "--hard", resetTarget);
+            // #826 review: the worktree holding the plan branch is found git-authoritatively and may be one the
+            // OPERATOR checked out, so their links are never removed here — a reset that would write through one
+            // is refused (index-only reset + LinkRemovalException) instead.
+            ResetHardInOperatorTree(wt, resetTarget);
         }
         else
         {
@@ -1443,8 +1517,16 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// the attempt loop in <see cref="TaskExecutor"/> can reset a retry segment without holding a
     /// provider reference (F2) — the same git operations the provider uses.
     /// </summary>
+    /// <remarks>
+    /// Issue #826 review BLOCKER: every link in the segment is removed FIRST
+    /// (<see cref="DisarmLinksBeforeGitRewrite"/>). An attempt that replaced a TRACKED directory with a junction
+    /// to an outside folder otherwise had <c>reset --hard</c> write the tracked file INTO that folder and
+    /// <c>clean -fd</c> delete the folder's files as untracked (measured 21 → 1). A link that cannot be removed
+    /// throws <see cref="LinkRemovalException"/> and NEITHER command runs.
+    /// </remarks>
     public static void ResetSegment(string worktreePath, string taskBase)
     {
+        DisarmLinksBeforeGitRewrite(worktreePath);
         GitIn(worktreePath, "reset", "--hard", taskBase);
         GitIn(worktreePath, "clean", "-fd");
     }
@@ -2053,7 +2135,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// no branch: the tree was detached, so there is no ref to lose.
     /// </summary>
     public static void RemoveDetachedWorktree(string repoPath, string worktreePath) =>
-        RemoveWorktreeLinkSafe(repoPath, worktreePath, throwOnGitFailure: false); // #826 link-safe
+        RemoveWorktreeLinkSafe(repoPath, worktreePath, prune: true, throwOnGitFailure: false); // #826 link-safe
 
     /// <summary>
     /// Re-alias a git-canonical (REAL-root) path onto this run's launch root (issue #419): map
@@ -2420,7 +2502,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// #109: sweep any tree git left on disk after a Windows read-only loose object refused deletion).
     /// </summary>
     private void RemoveTrialWorktree(string trialWorktreePath) =>
-        RemoveWorktreeLinkSafe(_repoPath, trialWorktreePath, throwOnGitFailure: false); // #826 link-safe
+        RemoveWorktreeLinkSafe(_repoPath, trialWorktreePath, prune: true, throwOnGitFailure: false); // #826 link-safe
 
     /// <summary>
     /// <c>refs/guardrails/trial/&lt;waveDir&gt;</c> — the ref a wave's trial delivery is built onto.

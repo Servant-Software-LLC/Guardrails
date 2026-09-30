@@ -415,9 +415,12 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     "absent from the remote" is byte-identical to "work lost". Ask `git log origin/master --oneline
     --grep '#<issue>'` or `git branch --merged master` first — the question is whether the COMMITS are on
     master, never whether the branch still exists.
-- **Never write `Directory.Delete(x, recursive: true)` or a bare `git worktree remove` (#826).** Use
-  `SafeDelete.DeleteDirectory` (link-safe + #109 read-only) and `GitWorktreeProvider.RemoveWorktreeLinkSafe`;
-  `LinkSafeDeleteTests.Source_EveryRecursiveDelete_GoesThroughTheLinkSafePrimitive` fails the build otherwise.
+- **Never write a recursive delete, `git worktree remove`, or an unguarded `git reset --hard` / `git clean` (#826).**
+  Use `SafeDelete.DeleteDirectory` (link-safe + #109 read-only), `GitWorktreeProvider.RemoveWorktreeLinkSafe`,
+  `ResetSegment` / `ResetHardLinkSafe` (harness trees) or `ResetHardInOperatorTree` (a tree the operator may own);
+  `LinkSafeDeleteTests.Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive` fails otherwise
+  (it knows positional `Delete(p, true)`, `DirectoryInfo.Delete(true)`, `ArgumentList.Add("--hard")` and one-string
+  `git … ` forms, and requires a link guard within 12 lines before each allowed git rewrite).
   Measured: git follows a Windows junction on `worktree remove`, and `Directory.EnumerateFiles(…, AllDirectories)`
   walks into one — any tree walk that may meet a link uses `LinkSafeTree` (no-follow). Link fixtures for tests:
   `tests/Guardrails.Core.Tests/TestSupport/TestLinks.cs` (junction on Windows, symlink on Unix; linked into the

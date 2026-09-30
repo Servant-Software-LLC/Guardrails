@@ -35,6 +35,8 @@ public sealed class TeardownLinkSafetyTests : IDisposable
         Git(_repo, "config", "core.hooksPath", Path.Combine(_base, "no-hooks"));
         File.WriteAllText(Path.Combine(_repo, "README.md"), "# test\n");
         File.WriteAllText(Path.Combine(_repo, ".gitignore"), "node_modules/\n");
+        Directory.CreateDirectory(Path.Combine(_repo, "src"));
+        File.WriteAllText(Path.Combine(_repo, "src", "a.cs"), "class A {}\n"); // a TRACKED directory to replace with a link
         Git(_repo, "add", ".");
         Git(_repo, "commit", "-q", "-m", "init");
     }
@@ -217,6 +219,117 @@ public sealed class TeardownLinkSafetyTests : IDisposable
 
         Assert.False(Directory.Exists(Path.Combine(segment.WorktreePath, "untracked-dir")));
         Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+    }
+
+    /// <summary>
+    /// #826 review BLOCKER: an attempt replaced the TRACKED <c>src/</c> with a junction to an outside folder. Before
+    /// the fix the retry reset's <c>reset --hard</c> wrote <c>a.cs</c> INTO the outside folder and <c>clean -fd</c>
+    /// deleted its files as untracked content under <c>src/</c> (21 → 1). Now the link is removed first and the
+    /// segment is reset inside itself.
+    /// </summary>
+    [Fact]
+    public void ResetSegment_AJunctionReplacingATrackedDirectory_IsRemoved_NothingWrittenOrDeletedThroughIt()
+    {
+        (_, _, WorktreeHandle segment) = Segment();
+        string outside = TestLinks.OutsideFolder(_base, "outside-src");
+        string src = Path.Combine(segment.WorktreePath, "src");
+        Directory.Delete(src, recursive: true); // the attempt's doing: a tracked directory, replaced by a link
+        TestLinks.DirectoryLink(src, outside);
+
+        GitWorktreeProvider.ResetSegment(segment.WorktreePath, segment.TaskBase);
+
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.False(File.Exists(Path.Combine(outside, "a.cs")), "reset --hard must never write a tracked file through a link");
+        Assert.False(LinkSafeTree.IsLink(src), "the link is removed from the segment");
+        Assert.Equal("class A {}\n", File.ReadAllText(Path.Combine(src, "a.cs")).Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    public void ResetSegment_ALinkThatCannotBeRemoved_RunsNeitherResetNorClean_AndSaysSo()
+    {
+        Assert.SkipWhen(TestLinks.IsUnixRoot, "root ignores the read-only parent that pins the link on Unix");
+        (_, _, WorktreeHandle segment) = Segment();
+        string outside = TestLinks.OutsideFolder(_base, "outside-pinned-src");
+        string src = Path.Combine(segment.WorktreePath, "src");
+        Directory.Delete(src, recursive: true);
+        TestLinks.DirectoryLink(src, outside);
+
+        LinkRemovalException refusal;
+        using (TestLinks.Pin(src))
+        {
+            refusal = Assert.Throws<LinkRemovalException>(() => GitWorktreeProvider.ResetSegment(segment.WorktreePath, segment.TaskBase));
+        }
+
+        Assert.Contains("refused to reset", refusal.Message, StringComparison.Ordinal);
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.False(File.Exists(Path.Combine(outside, "a.cs")));
+    }
+
+    /// <summary>
+    /// The operator's own checkout (serial-mode supplied-drain rollback, a plan branch checked out by hand): their
+    /// link is NEVER removed; a hard reset that would write through it is refused and only the index is reset.
+    /// </summary>
+    [Fact]
+    public void ResetHardInOperatorTree_ALinkShadowingATrackedDirectory_IsLeftAlone_AndTheResetRefused()
+    {
+        string outside = TestLinks.OutsideFolder(_base, "outside-operator");
+        string src = Path.Combine(_repo, "src");
+        Directory.Delete(src, recursive: true);
+        TestLinks.DirectoryLink(src, outside);
+
+        LinkRemovalException refusal = Assert.Throws<LinkRemovalException>(
+            () => GitWorktreeProvider.ResetHardInOperatorTree(_repo, "HEAD"));
+
+        Assert.Contains(src, refusal.Unremoved);
+        Assert.True(LinkSafeTree.IsLink(src), "an operator's link is theirs — never removed");
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.False(File.Exists(Path.Combine(outside, "a.cs")));
+    }
+
+    [Fact]
+    public void ResetHardInOperatorTree_ALinkWithNothingTrackedUnderIt_DoesNotBlockTheReset()
+    {
+        string outside = TestLinks.OutsideFolder(_base, "outside-operator-ignored");
+        TestLinks.DirectoryLink(Path.Combine(_repo, "node_modules", "pkg"), outside);
+        File.WriteAllText(Path.Combine(_repo, "README.md"), "changed\n");
+
+        GitWorktreeProvider.ResetHardInOperatorTree(_repo, "HEAD");
+
+        Assert.Equal("# test\n", File.ReadAllText(Path.Combine(_repo, "README.md")).Replace("\r\n", "\n"));
+        Assert.True(LinkSafeTree.IsLink(Path.Combine(_repo, "node_modules", "pkg")));
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+    }
+
+    /// <summary>#826 review WEAK 1: a link inside a NESTED repository's <c>.git/</c> is swept like any other.</summary>
+    [Fact]
+    public void Discard_ALinkInsideANestedRepositorysGitDirectory_OutsideSurvives()
+    {
+        (GitWorktreeProvider provider, _, WorktreeHandle segment) = Segment();
+        string outside = TestLinks.OutsideFolder(_base, "outside-nested-git");
+        TestLinks.DirectoryLink(Path.Combine(segment.WorktreePath, "vendor", "lib", ".git", "objects-link"), outside);
+
+        provider.Discard(segment);
+
+        Assert.False(Directory.Exists(segment.WorktreePath));
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+    }
+
+    /// <summary>
+    /// #826 review WEAK 2: teardown no longer runs <c>git worktree remove</c>; the link-safe delete + a prune must
+    /// still drop git's registration, so the branch can be deleted and the path re-added.
+    /// </summary>
+    [Fact]
+    public void TeardownWithoutGitWorktreeRemove_StillDropsTheRegistration_SoTheBranchCanBeDeletedAndThePathReused()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ, WorktreeHandle segment) = Segment();
+        string branch = Git(segment.WorktreePath, "rev-parse", "--abbrev-ref", "HEAD").Trim();
+
+        provider.Discard(segment);
+
+        Assert.DoesNotContain(RegisteredWorktrees(), p => SamePath(p, segment.WorktreePath));
+        Git(_repo, "branch", "-D", branch); // a branch still checked out in a registered worktree would refuse
+        WorktreeHandle again = provider.CreateSegment("01-task", 1, integ, CancellationToken.None);
+        Assert.True(Directory.Exists(again.WorktreePath));
     }
 
     // ── a link that cannot be removed: refuse, leave everything, report loudly ────────────────────────────────

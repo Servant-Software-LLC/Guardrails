@@ -83,9 +83,19 @@ public static class SuppliedDrain
             commitArgs.AddRange(paths);
             GitIn(workspace, commitArgs.ToArray());
         }
-        catch
+        catch (Exception original)
         {
-            GitIn(workspace, "reset", "--hard", preHead);
+            // #826 review: the workspace may be the operator's own checkout — never remove their links; a hard
+            // reset that would write through one is refused (index-only reset) and said alongside the original.
+            try
+            {
+                GitWorktreeProvider.ResetHardInOperatorTree(workspace, preHead);
+            }
+            catch (Io.LinkRemovalException refusal)
+            {
+                throw new IOException($"{original.Message} — then, rolling back: {refusal.Message}", original);
+            }
+
             throw;
         }
 

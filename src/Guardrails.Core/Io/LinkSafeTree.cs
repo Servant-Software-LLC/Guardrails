@@ -99,9 +99,10 @@ public static class LinkSafeTree
     /// (<see cref="TryRemoveLink"/>). When <paramref name="root"/> is itself a link, only that link is removed.
     /// </summary>
     /// <param name="root">The tree to disarm. A missing root is a no-op.</param>
-    /// <param name="skipGitDirectory">
-    /// Do not descend into directories named <c>.git</c> — git's own internals, which hold no user links and
-    /// can be large. Used by the pre-<c>git worktree remove</c> sweep, where git itself deletes the rest.
+    /// <param name="skipRootGitDirectory">
+    /// Do not descend into <c>&lt;root&gt;/.git</c> — the repository's own internals (a main checkout's object
+    /// store), which can be large. ONLY the root's: a nested repository's <c>.git</c> (a vendored checkout, a
+    /// submodule) is ordinary content that can hold a link like any other directory (#826 review WEAK 1).
     /// </param>
     /// <param name="clearReadOnly">
     /// Also clear the read-only attribute on every real file and directory visited (issue #109: git marks
@@ -109,14 +110,27 @@ public static class LinkSafeTree
     /// delete lists each directory once.
     /// </param>
     /// <returns>What was removed, and every link (or unlistable directory) that could NOT be made safe.</returns>
-    public static LinkSweepResult RemoveLinks(string root, bool skipGitDirectory = false, bool clearReadOnly = false)
+    public static LinkSweepResult RemoveLinks(string root, bool skipRootGitDirectory = false, bool clearReadOnly = false) =>
+        Walk(root, skipRootGitDirectory, clearReadOnly, removeLinks: true);
+
+    /// <summary>
+    /// Every link under <paramref name="root"/> (and <paramref name="root"/> itself when it is one), found by the
+    /// same no-follow walk as <see cref="RemoveLinks"/> but REMOVING NOTHING — for a tree the harness does not own
+    /// (the operator's checkout), where a link is theirs. <see cref="LinkSweepResult.Removed"/> is always empty;
+    /// <see cref="LinkSweepResult.Unremoved"/> lists the links found (and any directory that could not be listed).
+    /// </summary>
+    public static LinkSweepResult FindLinks(string root, bool skipRootGitDirectory = false) =>
+        Walk(root, skipRootGitDirectory, clearReadOnly: false, removeLinks: false);
+
+    private static LinkSweepResult Walk(string root, bool skipRootGitDirectory, bool clearReadOnly, bool removeLinks)
     {
         var removed = new List<string>();
         var unsafeEntries = new List<string>();
+        void OnLink(string path) => (removeLinks && TryRemoveLink(path) ? removed : unsafeEntries).Add(path);
 
         if (IsLink(root))
         {
-            (TryRemoveLink(root) ? removed : unsafeEntries).Add(root);
+            OnLink(root);
             return new LinkSweepResult(removed, unsafeEntries);
         }
 
@@ -125,8 +139,10 @@ public static class LinkSafeTree
             return new LinkSweepResult(removed, unsafeEntries);
         }
 
+        var rootInfo = new DirectoryInfo(root);
+        string rootGit = Path.Combine(rootInfo.FullName, ".git");
         var pending = new Stack<DirectoryInfo>();
-        pending.Push(new DirectoryInfo(root));
+        pending.Push(rootInfo);
         while (pending.Count > 0)
         {
             DirectoryInfo directory = pending.Pop();
@@ -151,7 +167,7 @@ public static class LinkSafeTree
             {
                 if (IsLink(entry))
                 {
-                    (TryRemoveLink(entry.FullName) ? removed : unsafeEntries).Add(entry.FullName);
+                    OnLink(entry.FullName);
                     continue;
                 }
 
@@ -161,7 +177,7 @@ public static class LinkSafeTree
                 }
 
                 if (entry is DirectoryInfo child
-                    && !(skipGitDirectory && string.Equals(child.Name, ".git", StringComparison.OrdinalIgnoreCase)))
+                    && !(skipRootGitDirectory && string.Equals(child.FullName, rootGit, StringComparison.OrdinalIgnoreCase)))
                 {
                     pending.Push(child);
                 }
@@ -170,7 +186,7 @@ public static class LinkSafeTree
 
         if (clearReadOnly)
         {
-            ClearReadOnly(new DirectoryInfo(root));
+            ClearReadOnly(rootInfo);
         }
 
         return new LinkSweepResult(removed, unsafeEntries);
@@ -262,15 +278,21 @@ public sealed record LinkSweepResult(IReadOnlyList<string> Removed, IReadOnlyLis
 public sealed class LinkRemovalException : IOException
 {
     /// <summary>Create the refusal for <paramref name="tree"/>, naming every link that could not be removed.</summary>
-    public LinkRemovalException(string tree, IReadOnlyList<string> unremoved)
-        : this([tree], unremoved)
+    /// <param name="tree">The tree left in place.</param>
+    /// <param name="unremoved">The links (or unlistable directories) in the way.</param>
+    /// <param name="operation">
+    /// What was refused, completing "refused to …" — by default deleting the tree; a git rewrite passes e.g.
+    /// <c>"reset"</c> (<c>git reset --hard</c> / <c>git clean</c> write and delete through a link too).
+    /// </param>
+    public LinkRemovalException(string tree, IReadOnlyList<string> unremoved, string operation = "delete")
+        : this([tree], unremoved, operation)
     {
     }
 
-    private LinkRemovalException(IReadOnlyList<string> trees, IReadOnlyList<string> unremoved)
+    private LinkRemovalException(IReadOnlyList<string> trees, IReadOnlyList<string> unremoved, string operation)
         : base(
-            $"refused to delete {string.Join(", ", trees.Select(t => $"'{t}'"))}: {unremoved.Count} link(s) inside could not be " +
-            $"removed, and deleting the tree with them in place could delete files OUTSIDE it through the link (issue #826). " +
+            $"refused to {operation} {string.Join(", ", trees.Select(t => $"'{t}'"))}: {unremoved.Count} link(s) inside could not be " +
+            $"removed, and doing so with them in place could delete or overwrite files OUTSIDE it through the link (issue #826). " +
             $"Left on disk: {string.Join("; ", unremoved)}. Remove each link ENTRY by hand (Windows: rmdir <link> — never " +
             $"rmdir /s; Unix: rm <link> — never rm -r), then re-run.")
     {
@@ -289,5 +311,5 @@ public sealed class LinkRemovalException : IOException
         refusals.Count == 1
             ? refusals[0]
             : new LinkRemovalException(
-                refusals.SelectMany(r => r.Trees).ToList(), refusals.SelectMany(r => r.Unremoved).ToList());
+                refusals.SelectMany(r => r.Trees).ToList(), refusals.SelectMany(r => r.Unremoved).ToList(), "delete");
 }
