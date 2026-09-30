@@ -135,6 +135,42 @@ public sealed partial class WriteScopeRunTests
     }
 
     [Fact]
+    public async Task Serial_TheRepeatedContextThrashHalt_AlsoReportsTheOutOfScopeWritesItReverted_Issue817()
+    {
+        // #817's needs-human halt (a second consecutive context-thrash attempt) is a terminal halt like any other: in
+        // serial mode the attempt's out-of-scope write is reverted and the halt's feedback and summary say so.
+        using var repo = new TempGitRepo();
+        repo.Commit(UpstreamTest, "original upstream test");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("02-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent(
+            (_, call, invocation) =>
+            {
+                WriteFile(invocation.WorkingDirectory, "src/Impl.cs", $"implementation {call}");
+                if (call == 2)
+                {
+                    WriteFile(invocation.WorkingDirectory, UpstreamTest, "weakened upstream test");
+                }
+            },
+            outcome: (_, _) => PromptFailureKind.MaxTurns,
+            compactions: (_, _) => new CompactionCounts(9, 0));
+
+        RunReport report = await RunSerialAsync(planDir, agent);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("CONTEXT THRASH (9 compactions)", task.Summary);
+        Assert.Contains("second consecutive attempt that ran out of context", task.Summary);
+        Assert.Contains(UpstreamTest, task.Summary);
+        Assert.DoesNotContain(".;", task.Summary);
+
+        string feedback = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 2), "feedback.md"));
+        Assert.Contains("halted: its context ran out twice in a row", feedback);
+        Assert.Contains(RevertedHeading, feedback);
+        Assert.Contains($"`{UpstreamTest}`", feedback[feedback.IndexOf(RevertedHeading, StringComparison.Ordinal)..]);
+        Assert.Equal("original upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
+    }
+
+    [Fact]
     public async Task Serial_ASucceededActionThatWroteOutOfScope_FailsTheWriteScopeCheck_AndIsReverted_Issue816()
     {
         // Serial mode used to run no write-scope check at all: the same write that fails a worktree attempt

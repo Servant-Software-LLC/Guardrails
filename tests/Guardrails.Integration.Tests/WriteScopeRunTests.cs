@@ -600,8 +600,11 @@ public sealed partial class WriteScopeRunTests
     private sealed class ScriptedAgent(
         Action<string, int, PromptInvocation> act,
         IReadOnlyList<string>? refusedPaths = null,
-        Func<string, int, PromptFailureKind>? outcome = null) : IPromptRunner
+        Func<string, int, PromptFailureKind>? outcome = null,
+        Func<string, int, CompactionCounts?>? compactions = null) : IPromptRunner
     {
+        /// <summary>#817: how often each invocation's context was compacted, as the stream parser would report it.</summary>
+        private readonly Func<string, int, CompactionCounts?>? _compactions = compactions;
         private readonly Action<string, int, PromptInvocation> _act = act;
         /// <summary>#816: how each invocation ENDS — a turn cap or a timeout instead of a clean finish.</summary>
         private readonly Func<string, int, PromptFailureKind>? _outcome = outcome;
@@ -631,6 +634,7 @@ public sealed partial class WriteScopeRunTests
                     IsError = true,
                     FailureKind = failure,
                     Summary = $"scripted agent stopped: {failure}",
+                    Compactions = _compactions?.Invoke(taskId, call),
                     BlockedWritePaths = _refusedPaths
                 });
             }

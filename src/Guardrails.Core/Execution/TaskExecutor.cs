@@ -1657,7 +1657,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 RetryPolicy.AppendSalvageSection(thrashFeedback, thrashSalvage, SalvageFraming.Escalation);
             }
 
-            return _journaler.FailedAttempt(
+            // #817: wrapped like every serial halt, since a #817 thrash can now be the first of the two attempts.
+            return WithSerialScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, thrashFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1669,7 +1670,7 @@ public sealed class TaskExecutor : ITaskExecutor
                               $"context. {RetryPolicy.ContextLevers(thrashBlock)}"
                 },
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
-                segments: AttemptJournaler.SegmentsFor(action)) with { ContextExhausted = true };
+                segments: AttemptJournaler.SegmentsFor(action)) with { ContextExhausted = true });
         }
 
         if (!action.Succeeded
@@ -1782,9 +1783,9 @@ public sealed class TaskExecutor : ITaskExecutor
             ContextThrash? thrash = ContextThrash.Diagnose(action);
             if (thrash is not null && priorThrashes >= 1)
             {
-                return SettleRepeatedContextThrash(
+                return WithSerialScopeReport(() => SettleRepeatedContextThrash(
                     task, worktree, attemptNumber, startedAt, relativeLogDir, logDir, action, thrash,
-                    DispatchBlockFor(task, route), provenance, enforcedWriteScope);
+                    DispatchBlockFor(task, route), provenance, enforcedWriteScope));
             }
 
             (bool fileWritesRolledBack, SalvageRef? salvageRef) =
