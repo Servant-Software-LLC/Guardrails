@@ -860,6 +860,22 @@ public sealed class TaskExecutor : ITaskExecutor
                 };
             }
 
+            // #816 fifth review: a worktree-mode revert that REMOVED a link (a directory the attempt or its guardrails
+            // replaced with a link out of the segment) names every one — never a silent structural change.
+            if (scopeNotes.RemovedLinks.Count > 0 && attempt.Result.Outcome != TaskOutcome.TransientPause)
+            {
+                string links = string.Join(", ", scopeNotes.RemovedLinks.Distinct(StringComparer.Ordinal));
+                AttemptArtifacts.WriteRemovedLinksNote(AttemptLogDir(task.Id, attemptNumber), links);
+                attempt = attempt with
+                {
+                    Result = attempt.Result with
+                    {
+                        Summary = AppendClause(
+                            attempt.Result.Summary, $"removed link(s) out of the worktree before reverting under them: {links}")
+                    }
+                };
+            }
+
             return attempt;
         }
     }
@@ -2125,7 +2141,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 try
                 {
                     WriteScopeCheck.ScopedRevert(
-                        phaseOneBase, scopeCheck.OffendingPaths.Where(o => o.Status != '?').ToList());
+                        phaseOneBase, scopeCheck.OffendingPaths.Where(o => o.Status != '?').ToList(),
+                        removedLinks: scopeNotes.RemovedLinks);
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
                 {
@@ -2516,7 +2533,7 @@ public sealed class TaskExecutor : ITaskExecutor
             try
             {
                 IReadOnlyList<WriteScopeOffense> stripped = WriteScopeCheck.StripOutOfScope(
-                    worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
+                    worktree.WorktreePath, worktree.TaskBase, scopeGlobs, scopeNotes.RemovedLinks);
                 if (stripped.Count > 0)
                 {
                     AttemptArtifacts.WriteScopeCleanNote(logDir, stripped);
@@ -2829,7 +2846,7 @@ public sealed class TaskExecutor : ITaskExecutor
         bool reverted = true;
         try
         {
-            WriteScopeCheck.ScopedRevert(scopeBase, offenses);
+            WriteScopeCheck.ScopedRevert(scopeBase, offenses, removedLinks: notes?.RemovedLinks);
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {

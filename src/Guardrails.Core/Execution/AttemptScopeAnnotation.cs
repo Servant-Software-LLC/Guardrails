@@ -13,4 +13,10 @@ internal sealed class AttemptScopeAnnotation
 
     /// <summary>The paths the end-of-attempt check reverted, or null when it reverted nothing.</summary>
     public IReadOnlyList<string>? RevertedPaths { get; set; }
+
+    /// <summary>
+    /// #816 fifth review: links (workspace-relative directories) a worktree-mode revert REMOVED because an offending
+    /// path lay under them. Named in the attempt summary and log; never populated in serial mode, which refuses.
+    /// </summary>
+    public List<string> RemovedLinks { get; } = [];
 }

@@ -167,7 +167,7 @@ public static class WriteScopeCheck
     /// </para>
     /// </summary>
     public static IReadOnlyList<WriteScopeOffense> StripOutOfScope(
-        string repoPath, string taskBase, IReadOnlyList<string>? scope)
+        string repoPath, string taskBase, IReadOnlyList<string>? scope, List<string>? removedLinks = null)
     {
         // #389: preserve phase-2's pre-existing null behavior (strip nothing). Check now fail-closes a
         // null scope to empty, so without this guard a null scope would revert the entire tree here.
@@ -183,7 +183,7 @@ public static class WriteScopeCheck
             return [];
         }
 
-        ScopedRevert(repoPath, taskBase, realOffenses);
+        ScopedRevert(ScopeDiffBase.ForSegment(repoPath, taskBase), realOffenses, removedLinks: removedLinks);
         return realOffenses;
     }
 
@@ -404,8 +404,16 @@ public static class WriteScopeCheck
     /// the snapshot hashed and never touch the operator's own index. Every git child is handed at most
     /// <see cref="PatchPathBatchSize"/> paths. Throws <see cref="InvalidOperationException"/> on a git failure.
     /// </summary>
+    /// <param name="diffBase">What the revert restores to.</param>
+    /// <param name="offendingPaths">The paths to revert.</param>
+    /// <param name="cancellationToken">Bounds each git call.</param>
+    /// <param name="removedLinks">
+    /// #816 fifth review: receives every link (a workspace-relative directory path) this revert REMOVED — worktree
+    /// mode only — so the caller can name it. Null to discard.
+    /// </param>
     public static void ScopedRevert(
-        ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths, CancellationToken cancellationToken = default)
+        ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths, CancellationToken cancellationToken = default,
+        List<string>? removedLinks = null)
     {
         List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
         if (paths.Count == 0) return;
@@ -425,16 +433,34 @@ public static class WriteScopeCheck
         // refusing: every later git operation on the tree (the segment commit, a retry's reset, the worktree's own
         // removal) follows a junction straight through, deleting or rewriting the outside file. Only when the link
         // cannot be removed is the path refused — left on disk, reported, never written.
+        //
+        // #816 fifth review: link REMOVAL is worktree-mode only. A segment worktree is the task's own tree, created at
+        // taskBase, so a link in it is the attempt's (or its guardrails') doing. The SERIAL workspace is the operator's
+        // own checkout, where a link may be theirs — a pre-existing junction to a shared folder — and removing it
+        // would silently break their setup while leaving the outside edit in place. Serial mode therefore REFUSES and
+        // reports, naming the path and the link. Every link removed in worktree mode is named in
+        // <paramref name="removedLinks"/>, which the caller reports.
+        bool mayRemoveLinks = diffBase.IndexFile is null;
         var refused = new List<string>();
         bool Safe(string path)
         {
-            while (LinkedAncestor(diffBase.RepoPath, path) is { } linked)
+            const int MaxLinkRemovals = 16;
+            for (int removals = 0; LinkedAncestor(diffBase.RepoPath, path) is { } linked; removals++)
             {
-                if (!TryRemoveLink(Path.Combine(diffBase.RepoPath, linked.Replace('/', Path.DirectorySeparatorChar))))
+                if (!mayRemoveLinks)
+                {
+                    refused.Add($"{path} (under '{linked}', which is a link out of the workspace — left in place in the operator's checkout)");
+                    return false;
+                }
+
+                if (removals >= MaxLinkRemovals
+                    || !TryRemoveLink(Path.Combine(diffBase.RepoPath, linked.Replace('/', Path.DirectorySeparatorChar))))
                 {
                     refused.Add($"{path} (under '{linked}', which is now a link that could not be removed)");
                     return false;
                 }
+
+                removedLinks?.Add(linked);
             }
 
             return true;

@@ -1245,12 +1245,16 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   fault-tolerant per path (a failed batch is bisected): one unhashable or vanished file loses only its own
   byte-exact restore (listed in `write-scope-check.log`), never the snapshot. **Linked ancestors (fourth review):**
   in BOTH modes, every revert — raw restore, `git checkout`, `git rm` — first walks the path's ancestor directories
-  from the workspace root, and when a directory on the way is now a symlink or a Windows junction (git follows a
-  junction as a directory, so even its own checkout of a tracked file writes through — measured) it REMOVES THE
-  LINK ENTRY itself (never its target) and restores the path inside the workspace. Leaving the link was measured
-  to be worse: every later git operation on the tree (the segment commit, a retry's reset, the worktree's removal)
-  deletes or rewrites the outside file through it. Only a link that cannot be removed makes the path REFUSED — left
-  on disk, reported like any failed revert. Removals run FIRST, so a symlink that replaced a directory (which git
+  from the workspace root, and a directory on the way that is now a symlink or a Windows junction (git follows a
+  junction as a directory, so even its own checkout of a tracked file writes through — measured) is handled by
+  MODE. **Worktree mode** removes THE LINK ENTRY itself (never its target; at most 16 removals per path) and restores
+  the path inside the segment, NAMING every removed link in the attempt summary (`removed link(s) out of the
+  worktree before reverting under them: …`) and `write-scope-check.log` — the segment is the task's own tree, and
+  leaving the link was measured to be worse: every later git operation on it (the segment commit, a retry's reset,
+  `git worktree remove --force`) deletes or rewrites the outside files through it. **Serial mode never removes a
+  link**: the workspace is the operator's own checkout, where the link may be theirs (a pre-existing junction to a
+  shared folder), so the path is REFUSED — left on disk, the link left in place, reported like any failed revert
+  and naming both the path and the link. A link that cannot be removed in worktree mode is refused the same way. Removals run FIRST, so a symlink that replaced a directory (which git
   sees as a new path) is removed before its former children are recreated. A phase-2 (post-guardrail) strip that
   cannot finish is reported loudly on the attempt (`write scope NOT checked this attempt: …`) and never aborts the
   run as a fault. Detection reads `LinkTarget` only — not the ReparsePoint attribute, which non-link reparse points

@@ -313,12 +313,73 @@ public sealed partial class WriteScopeRunTests
             Assert.Equal("OUTSIDE", File.ReadAllText(Path.Combine(outside, "x.txt")));
             Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
             Assert.DoesNotContain("NOT checked", task.Summary);
+            if (OperatingSystem.IsWindows())
+            {
+                // The junction git followed was removed to revert under it — and that removal is NAMED, never silent.
+                Assert.Contains("removed link(s) out of the worktree before reverting under them: data", task.Summary);
+            }
             // The link was a side effect to strip, and the plan branch carries the ORIGINAL file, not the outside one.
             Assert.Equal("ORIGINAL", TempGitRepo.Git(repo.RepoPath, "show", $"{PlanBranch(repo)}:data/x.txt"));
         }
         finally
         {
             Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Serial_AnOperatorsOwnJunction_IsNeverRemoved_TheWriteUnderItIsRefusedAndReported_Issue816()
+    {
+        // The operator's checkout has a PRE-EXISTING junction (a symlink on Unix) `libs/common` → a shared folder
+        // outside the workspace. The agent writes out of scope THROUGH it. Serial mode must not remove the operator's
+        // link, must not write the outside file itself, and must say so — naming the path and the link.
+        using var repo = new TempGitRepo();
+        string shared = Path.Combine(Path.GetTempPath(), "gr-shared-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(shared);
+        for (int i = 0; i < 21; i++)
+        {
+            File.WriteAllText(Path.Combine(shared, $"f{i}.txt"), $"shared {i}");
+        }
+
+        string link = Path.Combine(repo.RepoPath, "libs", "common");
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "libs"));
+        LinkDirectory(link, shared);
+        try
+        {
+            using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+                ?? throw new InvalidOperationException(why);
+
+            File.WriteAllText(Path.Combine(link, "f3.txt"), "the agent's out-of-scope edit"); // lands in the shared folder
+
+            WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.NotEmpty(check.OffendingPaths); // git follows a junction: the non-vacuous case, on the OS that has it
+            }
+
+            Exception? revert = Record.Exception(() => WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct));
+
+            Assert.NotNull(new DirectoryInfo(link).LinkTarget);                      // the operator's link is intact
+            Assert.Equal(21, Directory.EnumerateFiles(shared).Count());             // nothing deleted through it
+            Assert.Equal("the agent's out-of-scope edit", File.ReadAllText(Path.Combine(shared, "f3.txt"))); // not written by us
+            Assert.Equal("shared 4", File.ReadAllText(Path.Combine(shared, "f4.txt")));
+            if (check.OffendingPaths.Count > 0)
+            {
+                // git followed the junction and saw the edit: the revert refused it and says so, naming path and link.
+                InvalidOperationException refusal = Assert.IsType<InvalidOperationException>(revert);
+                Assert.Contains("libs/common/f3.txt", refusal.Message);
+                Assert.Contains("under 'libs/common'", refusal.Message);
+                Assert.Contains("left in place", refusal.Message);
+            }
+        }
+        finally
+        {
+            if (new DirectoryInfo(link).LinkTarget is not null)
+            {
+                Directory.Delete(link);
+            }
+
+            Directory.Delete(shared, recursive: true);
         }
     }
 

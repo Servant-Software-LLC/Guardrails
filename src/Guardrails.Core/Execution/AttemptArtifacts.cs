@@ -114,6 +114,26 @@ internal static class AttemptArtifacts
     }
 
     /// <summary>
+    /// Issue #816 fifth review: name the links a worktree-mode revert removed (directories replaced by a link out of
+    /// the segment, under which an out-of-scope path had to be reverted). Appended to <c>write-scope-check.log</c>.
+    /// </summary>
+    public static void WriteRemovedLinksNote(string logDir, string links)
+    {
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            File.AppendAllText(
+                Path.Combine(logDir, "write-scope-check.log"),
+                "# write-scope revert (issue #816): removed these link(s) out of the worktree (the link entry only, never its " +
+                "target) before reverting the out-of-scope path(s) under them:\n" + links + "\n");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics only.
+        }
+    }
+
+    /// <summary>
     /// Write <c>scope-clean.log</c> naming the out-of-scope paths a phase-2 scope-clean stripped from
     /// the segment after the guardrails PASSED (SSOT §3.4, issue #280). A durable, UI-independent trace
     /// (the #253 "don't silently vanish files" posture): the paths were a passing guardrail's side
