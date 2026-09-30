@@ -420,10 +420,12 @@ public static class RunCommand
 
         if (fresh)
         {
-            RunReset.Fresh(probe.Plan.PlanDirectory);
-            io.Out.WriteLine(
-                "Fresh run: runtime state cleared, the plan branch and all worktrees were torn down, "
-                + "and state was re-seeded from your current HEAD.\n");
+            bool tornDown = RunReset.Fresh(probe.Plan.PlanDirectory, io.Error);
+            io.Out.WriteLine(tornDown
+                ? "Fresh run: runtime state cleared, the plan branch and all worktrees were torn down, "
+                  + "and state was re-seeded from your current HEAD.\n"
+                : "Fresh run: runtime state cleared and re-seeded from your current HEAD, but a worktree was "
+                  + "LEFT IN PLACE because a link inside it could not be removed safely (see the warning above).\n");
         }
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;

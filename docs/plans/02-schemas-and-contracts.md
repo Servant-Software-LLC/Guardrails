@@ -968,6 +968,68 @@ might still be offered), bounds that growth: writing attempt `N`'s ref deletes t
 refs for `M <= N - SalvageRefRetentionPerTask`. Refs are throwaway bookkeeping; the per-attempt
 `prior-attempt.patch` files in the log dirs are unaffected and remain the durable record.
 
+**Teardown never follows a link (issue #826).** A harness teardown deletes nothing outside the tree it tears
+down. Measured on Windows (git 2.53): `git worktree remove --force` on a worktree holding a directory
+**junction** deletes every file in the junction's TARGET (a 21-file outside fixture went to 0), while `git
+clean -fd[x]` and .NET's recursive delete remove only the link entry — but .NET's `AllDirectories` enumeration
+DOES walk into a junction. A link can sit anywhere a task, build or package manager put it — under an ignored
+`node_modules/` (`npm link` / pnpm point at the developer's own package source), or created without changing a
+tracked path — where no write-scope diff (§3.4, #816) ever sees it. **The harness never runs `git worktree
+remove`.** Every worktree teardown — segment `Discard` (the end-of-run green sweep), the trial-delivery and
+revalidate worktrees, the stale-run and stale-segment prunes, the `--fresh` plan-branch teardown, and the
+completion reclaim / startup GC (#407) — is: (1) the link-safe `SafeDelete` of the worktree directory, whose
+walk NEVER follows a link (lstat semantics — `LinkTarget` on the entry itself, the reparse-point attribute
+gating it on Windows; never enumerating into a link target) and removes every link ENTRY — directory symlink,
+file symlink, junction, dangling link, including inside a nested repository's `.git/` — non-recursively,
+IMMEDIATELY before .NET's recursive delete (which does not follow links either, measured), so no window opens
+between a sweep and a link-following delete; then (2) `git worktree prune` for git's bookkeeping (prune deletes
+no working-tree file; it drops the registration of the now-missing directory, so the branch can be deleted and
+the path re-added — batched sweeps prune once, #450). Accepted side effect: `git worktree prune` is repo-wide, so
+it may also drop the registration of one of the OPERATOR's own worktrees whose directory is unreachable at that
+moment (an unmounted drive, a moved folder); `git worktree repair <path>` restores it. `SafeDelete` is the harness's ONE recursive delete (every
+other recursive `Directory.Delete` / `DirectoryInfo.Delete` routes through it): it disarms links in the same
+single walk that clears read-only attributes (#109), removes only the link when handed a link, and never touches
+anything reached through one. The orphaned-`_integration` sweep uses the same no-follow walk.
+
+**`git reset --hard` and `git clean` are guarded the same way.** An attempt that replaced a TRACKED directory
+with a junction to an outside folder had the retry reset's `reset --hard` write the tracked file INTO that folder
+and `clean -fd` delete the folder's files as untracked content (measured 21 → 1). So every rewrite of a
+HARNESS-OWNED tree — the retry `ResetSegment` (`reset --hard` + `clean -fd`), the AI-merge resolver's failure
+reset (the same `ResetSegment`), the integration worktree's merge rollback, plan-branch rewind and auto-supply
+rollback — first removes every link in the tree (the same walk; only `<worktree>/.git` itself is skipped), and
+when a link cannot be removed NEITHER command runs: a `LinkRemovalException` ("refused to reset …") takes the
+call's existing failure path (a retry reset faults the run with the message; the supply rollback reports through
+`CleanupFailed`). A tree the operator may own — the serial-mode supplied-drain rollback and a plan branch checked
+out in their own checkout (`RewindPlanBranch`) — never has a link removed. A hard reset WRITES every path tracked
+at the target and DELETES every path tracked in the index (or at HEAD) that the target lacks, so when a link has a
+path beneath it at the TARGET, at HEAD, or in the INDEX, only HEAD and the index move (`git reset -q`, which writes
+no working-tree file) and the refusal has its own message: HEAD and the index are now at the target, the working
+tree was left as it was (files from the undone change remain on disk, untracked or modified), which of the
+operator's links shadow tracked paths, and that `git reset --hard <target>` is safe once they are moved out of the
+way. (Measured: a path at HEAD but not in the index is left alone by git; the HEAD probe is belt-and-braces.) A
+link with nothing tracked under it (an ignored `node_modules/` entry) does not block. The same guard covers the
+other link-following rewrites: the auto-supply path `checkout` in the integration worktree disarms links first,
+and the write-scope revert's `checkout` / `rm` run only on paths that are neither links themselves nor under a
+linked ancestor — a link at the LEAF (a tracked file replaced by a junction reads to git as a directory, and git
+deletes recursively THROUGH it when replacing it: measured 21 → 0) is handled by mode like an ancestor, removed and
+named in worktree mode BEFORE any git batch, refused and left in place in serial mode (#816 + #826 final review).
+
+**A link that cannot be removed REFUSES the teardown** (`LinkRemovalException`, naming each link and telling the
+operator to remove the ENTRY by hand — `rmdir <link>` / `rm <link>`, never recursively): the worktree, its
+registration and its branch are left in place, and the refusal is reported, never swallowed — the live and plain
+consoles print `[worktree] <task>: worktree LEFT IN PLACE — …` (via `IRunObserver.CleanupFailed`), the reclaim/GC
+log prints `WARNING:`, `reset` / `run --fresh` print `WARNING:` on stderr and say a worktree was left in place
+instead of "all worktrees torn down", and a run-start stale-run prune that cannot finish stops the run (a stale
+segment must not be mistaken for integrated work). A source-level TRIPWIRE (not a proof) flags the literal,
+common shapes of a regression: a recursive delete outside `SafeDelete`, any `git worktree remove`, and a
+link-following git rewrite (`reset --hard/--merge/--keep`, `clean`, `checkout`, `restore`, `stash`, `rm`,
+`switch`, `read-tree`) with neither a link-guard CALL earlier in the same method body nor a substantive
+`// #826 link-guard: <why>` justification (≥ 3 words, ≥ 20 characters) on the line above. It does not prove the
+guard dominates every path to the call or see a verb built at run time; the guards themselves are reviewed
+invariants.
+Cost: one directory listing per real directory in the tree — the listings the delete makes anyway — and nothing
+inside any link target.
+
 ### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
 The terminal whole-repo integration gate is the final soundness boundary, run once on the fully merged

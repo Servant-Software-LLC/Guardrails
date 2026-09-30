@@ -2656,7 +2656,7 @@ public sealed class Scheduler
             {
                 if (Directory.Exists(rejectedTasks))
                 {
-                    Directory.Delete(rejectedTasks, recursive: true);
+                    Io.SafeDelete.DeleteDirectory(rejectedTasks);
                 }
 
                 Directory.Move(tasksDir, rejectedTasks);
@@ -2672,7 +2672,7 @@ public sealed class Scheduler
             {
                 if (Directory.Exists(tasksDir))
                 {
-                    Directory.Delete(tasksDir, recursive: true);
+                    Io.SafeDelete.DeleteDirectory(tasksDir);
                 }
 
                 Directory.CreateDirectory(tasksDir);
@@ -5321,7 +5321,10 @@ public sealed class Scheduler
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                GitResetHardBestEffort(integ.IntegrationWorktreePath, preCommitHead);
+                if (GitResetHardBestEffort(integ.IntegrationWorktreePath, preCommitHead) is { } refusal)
+                {
+                    _observer.CleanupFailed(task.Id, refusal);
+                }
                 RecordAutoResolveAdvisory(runJournal, task, "commit-failed", proposal.Diagnosis);
                 return null;
             }
@@ -5533,6 +5536,10 @@ public sealed class Scheduler
     /// </summary>
     private static void GitCheckoutPathsFromCommit(string workingDir, string sourceCommit, IReadOnlyList<string> paths)
     {
+        // #826: a path checkout writes THROUGH a junction standing where a parent directory was; the integration
+        // worktree is harness-owned, so its links are removed first (an unremovable one throws — the caller's
+        // commit-failed path).
+        GitWorktreeProvider.DisarmLinksBeforeGitRewrite(workingDir);
         var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDir,
@@ -5566,31 +5573,23 @@ public sealed class Scheduler
     /// Design 41 §5: on a failed commit, restore the pre-commit <c>HEAD</c> so no partly-staged file can be
     /// picked up by a later drain under someone else's name. Best-effort — never masks the original failure.
     /// </summary>
-    private static void GitResetHardBestEffort(string workingDir, string sha)
+    private static Io.LinkRemovalException? GitResetHardBestEffort(string workingDir, string sha)
     {
         try
         {
-            var psi = new ProcessStartInfo("git")
-            {
-                WorkingDirectory = workingDir,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-                StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-            };
-            psi.ArgumentList.Add("reset");
-            psi.ArgumentList.Add("--hard");
-            psi.ArgumentList.Add(sha);
-
-            using var proc = Process.Start(psi)!;
-            proc.StandardOutput.ReadToEnd();
-            proc.StandardError.ReadToEnd();
-            proc.WaitForExit();
+            // #826 review: the integration worktree is harness-owned — links are disarmed before the hard reset,
+            // which would otherwise write through a junction standing where a tracked directory was.
+            GitWorktreeProvider.ResetHardLinkSafe(workingDir, sha);
+            return null;
+        }
+        catch (Io.LinkRemovalException refusal)
+        {
+            return refusal; // never silent: the caller reports it
         }
         catch
         {
             // Cleanup after an already-failed commit attempt; never mask the original failure.
+            return null;
         }
     }
 

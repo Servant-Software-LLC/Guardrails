@@ -406,6 +406,20 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
   boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **Teardown never deletes through a link (#826, SSOT 3.2).** `git worktree remove --force` follows a Windows
+  junction and deletes its whole target (measured), so EVERY worktree teardown (segment Discard, trial/revalidate
+  trees, stale-run/segment prune, `--fresh` plan-branch teardown, completion reclaim + startup GC) is the link-safe
+  `SafeDelete` (its no-follow walk removes each link ENTRY -- symlink, junction, dangling, even inside a nested
+  `.git/` -- right before .NET's non-following delete) + `git worktree prune`; the harness NEVER runs `git worktree
+  remove`. `git reset --hard` / `clean -fd` on a harness tree (retry `ResetSegment`, AI-merge failure reset,
+  integration rollback/rewind) disarm links first too -- a junction replacing a tracked dir was written INTO and
+  cleaned out (21 -> 1); on a tree the operator may own (serial supplied-drain rollback, `RewindPlanBranch`) links
+  are never removed and a reset that would write or delete through one (a path under it at the target, HEAD, or in
+  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. The write-scope
+  revert checks the LEAF too, not only ancestors: a tracked file replaced by a junction is removed (worktree) or
+  refused (serial) before any `git checkout`/`rm` batch -- git deletes through a leaf junction (21 -> 0). A link that cannot be
+  removed REFUSES (`LinkRemovalException`): tree + registration + branch left in place, reported loudly (console
+  `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`, a retry reset faults the run), never risked.
 - **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
   never reaches the phase-1 check (failed action, timeout, max-turns, stall, staging/fragment/harness-write
   rejection, a serial cancel, a transient pause's re-run) gets the SAME check + #705 `out-of-scope.patch` +

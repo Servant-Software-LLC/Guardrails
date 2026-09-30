@@ -60,9 +60,9 @@ internal sealed class AiMergeResolver
             bool ok = await AttemptAsync(worktreePath, planDirectory, journal, ct).ConfigureAwait(false);
             if (ok) return true;
 
-            // Failure path: reset worktree to pre-merge HEAD, remove untracked files.
-            GitIn(worktreePath, "reset", "--hard", preMergeHead);
-            GitIn(worktreePath, "clean", "-fd");
+            // Failure path: reset worktree to pre-merge HEAD, remove untracked files — the SAME link-safe
+            // reset a retry uses (#826 review: links disarmed first; an unremovable one throws, nothing runs).
+            GitWorktreeProvider.ResetSegment(worktreePath, preMergeHead);
         }
 
         // Budget exhausted; worktree is already at preMergeHead.
@@ -192,7 +192,7 @@ internal sealed class AiMergeResolver
         }
         finally
         {
-            try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort teardown */ }
+            try { Io.SafeDelete.DeleteDirectory(tmpDir); } catch { /* best-effort teardown */ }
         }
     }
 

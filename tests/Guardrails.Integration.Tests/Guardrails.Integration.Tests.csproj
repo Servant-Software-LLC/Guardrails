@@ -21,6 +21,9 @@
   <ItemGroup>
     <Compile Include="..\Guardrails.Core.Tests\TestSupport\SynthesisedPairProof.cs"
              Link="TestSupport\SynthesisedPairProof.cs" />
+    <!-- #826 - the portable link fixtures (junction / symlink / dangling / pinned) the teardown tests share. -->
+    <Compile Include="..\Guardrails.Core.Tests\TestSupport\TestLinks.cs"
+             Link="TestSupport\TestLinks.cs" />
   </ItemGroup>
 
   <ItemGroup>

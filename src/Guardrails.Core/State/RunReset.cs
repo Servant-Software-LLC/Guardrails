@@ -34,8 +34,17 @@ public static class RunReset
     /// surviving <c>--fresh</c> would revert a legitimately re-authored file on the next run, before
     /// any task re-snapshots its current bytes. It is harness-owned runtime state like the rest of
     /// <c>state/</c>, never committed.
+    /// <para>
+    /// Issue #826: every delete here is link-safe (<see cref="SafeDelete"/>, and the worktree teardowns through
+    /// <c>GitWorktreeProvider</c>'s link-safe removal) — a link inside a worktree or <c>logs/</c> is removed as an
+    /// entry, never deleted through. A worktree whose link could NOT be removed is left standing (with its
+    /// branch) and named on <paramref name="warnings"/>; the reset still completes everything else.
+    /// </para>
     /// </remarks>
-    public static void Fresh(string planDirectory)
+    /// <param name="planDirectory">The plan folder to reset.</param>
+    /// <param name="warnings">Where a link-blocked teardown is reported (null discards it — tests only).</param>
+    /// <returns>True when every teardown completed; false when a worktree was left standing (reported).</returns>
+    public static bool Fresh(string planDirectory, TextWriter? warnings = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(planDirectory);
         string stateDir = Path.Combine(planDirectory, "state");
@@ -63,10 +72,11 @@ public static class RunReset
         // and, crucially, the plan branch whose trailers drive resume — would survive --fresh, silently
         // reusing already-succeeded segments even for edited tasks. Best-effort: a non-git workspace or a
         // load failure must not abort the reset.
-        PruneStaleWorktreesAndBranches(planDirectory);
+        bool complete = PruneStaleWorktreesAndBranches(planDirectory, warnings);
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();
+        return complete;
     }
 
     /// <summary>
@@ -491,8 +501,15 @@ public static class RunReset
     /// tear down the plan branch <c>guardrails/&lt;plan-name&gt;</c> itself (issue #274, part B). Swallows
     /// every failure (unloadable plan, non-git workspace) so <c>--fresh</c> never aborts.
     /// </summary>
-    private static void PruneStaleWorktreesAndBranches(string planDirectory)
+    private static bool PruneStaleWorktreesAndBranches(string planDirectory, TextWriter? warnings)
     {
+        bool complete = true;
+        void Refused(LinkRemovalException refusal)
+        {
+            complete = false;
+            warnings?.WriteLine($"WARNING: {refusal.Message}");
+        }
+
         try
         {
             PlanLoadResult load = new PlanLoader().Load(planDirectory);
@@ -503,7 +520,8 @@ public static class RunReset
                 // Prune with the REAL root: git canonicalizes the short #383 junction back to the real
                 // worktree path in its own registrations, so the git-authoritative teardown already keys on
                 // the real root regardless of whether a junction aliased it during the run.
-                GitWorktreeProvider.PruneStaleSegmentBranches(plan.Workspace, realRoot);
+                try { GitWorktreeProvider.PruneStaleSegmentBranches(plan.Workspace, realRoot); }
+                catch (LinkRemovalException refusal) { Refused(refusal); }
 
                 // Issue #274 (part B): tear down the plan branch itself. It is the DURABLE cross-run resume
                 // record — its Guardrails-Task: trailers drive the "already succeeded, skip it" pre-pass — and
@@ -513,8 +531,12 @@ public static class RunReset
                 // fresh/full-reset path (Fresh is the sole caller) — a normal resume never reaches here, so the
                 // plan branch is preserved and resumed against exactly as before. The plan name matches the
                 // Scheduler's branch-creating derivation (Path.GetFileName(plan.PlanDirectory)).
-                GitWorktreeProvider.TeardownPlanBranch(
-                    plan.Workspace, realRoot, Path.GetFileName(plan.PlanDirectory));
+                try
+                {
+                    GitWorktreeProvider.TeardownPlanBranch(
+                        plan.Workspace, realRoot, Path.GetFileName(plan.PlanDirectory));
+                }
+                catch (LinkRemovalException refusal) { Refused(refusal); }
 
                 // #195 retry-salvage pruning (deliverable 6): a --fresh reset also clears every preserved
                 // salvage ref across the whole repo, alongside the existing stale segment/fork branch
@@ -534,6 +556,8 @@ public static class RunReset
         {
             // Best-effort cleanup — a fresh reset must succeed even if the prune cannot run.
         }
+
+        return complete;
     }
 
     private static void DeleteFileIfExists(string path)

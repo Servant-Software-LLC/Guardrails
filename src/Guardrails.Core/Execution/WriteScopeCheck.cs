@@ -466,12 +466,45 @@ public static class WriteScopeCheck
             return true;
         }
 
+        // #826 final review: Safe() above checks the path's ANCESTORS only. A git checkout / rm of a path that is
+        // ITSELF a link is just as dangerous: a tracked FILE replaced by a junction reads to git as a directory, and
+        // `git checkout <base> -- cfg` replaces that "directory" by deleting recursively THROUGH the junction
+        // (measured on Windows, serial mode: outside 21 → 0; worktree mode survived only because a child's Safe()
+        // happened to remove the junction first). So every path handed to a git batch is checked at the LEAF too —
+        // by lstat, dangling links included — and handled by MODE exactly like an ancestor: worktree mode removes the
+        // link entry (named in removedLinks) BEFORE the batch runs; serial mode refuses the path, link left in place.
+        // The raw-bytes restore below keeps its own leaf handling (it removes the leaf link and writes a file, never
+        // through it).
+        bool SafeForGit(string path)
+        {
+            string full = Path.Combine(diffBase.RepoPath, path.Replace('/', Path.DirectorySeparatorChar));
+            if (Io.LinkSafeTree.IsLink(full))
+            {
+                if (!mayRemoveLinks)
+                {
+                    refused.Add($"{path} (is itself now a link out of the workspace — left in place in the operator's checkout)");
+                    return false;
+                }
+
+                if (!TryRemoveLink(full))
+                {
+                    refused.Add($"{path} (is itself now a link that could not be removed)");
+                    return false;
+                }
+
+                removedLinks?.Add(path);
+            }
+
+            return Safe(path);
+        }
+
         // Newly-added paths FIRST — no base blob exists, so they are removed from the index and the working tree.
         // First, because a link that REPLACED a directory is itself such a path (on Unix git sees `data` as a new
         // symlink): removing the link before its former children are restored means they are recreated inside the
         // workspace, where they belong, rather than refused.
-        foreach (List<string> batch in Batches(addedSinceBase.Where(Safe).ToList()))
+        foreach (List<string> batch in Batches(addedSinceBase.Where(SafeForGit).ToList()))
         {
+            // #826 link-guard: every path in this batch passed SafeForGit() above - neither the path itself nor any ancestor is a link any more (worktree: removed; serial: refused and left out).
             var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
             args.AddRange(batch);
             ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
@@ -515,11 +548,13 @@ public static class WriteScopeCheck
             }
         }
 
-        // Modified/deleted tracked files: restore the base blob into the index AND the working tree. git replaces a
-        // link at the LEAF itself; a linked ANCESTOR is refused above, since git follows a junction straight through.
+        // Modified/deleted tracked files: restore the base blob into the index AND the working tree. A link at the LEAF
+        // or on an ANCESTOR is handled by SafeForGit first (#826 final review: a leaf JUNCTION reads to git as a
+        // directory, and git deletes recursively through it when replacing it — it does NOT replace it as a link).
         List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
-        foreach (List<string> batch in Batches(existedAtBase.Where(Safe).ToList()))
+        foreach (List<string> batch in Batches(existedAtBase.Where(SafeForGit).ToList()))
         {
+            // #826 link-guard: every path in this batch passed SafeForGit() above - neither the path itself nor any ancestor is a link any more (worktree: removed; serial: refused and left out).
             var args = new List<string> { "--literal-pathspecs", "checkout", diffBase.Base, "--" };
             args.AddRange(batch);
             ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
@@ -546,34 +581,10 @@ public static class WriteScopeCheck
     /// <summary>
     /// #816 final review: remove the link at <paramref name="linkPath"/> — the ENTRY only, never what it points at (a
     /// junction or directory symlink is deleted non-recursively, a dangling or file link as a file). Returns false,
-    /// deleting nothing, when the path is not a link or the removal fails.
+    /// deleting nothing, when the path is not a link or the removal fails. #826: the shared
+    /// <see cref="Io.LinkSafeTree.TryRemoveLink"/> primitive every teardown uses too.
     /// </summary>
-    internal static bool TryRemoveLink(string linkPath)
-    {
-        try
-        {
-            var directory = new DirectoryInfo(linkPath);
-            if (directory.LinkTarget is null)
-            {
-                return false; // not a link: never delete a real directory here
-            }
-
-            if (directory.Exists)
-            {
-                directory.Delete(recursive: false); // a junction / directory symlink: removes the link entry only
-            }
-            else
-            {
-                new FileInfo(linkPath).Delete(); // a dangling or file-typed link
-            }
-
-            return new DirectoryInfo(linkPath).LinkTarget is null && !Directory.Exists(linkPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
+    internal static bool TryRemoveLink(string linkPath) => Io.LinkSafeTree.TryRemoveLink(linkPath);
 
     private static string? LinkedAncestorCore(string root, string relativePath)
     {
