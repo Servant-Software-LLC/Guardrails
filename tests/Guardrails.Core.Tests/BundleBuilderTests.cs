@@ -445,7 +445,45 @@ public sealed class BundleBuilderTests : IDisposable
         var shell = new Dictionary<string, string> { ["LITELLM_MASTER_KEY"] = "set-in-this-shell", ["JUDGE_API_KEY"] = "" };
         Assert.Equal(["JUDGE_API_KEY"], BundleD1.UnsetVariables(plan, shell));
         Assert.Equal(["JUDGE_API_KEY", "LITELLM_MASTER_KEY"], BundleD1.UnsetVariables(plan, new Dictionary<string, string>()));
-        Assert.Contains("  export JUDGE_API_KEY in this shell and re-run `guardrails bundle`", BundleD1.RefusalLines(["JUDGE_API_KEY"]));
+        Assert.Contains(
+            "  JUDGE_API_KEY is not set: export JUDGE_API_KEY=<value> in this shell and re-run `guardrails bundle`",
+            BundleD1.RefusalLines(["JUDGE_API_KEY"], new Dictionary<string, string>()));
+    }
+
+    [Fact]
+    public void D1RefusalTellsAnUnsetVariableFromOneSetButEmpty()
+    {
+        // #814: a bare `export NAME` (no `=value`) exports an EMPTY variable, which D1 still refuses. The refusal must
+        // say so, not repeat the remedy the operator just followed.
+        var shell = new Dictionary<string, string> { ["EMPTY_KEY"] = "" };
+
+        IReadOnlyList<string> lines = BundleD1.RefusalLines(["EMPTY_KEY", "MISSING_KEY"], shell);
+
+        Assert.Contains(
+            "  EMPTY_KEY is set but EMPTY (did you run `export EMPTY_KEY` without `=value`?): "
+            + "export EMPTY_KEY=<value> in this shell and re-run `guardrails bundle`",
+            lines);
+        Assert.Contains(
+            "  MISSING_KEY is not set: export MISSING_KEY=<value> in this shell and re-run `guardrails bundle`",
+            lines);
+        Assert.DoesNotContain(lines, line => line.Contains("MISSING_KEY is set but EMPTY", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, line => line.Contains("EMPTY_KEY is not set", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void D1RefusalOffersNoRedactForAPrivateBundleAndKeepsWithoutAgentText()
+    {
+        // #814: --no-redact already bypasses D1; the refusal must name it, scoped to a bundle that stays private,
+        // and AFTER --without-agent-text (the scrub-preserving remedy comes first).
+        IReadOnlyList<string> lines = BundleD1.RefusalLines(["LITELLM_MASTER_KEY"], new Dictionary<string, string>());
+
+        const string withoutAgentText =
+            "  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.";
+        const string noRedact =
+            "  Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private (its name gets "
+            + "-UNREDACTED; never attach it to a public issue).";
+        Assert.StartsWith("guardrails bundle: refused (D1):", lines[0], StringComparison.Ordinal);
+        Assert.Equal([withoutAgentText, noRedact], lines.Skip(lines.Count - 2));
     }
 
     [Fact]

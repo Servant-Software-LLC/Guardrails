@@ -8215,8 +8215,8 @@ never as a retryable blip.
   subprocesses get the child's environment. For a local gateway without authentication the token is the harmless
   placeholder. For a remote gateway with a real token, any command the model runs can read it under either name.
 - **Session transcripts can hold the token.** `guardrails bundle` scrubs the gateway token from session
-  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text`,
-  §17.6.5); the loopback log viewer (§12) does neither.
+  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text` or
+  `--no-redact`, §17.6.5); the loopback log viewer (§12) does neither.
 
 #### 9.10.2 The preflight
 
@@ -10625,13 +10625,17 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--max-size <MB>` | `20` | Cap on the **finished zip**, in MiB (§17.7). GitHub accepts attachments up to 25 MB. |
 | `--lean` | off | Withholds every **full**-class entry (§17.3), leaving only the harness-written evidence set. For a public issue when the code is private. |
 | `--include-worktree-diff` | off | Adds the full `git diff` of the integration worktree and of each selected segment. It is source code, so it is **refused with `--lean`**. |
-| `--without-agent-text` | off | The only way past the D1 refusal (§17.6.5). Ships the bundle with **all agent-derived free text removed, run-wide**. |
+| `--without-agent-text` | off | Clears the D1 refusal (§17.6.5) without the token value. Ships the bundle with **all agent-derived free text removed, run-wide**. |
 | `--keep-paths` | off | Disables path anonymization (§17.6.3). Anonymization is the default. |
-| `--no-redact` | off | Skips the credential passes (§17.6.8). Never for a public issue. |
+| `--no-redact` | off | Skips ALL credential scrubbing (§17.6.8), so it also clears the D1 refusal. The output's name **always** gets `-UNREDACTED`, an explicit `--out`/`--dir` included. Only for a bundle that stays private; never for a public issue. |
 
 **The file name.** `<plan>` is the plan folder's name. `[-<task>]` is appended only when **exactly one**
 `--task` is given; with two or more, the suffix is `-tasks-<N>` (N = the number of distinct ids given).
-`--no-redact` appends `-UNREDACTED` before `.zip`. The default directory `~/guardrails-bundles/` is created
+`--no-redact` appends `-UNREDACTED` before `.zip`, and it **always** marks the output (#814): an explicit
+`--out` gets `-UNREDACTED` inserted before its extension (`run.zip` → `run-UNREDACTED.zip`; no extension: appended),
+and a `--dir` folder gets it appended to its last segment, unless that file or folder name already contains
+`-UNREDACTED`. Every destination check (the non-empty `--dir` refusal, §17.8) sees the marked path, and the
+printed path is the marked one. The default directory `~/guardrails-bundles/` is created
 when absent. An existing zip at the destination is **replaced** (the bundle is regenerable; the write is a
 temp file then a move, like every harness write). An existing `--dir` destination must be **absent or
 empty**, otherwise the verb refuses (exit `1`): it never merges into, or deletes from, a directory it did not
@@ -10640,7 +10644,9 @@ create.
 **Argument refusals** (all exit `1`, all **before anything is read**): `--out` together with `--dir`;
 `--lean` together with `--include-worktree-diff`; a `--task` id the plan does not declare (named); a
 `--run` value that is not a single path segment (a separator, `.`/`..`, a rooted value, an invalid file-name
-character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty
+character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; an `--out` or
+`--dir` whose last segment is a root (`C:\`, `C:`, `\\srv\share\`, `/`, or a path resolving to one) or `.`/`..`,
+redacted or not, since it has no name to write or to mark `-UNREDACTED` (#814); a non-empty
 existing `--dir`; a destination under the plan directory or the worktree root (§17.8, refused **even with
 `--force-path`**); and the path refusal of §17.8.
 
@@ -11127,12 +11133,21 @@ events, which can split a value across lines. Two rules cover that:
 #### 17.6.5 Pass 5 — D1: refuse when this shell cannot see a run token (run-scoped)
 
 If **any** runner block the plan declares names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in
-the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable and gives
-the remedy, e.g.:
+the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable, telling
+**unset** (the name is absent from the environment) from **set but empty** (in zsh a bare `export NAME` with
+no `=value` exports it empty, which D1 still refuses; in bash it stays unset), then offers three remedies
+(#814), e.g.:
 
 ```text
-export LITELLM_MASTER_KEY in this shell and re-run `guardrails bundle`
+  LITELLM_MASTER_KEY is not set: export LITELLM_MASTER_KEY=<value> in this shell and re-run `guardrails bundle`
+  JUDGE_API_KEY is set but EMPTY (did you run `export JUDGE_API_KEY` without `=value`?): export JUDGE_API_KEY=<value> in this shell and re-run `guardrails bundle`
+  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.
+  Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private (its name gets -UNREDACTED; never attach it to a public issue).
 ```
+
+`--no-redact` clears D1 because it skips pass 5 altogether (§17.6.8); it is the remedy for a bundle that stays
+with its author (moving a run between two machines to debug it), where `--without-agent-text` would strip the
+very evidence being debugged.
 
 The check is **run-scoped**, not per file, because attributing a token to individual files is unsound: a
 prompt judge picks its own block (`TierResolver.ResolveJudge` with the judge's frontmatter `runner`);
@@ -11210,8 +11225,8 @@ failure that matters; over-redaction is the accepted, counted cost.
 
 Skips passes **1, 2, 4 and 5**, so there is **no D1 refusal**: nothing is claimed scrubbed. Path
 anonymization (pass 3) still runs unless `--keep-paths` is given, and `--without-agent-text`, when given,
-still removes what it removes. The rest of `claude-config/` stays excluded regardless. The file name gets the
-`-UNREDACTED` suffix, REDACTIONS.md becomes the single line `NOT REDACTED: do not post publicly`, and that
+still removes what it removes. The rest of `claude-config/` stays excluded regardless. The output's name always
+gets the `-UNREDACTED` suffix, an explicit `--out` or `--dir` included (§17.2), REDACTIONS.md becomes the single line `NOT REDACTED: do not post publicly`, and that
 warning is printed to stderr **before and after** the write.
 
 ### 17.7 Size budget — tail caps, trim order, and the protected core

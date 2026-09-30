@@ -426,8 +426,14 @@ public sealed class BundleCliTests
         (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, "--out", zip);
 
         Assert.Equal(ExitCodes.HarnessError, exit);
-        Assert.Contains($"  export {SyntheticRun.JudgeTokenVar} in this shell and re-run `guardrails bundle`", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(
+            $"  {SyntheticRun.JudgeTokenVar} is not set: export {SyntheticRun.JudgeTokenVar}=<value> in this shell and re-run `guardrails bundle`",
+            io.ErrorText, StringComparison.Ordinal);
         Assert.Contains("--without-agent-text", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private", io.ErrorText, StringComparison.Ordinal);
+        Assert.True(
+            io.ErrorText.IndexOf("--without-agent-text", StringComparison.Ordinal) < io.ErrorText.IndexOf("--no-redact", StringComparison.Ordinal),
+            "--without-agent-text is offered before --no-redact");
         Assert.False(File.Exists(zip));
         Assert.False(Directory.Exists(Path.GetDirectoryName(zip)));
         Assert.Equal(0, host.ToolVersionReads);
@@ -439,6 +445,172 @@ public sealed class BundleCliTests
         (int exitWith, StringConsoleIo ioWith) = await InvokeBundleAsync(
             new RecordingHost(run.Home, withToken).Host, "bundle", run.PlanDir, "--out", zip);
         Assert.True(exitWith == 0, ioWith.ErrorText);
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task ATokenVariableSetButEmpty_IsRefusedWithTheSetButEmptyWording()
+    {
+        // #814: `export NAME` with no `=value` exports an EMPTY variable. D1 still refuses; the refusal must say the
+        // variable is set but empty, not repeat the remedy the operator just followed.
+        using var run = new SyntheticRun(judgeBlock: true);
+        var empty = new Dictionary<string, string>(run.Environment) { [SyntheticRun.JudgeTokenVar] = "" };
+        string zip = Path.Combine(run.OutDir, "empty", "b.zip");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(new RecordingHost(run.Home, empty).Host, "bundle", run.PlanDir, "--out", zip);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains(
+            $"  {SyntheticRun.JudgeTokenVar} is set but EMPTY (did you run `export {SyntheticRun.JudgeTokenVar}` without `=value`?): "
+            + $"export {SyntheticRun.JudgeTokenVar}=<value> in this shell and re-run `guardrails bundle`",
+            io.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain($"{SyntheticRun.JudgeTokenVar} is not set", io.ErrorText, StringComparison.Ordinal);
+        Assert.False(File.Exists(zip));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task NoRedact_ShipsPastD1_KeepingTheAgentTextUnderAnUnredactedName()
+    {
+        // #814: the refusal's --no-redact remedy is real: the same shell D1 refuses ships with --no-redact, and the
+        // agent text a debugging bundle needs is still there. W1: an explicit --out is MARKED, never used verbatim.
+        using var run = new SyntheticRun(judgeBlock: true);
+        string outDir = Path.Combine(run.OutDir, "private");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(
+            new RecordingHost(run.Home, run.Environment).Host, "bundle", run.PlanDir, "--out", Path.Combine(outDir, "private.zip"), "--no-redact");
+
+        Assert.True(exit == 0, io.ErrorText);
+        Assert.DoesNotContain("refused (D1)", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(BundleBuilder.NotRedactedLine, io.ErrorText, StringComparison.Ordinal);
+        string written = Directory.GetFiles(outDir, "*.zip").Single();
+        Assert.Equal(Path.Combine(outDir, "private-UNREDACTED.zip"), written);
+        Assert.EndsWith("-UNREDACTED.zip", written, StringComparison.Ordinal);
+        Assert.StartsWith($"{written} (", io.OutText, StringComparison.Ordinal);
+        Dictionary<string, byte[]> entries = Entries(written);
+        Assert.Contains(entries, e => Encoding.UTF8.GetString(e.Value).Contains(SyntheticRun.FreeTextCanary, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task NoRedact_TheDefaultName_GetsTheUnredactedSuffix()
+    {
+        using var run = new SyntheticRun();
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(
+            new RecordingHost(run.Home, run.Environment).Host, "bundle", run.PlanDir, "--no-redact");
+
+        Assert.True(exit == 0, io.ErrorText);
+        string expected = Path.Combine(
+            run.Home, BundleCommand.DefaultDirectoryName, $"{SyntheticRun.PlanName}-{SyntheticRun.RunId}-UNREDACTED.zip");
+        Assert.True(File.Exists(expected), $"no bundle at {expected}; stdout: {io.OutText}");
+        Assert.StartsWith($"{expected} (", io.OutText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task NoRedact_ADirDestination_GetsTheUnredactedSuffix_AndTheUnmarkedFolderIsNeverCreated()
+    {
+        using var run = new SyntheticRun();
+        string tree = Path.Combine(run.OutDir, "xfer");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(
+            new RecordingHost(run.Home, run.Environment).Host, "bundle", run.PlanDir, "--dir", tree, "--no-redact");
+
+        Assert.True(exit == 0, io.ErrorText);
+        string marked = tree + "-UNREDACTED";
+        Assert.True(Directory.Exists(marked), $"no tree at {marked}; stdout: {io.OutText}");
+        Assert.True(File.Exists(Path.Combine(marked, "MANIFEST.md")));
+        Assert.False(Directory.Exists(tree), "the unmarked --dir was written");
+        Assert.StartsWith($"{marked} (", io.OutText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("run.zip", false, "run-UNREDACTED.zip")]
+    [InlineData("run", false, "run-UNREDACTED")]
+    [InlineData("run.tar.zip", false, "run.tar-UNREDACTED.zip")]
+    [InlineData("run-UNREDACTED.zip", false, "run-UNREDACTED.zip")]
+    [InlineData("my-UNREDACTED-copy.zip", false, "my-UNREDACTED-copy.zip")]
+    [InlineData("xfer", true, "xfer-UNREDACTED")]
+    [InlineData("xfer-UNREDACTED", true, "xfer-UNREDACTED")]
+    [Trait("Category", "Bundle")]
+    public void MarkUnredacted_InsertsTheSuffixOnce(string leaf, bool directory, string expectedLeaf)
+    {
+        string parent = Path.Combine(Path.GetTempPath(), "xfer-parent");
+
+        Assert.Equal(Path.Combine(parent, expectedLeaf), BundleCommand.MarkUnredacted(Path.Combine(parent, leaf), directory));
+    }
+
+    /// <summary>Destinations with no name to write or mark: roots (OS-specific spellings) and "."/"..".</summary>
+    public static TheoryData<string, string, bool> UnnamedDestinations()
+    {
+        var roots = new List<string> { ".", "..", "./", "../", "/" };
+        if (OperatingSystem.IsWindows())
+        {
+            roots.AddRange([@"C:\", "C:", @"\\srv\share\", @"\\srv\share"]);
+        }
+
+        var data = new TheoryData<string, string, bool>();
+        foreach (string root in roots)
+        {
+            foreach (string flag in new[] { "--out", "--dir" })
+            {
+                data.Add(flag, root, false);
+                data.Add(flag, root, true);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(UnnamedDestinations))]
+    [Trait("Category", "Bundle")]
+    public async Task ARootOrDotDestination_IsRefusedBeforeAnythingIsRead_RedactedOrNot(string flag, string destination, bool noRedact)
+    {
+        // #814: a root has no last segment, so --no-redact's marking once produced the bare relative "-UNREDACTED" and
+        // wrote it into the CWD. A root, "." or ".." is never a sane bundle destination: refused, nothing written.
+        using var run = new SyntheticRun();
+        var host = new RecordingHost(run.Home, run.Environment);
+        string strayMarked = Path.Combine(Environment.CurrentDirectory, BundleCommand.UnredactedSuffix);
+        string[] args = noRedact
+            ? ["bundle", run.PlanDir, flag, destination, "--no-redact"]
+            : ["bundle", run.PlanDir, flag, destination];
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, args);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains($"{flag} {destination} is not a usable bundle destination", io.ErrorText, StringComparison.Ordinal);
+        host.AssertNothingWasRead();
+        Assert.Empty(io.OutText);
+        Assert.False(Directory.Exists(strayMarked) || File.Exists(strayMarked), $"something was written at {strayMarked}");
+        Assert.False(Directory.Exists(Path.Combine(run.Home, BundleCommand.DefaultDirectoryName)));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public void MarkUnredacted_ADirWithATrailingSeparator_MarksItsLastSegment()
+    {
+        string parent = Path.Combine(Path.GetTempPath(), "xfer-parent");
+
+        Assert.Equal(
+            Path.Combine(parent, "xfer-UNREDACTED"),
+            BundleCommand.MarkUnredacted(Path.Combine(parent, "xfer") + Path.DirectorySeparatorChar, directory: true));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public void TheOptionDescriptions_NameBothWaysPastD1_AndNeitherClaimsToBeTheOnlyOne()
+    {
+        // #814: --without-agent-text once claimed to be "the only way past the D1 refusal"; --no-redact is another.
+        Command bundle = BundleCommand.Create(new StringConsoleIo());
+        string Describe(string name) => bundle.Options.Single(o => o.Name == name).Description ?? "";
+
+        Assert.DoesNotContain("only way", Describe("--without-agent-text"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("D1", Describe("--without-agent-text"), StringComparison.Ordinal);
+        Assert.Contains("D1", Describe("--no-redact"), StringComparison.Ordinal);
+        Assert.Contains("UNREDACTED", Describe("--no-redact"), StringComparison.Ordinal);
+        Assert.Contains("--out and --dir included", Describe("--no-redact"), StringComparison.Ordinal);
     }
 
     [Fact]

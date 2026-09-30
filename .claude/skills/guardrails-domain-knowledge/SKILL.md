@@ -1617,12 +1617,15 @@ evidence badly (#791 omitted the token actually sent; #797 omitted what explaine
   per file with a share-everything handle, `run.json` first (section 17.2). So bundle a stuck run BEFORE
   killing it.
 - **Full by default; `--lean` withholds proprietary content.** Credentials are always scrubbed (unless
-  `--no-redact`, which names the file `-UNREDACTED`); prompts, transcripts, stream logs, gateway sessions and
+  `--no-redact`, which ALWAYS names the output `-UNREDACTED`, an explicit `--out`/`--dir` included; #814); prompts, transcripts, stream logs, gateway sessions and
   patches are INCLUDED under a loud stderr warning. Redaction removes credentials, not IP: for private code
   on a public issue, pass `--lean`. `--include-worktree-diff` adds source and is refused with `--lean`.
 - **D1 refusal, run-wide.** If ANY runner block names an `authTokenEnv`/`apiKeyEnv` unset or empty in the
-  bundling shell, it refuses (exit 1, nothing written) and names each variable. Remedy: export it and re-run,
-  or `--without-agent-text` (all agent-derived free text removed, run-wide). There is no per-file attribution.
+  bundling shell, it refuses (exit 1, nothing written) and names each variable, telling unset from set-but-empty
+  (in zsh a bare `export NAME` exports it empty; in bash it stays unset; #814). Remedies, in refusal order:
+  `export NAME=<value>` and re-run; `--without-agent-text` (all agent-derived free text removed, run-wide); or
+  `--no-redact` only for a bundle that stays private (skips ALL scrubbing incl. pass 5, name gets `-UNREDACTED`).
+  There is no per-file attribution.
 - **Destination.** Default `~/guardrails-bundles/<plan>-<runId>[-<task>].zip`; `--out`/`--dir` override
   (mutually exclusive). EVERY destination inside a git working tree is refused unless `--force-path`.
 - **Size.** `--max-size` (default 20 MiB) caps the finished zip; fixed trim tiers never touch the protected

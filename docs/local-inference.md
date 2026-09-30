@@ -345,7 +345,10 @@ behavior).
 
 - **Run it from the shell that exported `LITELLM_MASTER_KEY`.** The runner block names that variable in
   `authTokenEnv`, and if this shell doesn't have it, `bundle` refuses and writes nothing (it can't scrub a
-  token it can't see). Export it and re-run, or pass `--without-agent-text` to drop all agent-derived text.
+  token it can't see). Export it with its value (`export LITELLM_MASTER_KEY=<value>`; in zsh a bare `export`
+  without `=value` exports it empty, which is still refused; in bash it stays unset) and re-run. Or pass
+  `--without-agent-text` to drop all agent-derived text. Or, only if the bundle stays private, pass `--no-redact`
+  to skip ALL credential scrubbing (its name always gets `-UNREDACTED`; never attach it to a public issue).
 - **Pass `--lean` if the code is private.** By default the bundle includes prompts, transcripts, gateway
   sessions and patches (credentials scrubbed, under a loud warning). `--lean` withholds them.
 - **Don't kill a stuck run before bundling it.** `bundle` is read-only and safe on a live run: it takes no
@@ -518,7 +521,7 @@ works on a stuck run without stopping it, so bundle before you kill the run (ste
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | An attempt ends `context exhausted` (Claude Code: "Autocompact is thrashing"); two in a row settle the task needs-human | The context refilled right after each compaction, often from whole files printed through Bash | Raise `contextTokens` toward the per-slot `n_ctx`, split the task, or narrow the block's Bash grant (step 5) |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
-| `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=...` and re-run, or pass `--without-agent-text` |
+| `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=<value>` (with a value: in zsh a bare `export` exports it empty; in bash it stays unset) and re-run; or pass `--without-agent-text`; or, for a bundle that stays private, `--no-redact` (skips ALL scrubbing, name gets `-UNREDACTED`) |
 
 ## What still leaves the machine
 
