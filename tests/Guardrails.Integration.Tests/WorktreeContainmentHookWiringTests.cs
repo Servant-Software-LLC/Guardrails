@@ -121,6 +121,14 @@ public sealed class WorktreeContainmentHookWiringTests : IDisposable
         Assert.Contains("PreToolUse", settingsJson, StringComparison.Ordinal);
         Assert.Contains(WorktreeContainmentHook.Matcher, settingsJson, StringComparison.Ordinal);
 
+        // #816: the write-scope hook rides the SAME settings file (a runner gets exactly one --settings), and its
+        // script bakes the SEGMENT as the workspace root it polices.
+        Assert.Contains($"\"matcher\": \"{WriteScopeHook.Matcher}\"", settingsJson, StringComparison.Ordinal);
+        string scopeScript = Path.Combine(attemptDir,
+            Windows ? WriteScopeHook.ScriptFileNameWindows : WriteScopeHook.ScriptFileNameUnix);
+        Assert.True(File.Exists(scopeScript), "the write-scope hook script must be generated beside the containment hook");
+        Assert.Contains(Path.Combine("01-generate", "attempt-1"), File.ReadAllText(scopeScript), StringComparison.Ordinal);
+
         // (a2) The root BAKED into that script is THIS task's segment worktree — nothing asserted that
         // before, so a wiring bug that baked the plan dir or the user's own checkout would have gone
         // unseen here (and would have handed the agent a hook that polices the wrong tree). The
@@ -193,6 +201,11 @@ public sealed class WorktreeContainmentHookWiringTests : IDisposable
         Assert.False(
             File.Exists(Path.Combine(attemptDir, WorktreeContainmentHook.SettingsFileName)),
             "serial mode must never generate the containment hook settings file");
+
+        // #816: but the write-scope hook applies in serial mode too — alone, under its own settings name.
+        string scopeSettings = Path.Combine(attemptDir, WriteScopeHook.SettingsFileName);
+        Assert.True(File.Exists(scopeSettings), "serial mode must generate the write-scope hook settings file");
+        Assert.DoesNotContain("containment-hook", File.ReadAllText(scopeSettings), StringComparison.Ordinal);
 
         string composedPrompt = File.ReadAllText(Path.Combine(attemptDir, "composed-prompt.md"));
         Assert.DoesNotContain("## Worktree safety", composedPrompt, StringComparison.Ordinal);

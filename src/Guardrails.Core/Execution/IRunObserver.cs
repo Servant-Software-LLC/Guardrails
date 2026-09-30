@@ -189,6 +189,23 @@ public interface IRunObserver
     void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
 
     /// <summary>
+    /// Issue #816 review (WEAK 6): this attempt's <c>writeScope</c> was NOT fully checked or enforced — the serial
+    /// snapshot could not be taken, the end-of-attempt check hit a git error, or a revert failed — for
+    /// <paramref name="reason"/>. Also stated in the attempt's summary and <c>write-scope-check.log</c>; raised here
+    /// so it reaches the console as it happens rather than only a file. Default no-op.
+    /// </summary>
+    void WriteScopeNotChecked(TaskNode task, int attempt, string reason) { }
+
+    /// <summary>
+    /// Issue #816: at RUN START, the workspace differs from the snapshot an earlier attempt of
+    /// <paramref name="task"/> journaled and never finished with (the harness was killed, crashed, or the host slept)
+    /// on <paramref name="paths"/>, all outside the task's writeScope. They are REPORTED, not reverted — they may be
+    /// that attempt's out-of-scope edits, or a human's fix since. <paramref name="patchPath"/> is the kept copy of
+    /// the differences, or null when none could be written. Default no-op.
+    /// </summary>
+    void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) { }
+
+    /// <summary>
     /// An autonomy-policy decision was recorded to the unified <c>decisions[]</c> log (SSOT §2.1/§7): the
     /// <paramref name="entry"/> carries the <c>boundary</c> (M1 emits only <c>drift</c> — a safe
     /// definition-drift auto-resolved at the pre-DAG gate, §7.2), the policy in force, how it resolved, and

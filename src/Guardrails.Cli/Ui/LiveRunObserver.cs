@@ -909,6 +909,36 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        lock (_gate)
+        {
+            // #816 second review (WEAK A): a scope check that could not run is said on the surface the operator
+            // is watching, not only in a log file. Same words as the plain console; the whole line is escaped, so
+            // its "[write-scope]" prefix is text, not a Spectre style tag.
+            AppendNarrative($"[bold yellow]{Markup.Escape(ConsoleRunObserver.WriteScopeNotCheckedNotice(task, attempt, reason))}[/]");
+        }
+    }
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        lock (_gate)
+        {
+            AppendNarrative($"[bold yellow]{Markup.Escape(ConsoleRunObserver.InterruptedAttemptNotice(task, paths, patchPath))}[/]");
+        }
+    }
+
+    public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped)
+    {
+        lock (_gate)
+        {
+            // Not a failure (#280) — but a stripped path must never be a silent surprise on the live surface either.
+            string paths = string.Join(", ", stripped.Select(o => $"{o.Status} {o.Path}"));
+            AppendNarrative(
+                $"[grey]{Markup.Escape($"scope-clean {task.Id}: stripped {stripped.Count} out-of-scope path(s) left by a passing guardrail (not a failure): {paths}")}[/]");
+        }
+    }
+
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         lock (_gate)

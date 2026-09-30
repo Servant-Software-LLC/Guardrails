@@ -107,7 +107,7 @@ public sealed class SegmentStagingTests
         repo.Write(".guardrails-staging/01-task/scaffold.txt", "staging scaffolding");
         repo.Write(".guardrails-agent-io/01-task/attempt-1/out.json", "agent-io residue");
 
-        SegmentStaging.StageAll(repo.RepoPath);
+        SegmentStaging.StageAll(repo.RepoPath, cancellationToken: TestContext.Current.CancellationToken);
 
         string staged = repo.StagedNameStatus().Replace('\\', '/');
         IReadOnlyList<string> lines = staged

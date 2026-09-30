@@ -32,14 +32,25 @@ public static class WriteScopeCheck
     /// Staging the index is not a content rewrite — no tracked file's bytes change — and the Scheduler's
     /// integration step stages + commits the same tree on the pass path anyway.
     /// </remarks>
-    public static WriteScopeCheckResult Check(string repoPath, string taskBase, IReadOnlyList<string>? scope)
+    public static WriteScopeCheckResult Check(string repoPath, string taskBase, IReadOnlyList<string>? scope) =>
+        Check(ScopeDiffBase.ForSegment(repoPath, taskBase), scope);
+
+    /// <summary>
+    /// <see cref="Check(string, string, IReadOnlyList{string})"/> against any <see cref="ScopeDiffBase"/> (issue
+    /// #816): a segment's taskBase in worktree mode, or the serial-mode snapshot tree staged through a private
+    /// index. One implementation, so the two modes can never disagree about what an offense is.
+    /// </summary>
+    public static WriteScopeCheckResult Check(
+        ScopeDiffBase diffBase, IReadOnlyList<string>? scope, CancellationToken cancellationToken = default)
     {
+        string repoPath = diffBase.RepoPath;
+        string taskBase = diffBase.Base;
         // #389: fail-closed on null — an absent scope is treated as an EMPTY scope (writes nothing
         // allowed), so any change becomes an offense. Previously null was an early PASS = "no check",
         // the silent unbounded-write loophole this closes.
         scope ??= [];
 
-        string diffOutput;
+        IReadOnlyList<(char Status, string Path)> changes;
         try
         {
             // Stage the action's writes so new/untracked files surface in the staged diff, then diff
@@ -49,8 +60,8 @@ public static class WriteScopeCheck
             // guardrail's `npm ci` node_modules is uniformly invisible to harness git, so it can never
             // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
             // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
-            SegmentStaging.StageAll(repoPath);
-            diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            SegmentStaging.StageAll(repoPath, diffBase.IndexFile, cancellationToken);
+            changes = StagedChanges(diffBase, cancellationToken);
         }
         catch (InvalidOperationException ex)
         {
@@ -68,19 +79,10 @@ public static class WriteScopeCheck
 
         var offending = new List<WriteScopeOffense>();
         var inScope = new List<string>();
-        foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach ((char status, string path) in changes)
         {
-            string line = rawLine.Trim();
-            int tabIdx = line.IndexOf('\t');
-            if (tabIdx < 0) continue;
-
-            // git diff --name-status prints a single status letter (A/M/D — renames are disabled via
-            // --no-renames, so no multi-char "R100"-style scores appear here) before the tab.
-            string statusField = line[..tabIdx].Trim();
-            char status = statusField.Length > 0 ? statusField[0] : '?';
-
-            string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-            if (string.IsNullOrEmpty(path)) continue;
+            // #816: the serial snapshot's harness-owned plan dirs (logs/, state/) are never the agent's write.
+            if (diffBase.IsHarnessOwned(path)) continue;
 
             if (!WriteScope.IsInScope(path, scope))
             {
@@ -104,6 +106,36 @@ public static class WriteScopeCheck
             OffendingPaths = offending,
             InScopePaths = inScope
         };
+    }
+
+    /// <summary>
+    /// The staged index's changes against the base as (status, path) pairs, read with <c>-z</c> (#816 review): a
+    /// NUL-separated listing is never C-quoted, so a non-ASCII or otherwise unusual path (<c>docs/café.md</c>) is
+    /// judged — and later reverted — by its real name rather than a quoted escape that names no file.
+    /// <c>git diff --name-status</c> prints a single status letter per path (renames are disabled via
+    /// <c>--no-renames</c>, so no multi-char "R100"-style scores appear).
+    /// </summary>
+    private static List<(char Status, string Path)> StagedChanges(ScopeDiffBase diffBase, CancellationToken cancellationToken)
+    {
+        string output = ScopeGit.Run(
+            diffBase.RepoPath, diffBase.IndexFile,
+            ["diff", "--cached", "--name-status", "--no-renames", "-z", diffBase.Base], cancellationToken);
+
+        var changes = new List<(char, string)>();
+        string[] fields = output.Split('\0');
+        for (int i = 0; i + 1 < fields.Length; i += 2)
+        {
+            string statusField = fields[i].Trim();
+            string path = fields[i + 1].Replace('\\', '/');
+            if (statusField.Length == 0 || path.Length == 0)
+            {
+                continue;
+            }
+
+            changes.Add((statusField[0], path));
+        }
+
+        return changes;
     }
 
     /// <summary>
@@ -135,7 +167,7 @@ public static class WriteScopeCheck
     /// </para>
     /// </summary>
     public static IReadOnlyList<WriteScopeOffense> StripOutOfScope(
-        string repoPath, string taskBase, IReadOnlyList<string>? scope)
+        string repoPath, string taskBase, IReadOnlyList<string>? scope, List<string>? removedLinks = null)
     {
         // #389: preserve phase-2's pre-existing null behavior (strip nothing). Check now fail-closes a
         // null scope to empty, so without this guard a null scope would revert the entire tree here.
@@ -151,7 +183,7 @@ public static class WriteScopeCheck
             return [];
         }
 
-        ScopedRevert(repoPath, taskBase, realOffenses);
+        ScopedRevert(ScopeDiffBase.ForSegment(repoPath, taskBase), realOffenses, removedLinks: removedLinks);
         return realOffenses;
     }
 
@@ -260,18 +292,9 @@ public static class WriteScopeCheck
         try
         {
             SegmentStaging.StageAll(repoPath);
-            string diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
-            foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            foreach ((_, string path) in StagedChanges(ScopeDiffBase.ForSegment(repoPath, taskBase), default))
             {
-                string line = rawLine.Trim();
-                int tabIdx = line.IndexOf('\t');
-                if (tabIdx < 0) continue;
-
-                string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-                if (path.Length > 0)
-                {
-                    changed.Add(path);
-                }
+                changed.Add(path);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException
@@ -302,7 +325,15 @@ public static class WriteScopeCheck
     /// the attempt or stand in the way of the revert. The WS_2 git-error sentinel is not a path and is skipped.
     /// </summary>
     public static string CaptureOffendingPatch(
-        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths) =>
+        CaptureOffendingPatch(ScopeDiffBase.ForSegment(repoPath, taskBase), offendingPaths);
+
+    /// <summary>
+    /// <see cref="CaptureOffendingPatch(string, string, IReadOnlyList{WriteScopeOffense})"/> against any
+    /// <see cref="ScopeDiffBase"/> (issue #816) — the index <see cref="Check(ScopeDiffBase, IReadOnlyList{string})"/>
+    /// just staged, whichever one that is.
+    /// </summary>
+    public static string CaptureOffendingPatch(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
         List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
         var batches = new List<string>();
@@ -310,16 +341,16 @@ public static class WriteScopeCheck
         {
             // Batched so a very large offending set cannot overflow a child's command line. The paths are disjoint,
             // so the batches' patches concatenate into one applyable patch.
-            for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+            foreach (List<string> batch in Batches(paths))
             {
                 // --no-renames: each file header then names ONE path twice, which is how the next attempt's composer
                 // reads back which paths a kept copy touches (#707 review W4).
                 var args = new List<string>
                 {
-                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
+                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", diffBase.Base, "--"
                 };
-                args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
-                batches.Add(RunGit(repoPath, [.. args]));
+                args.AddRange(batch);
+                batches.Add(ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args));
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
@@ -330,8 +361,20 @@ public static class WriteScopeCheck
         return string.Concat(batches);
     }
 
-    /// <summary>How many paths one <see cref="CaptureOffendingPatch"/> git child is handed.</summary>
+    /// <summary>
+    /// How many paths one git child is handed — patch capture, the existence probe and the revert alike (#816
+    /// review NIT 9): well under the Windows command-line limit even for long paths, so a large offending set can
+    /// never overflow a child's argv.
+    /// </summary>
     private const int PatchPathBatchSize = 100;
+
+    private static IEnumerable<List<string>> Batches(IReadOnlyList<string> paths)
+    {
+        for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+        {
+            yield return paths.Skip(i).Take(PatchPathBatchSize).ToList();
+        }
+    }
 
     /// <summary>
     /// Restore each path in <paramref name="offendingPaths"/> to its <paramref name="taskBase"/>
@@ -348,94 +391,243 @@ public static class WriteScopeCheck
     /// has no base blob to check out — it is removed with <c>git rm -f -- &lt;path&gt;</c>, deleting it
     /// from the index and the working tree.</item>
     /// </list>
-    /// Membership at base is probed per-path with <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>;
-    /// only the offending paths are touched, so a same-attempt in-scope edit survives the revert.
+    /// Membership at base is probed with <c>git ls-tree</c> over the offending paths (batched); only the
+    /// offending paths are touched, so a same-attempt in-scope edit survives the revert.
     /// </remarks>
-    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths) =>
+        ScopedRevert(ScopeDiffBase.ForSegment(repoPath, taskBase), offendingPaths);
+
+    /// <summary>
+    /// <see cref="ScopedRevert(string, string, IReadOnlyList{WriteScopeOffense})"/> against any
+    /// <see cref="ScopeDiffBase"/> (issue #816). In serial mode the checkout and the removal go through the
+    /// snapshot's PRIVATE index in raw-bytes mode (<see cref="ScopeGit"/>), so they write back exactly the bytes
+    /// the snapshot hashed and never touch the operator's own index. Every git child is handed at most
+    /// <see cref="PatchPathBatchSize"/> paths. Throws <see cref="InvalidOperationException"/> on a git failure.
+    /// </summary>
+    /// <param name="diffBase">What the revert restores to.</param>
+    /// <param name="offendingPaths">The paths to revert.</param>
+    /// <param name="cancellationToken">Bounds each git call.</param>
+    /// <param name="removedLinks">
+    /// #816 fifth review: receives every link (a workspace-relative directory path) this revert REMOVED — worktree
+    /// mode only — so the caller can name it. Null to discard.
+    /// </param>
+    public static void ScopedRevert(
+        ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths, CancellationToken cancellationToken = default,
+        List<string>? removedLinks = null)
     {
-        if (offendingPaths.Count == 0) return;
+        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
+        if (paths.Count == 0) return;
 
-        var existedAtBase = new List<string>();
-        var addedSinceBase = new List<string>();
-        foreach (WriteScopeOffense offense in offendingPaths)
+        HashSet<string> existing = ExistingAtBase(diffBase, paths, cancellationToken);
+        List<string> addedSinceBase = paths.Where(p => !existing.Contains(p)).ToList();
+
+        // #816 fourth review: NO restore, removal or directory creation may land outside the workspace through a
+        // LINKED ANCESTOR — a directory the attempt replaced with a symlink or a Windows junction. git follows a
+        // junction as if it were a directory (so `data/x.txt` reads as merely modified), and a leaf-only check cannot
+        // see it. Every path is therefore checked, component by component from the workspace root, immediately before
+        // it is touched, and a path under a linked ancestor is REFUSED — left on disk and reported, never written.
+        //
+        // #816 final review: the link itself is REMOVED first (the entry only — never what it points at), and the path
+        // then restored inside the workspace where it belongs. The directory's replacement by a link IS an
+        // out-of-scope change under the offending path, and leaving it in place was measured to be worse than
+        // refusing: every later git operation on the tree (the segment commit, a retry's reset, the worktree's own
+        // removal) follows a junction straight through, deleting or rewriting the outside file. Only when the link
+        // cannot be removed is the path refused — left on disk, reported, never written.
+        //
+        // #816 fifth review: link REMOVAL is worktree-mode only. A segment worktree is the task's own tree, created at
+        // taskBase, so a link in it is the attempt's (or its guardrails') doing. The SERIAL workspace is the operator's
+        // own checkout, where a link may be theirs — a pre-existing junction to a shared folder — and removing it
+        // would silently break their setup while leaving the outside edit in place. Serial mode therefore REFUSES and
+        // reports, naming the path and the link. Every link removed in worktree mode is named in
+        // <paramref name="removedLinks"/>, which the caller reports.
+        bool mayRemoveLinks = diffBase.IndexFile is null;
+        var refused = new List<string>();
+        bool Safe(string path)
         {
-            if (ExistsAtBase(repoPath, taskBase, offense.Path))
-                existedAtBase.Add(offense.Path);
-            else
-                addedSinceBase.Add(offense.Path);
+            const int MaxLinkRemovals = 16;
+            for (int removals = 0; LinkedAncestor(diffBase.RepoPath, path) is { } linked; removals++)
+            {
+                if (!mayRemoveLinks)
+                {
+                    refused.Add($"{path} (under '{linked}', which is a link out of the workspace — left in place in the operator's checkout)");
+                    return false;
+                }
+
+                if (removals >= MaxLinkRemovals
+                    || !TryRemoveLink(Path.Combine(diffBase.RepoPath, linked.Replace('/', Path.DirectorySeparatorChar))))
+                {
+                    refused.Add($"{path} (under '{linked}', which is now a link that could not be removed)");
+                    return false;
+                }
+
+                removedLinks?.Add(linked);
+            }
+
+            return true;
         }
 
-        // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
-        if (existedAtBase.Count > 0)
+        // Newly-added paths FIRST — no base blob exists, so they are removed from the index and the working tree.
+        // First, because a link that REPLACED a directory is itself such a path (on Unix git sees `data` as a new
+        // symlink): removing the link before its former children are restored means they are recreated inside the
+        // workspace, where they belong, rather than refused.
+        foreach (List<string> batch in Batches(addedSinceBase.Where(Safe).ToList()))
         {
-            var args = new List<string> { "checkout", taskBase, "--" };
-            args.AddRange(existedAtBase);
-            RunGit(repoPath, [.. args]);
+            var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
+            args.AddRange(batch);
+            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
         }
 
-        // Newly-added files: no base blob exists, so git checkout would fail ("did not match any file");
-        // remove them from the index and the working tree instead.
-        if (addedSinceBase.Count > 0)
+        // #816 second review: a file the operator's git did NOT track at snapshot time is restored from its RAW
+        // bytes, written verbatim — the snapshot blob may be a line-ending-normalised copy, and an untracked file
+        // has no smudge round trip that would undo that. Tracked files go through git's normal checkout below.
+        List<string> restoreRaw = paths.Where(p => existing.Contains(p) && diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
+        foreach (string path in restoreRaw.Where(Safe))
         {
-            var args = new List<string> { "rm", "-f", "--" };
-            args.AddRange(addedSinceBase);
-            RunGit(repoPath, [.. args]);
+            ScopeDiffBase.RawBlob raw = diffBase.UntrackedRawBlobs[path];
+            byte[] bytes = ScopeGit.RunBytes(diffBase.RepoPath, diffBase.IndexFile, ["cat-file", "blob", raw.Id], cancellationToken);
+            string full = Path.Combine(diffBase.RepoPath, path.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+
+            // #816 third review: NEVER write through a link at the LEAF either. If the attempt replaced the file with a
+            // symlink (or a directory link), remove the link itself (lstat semantics: LinkTarget is read off the entry,
+            // not its target), then recreate the regular file it replaced.
+            var entry = new FileInfo(full);
+            var directoryEntry = new DirectoryInfo(full);
+            if (directoryEntry.Exists && directoryEntry.LinkTarget is not null)
+            {
+                directoryEntry.Delete(); // non-recursive: removes the link, never what it points at
+            }
+            else if (entry.LinkTarget is not null)
+            {
+                entry.Delete();
+            }
+            else if (Directory.Exists(full))
+            {
+                throw new InvalidOperationException($"cannot restore '{path}': a directory now stands where the file was");
+            }
+
+            File.WriteAllBytes(full, bytes);
+            if (raw.Executable && !OperatingSystem.IsWindows())
+            {
+                // #816 third review: a recreated untracked executable gets its exec bit back.
+                File.SetUnixFileMode(full, File.GetUnixFileMode(full)
+                    | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+            }
+        }
+
+        // Modified/deleted tracked files: restore the base blob into the index AND the working tree. git replaces a
+        // link at the LEAF itself; a linked ANCESTOR is refused above, since git follows a junction straight through.
+        List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
+        foreach (List<string> batch in Batches(existedAtBase.Where(Safe).ToList()))
+        {
+            var args = new List<string> { "--literal-pathspecs", "checkout", diffBase.Base, "--" };
+            args.AddRange(batch);
+            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
+        }
+
+        if (refused.Count > 0)
+        {
+            // Every caller already reports a failed revert loudly ("reverting … failed, so they are still on disk").
+            throw new InvalidOperationException(
+                $"refused to restore {refused.Count} path(s) that now sit under a link out of the workspace, so they are " +
+                $"still on disk: {string.Join("; ", refused)}");
         }
     }
 
     /// <summary>
-    /// True when <paramref name="path"/> exists in <paramref name="taskBase"/>'s tree (so it can be
-    /// restored from there). Uses <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>, which exits 0
-    /// when the blob exists and non-zero otherwise; a non-zero exit therefore means "added since base".
+    /// #816 fourth review: the first directory on the way from <paramref name="root"/> to <paramref name="relativePath"/>'s
+    /// PARENT that is a link — a symlink, a dangling symlink, or a Windows junction — as a forward-slashed relative
+    /// path, or null when none is. Read with lstat semantics (the entry itself, never its target). A missing directory
+    /// ends the walk: nothing below it exists to be linked. The root itself is not checked — the workspace is allowed
+    /// to be reached through a link (macOS <c>/var</c> → <c>/private/var</c>).
     /// </summary>
-    private static bool ExistsAtBase(string repoPath, string taskBase, string path)
+    internal static string? LinkedAncestor(string root, string relativePath) => LinkedAncestorCore(root, relativePath);
+
+    /// <summary>
+    /// #816 final review: remove the link at <paramref name="linkPath"/> — the ENTRY only, never what it points at (a
+    /// junction or directory symlink is deleted non-recursively, a dangling or file link as a file). Returns false,
+    /// deleting nothing, when the path is not a link or the removal fails.
+    /// </summary>
+    internal static bool TryRemoveLink(string linkPath)
     {
-        var psi = new ProcessStartInfo("git")
+        try
         {
-            WorkingDirectory = repoPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            // Issue #457: pin UTF-8 on every git stream (this one is exit-code-only, kept uniform).
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        psi.ArgumentList.Add("cat-file");
-        psi.ArgumentList.Add("-e");
-        psi.ArgumentList.Add($"{taskBase}:{path}");
-        using var proc = Process.Start(psi)!;
-        proc.StandardOutput.ReadToEnd();
-        proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-        return proc.ExitCode == 0;
+            var directory = new DirectoryInfo(linkPath);
+            if (directory.LinkTarget is null)
+            {
+                return false; // not a link: never delete a real directory here
+            }
+
+            if (directory.Exists)
+            {
+                directory.Delete(recursive: false); // a junction / directory symlink: removes the link entry only
+            }
+            else
+            {
+                new FileInfo(linkPath).Delete(); // a dangling or file-typed link
+            }
+
+            return new DirectoryInfo(linkPath).LinkTarget is null && !Directory.Exists(linkPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static string? LinkedAncestorCore(string root, string relativePath)
+    {
+        string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string current = root;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+            var directory = new DirectoryInfo(current);
+            // LinkTarget covers symlinks, dangling symlinks and junctions. Deliberately NOT the ReparsePoint attribute:
+            // non-link reparse points (a OneDrive Files-On-Demand folder) carry it too and would be refused falsely.
+            if (directory.LinkTarget is not null)
+            {
+                return string.Join('/', segments[..(i + 1)]);
+            }
+
+            if (!directory.Exists)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Which of <paramref name="paths"/> exist in the base tree (so they can be restored from there): one
+    /// <c>git ls-tree -r -z --name-only</c> per batch rather than a <c>cat-file -e</c> per path. Paths are
+    /// forward-slashed and repo-relative on both sides, and the listing is NUL-separated so it is never quoted.
+    /// </summary>
+    private static HashSet<string> ExistingAtBase(
+        ScopeDiffBase diffBase, IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        var existing = new HashSet<string>(StringComparer.Ordinal);
+        foreach (List<string> batch in Batches(paths))
+        {
+            var args = new List<string> { "--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", diffBase.Base, "--" };
+            args.AddRange(batch);
+            string output = ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
+            foreach (string path in output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            {
+                existing.Add(path);
+            }
+        }
+
+        return existing;
     }
 
     // Runs git and FAILS CLOSED on a non-zero exit (WS_2): the caller must never mistake an
     // empty stdout from a failed git invocation for "no changes". Throws so Check can convert
-    // the failure into Passed=false and ScopedRevert surfaces a bad revert loudly.
-    private static string RunGit(string workingDir, params string[] args)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            // Issue #457: this captures `git diff --name-only` / `git status` PATHS, which may be
-            // non-ASCII; an unpinned decode would corrupt the write-scope verdict's file names.
-            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-        };
-        foreach (string arg in args) psi.ArgumentList.Add(arg);
-        using var proc = Process.Start(psi)!;
-        string stdout = proc.StandardOutput.ReadToEnd();
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(" ", args)} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
-        return stdout;
-    }
+    // the failure into Passed=false and ScopedRevert surfaces a bad revert loudly. #816 review: through
+    // ScopeGit, which drains both streams concurrently and bounds the call.
+    private static string RunGit(string workingDir, params string[] args) =>
+        ScopeGit.Run(workingDir, indexFile: null, args);
 }
 
 /// <summary>

@@ -1155,7 +1155,7 @@ forbids (it would skip the write-scope check and let the task write anywhere), s
 now explicit and reviewable (this also closes the #375 Q2 loophole where a no-`writeScope` task could
 silently edit its own `guardrails/`). **Runtime fail-closed (belt-and-suspenders behind validate):** a
 validated plan never reaches the check with a null scope, but the check nonetheless coalesces a null scope
-to an EMPTY one in worktree mode (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
+to an EMPTY one (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
 any write is offending — rather than passing. **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
 the deleted path must be in scope. The ENFORCED scope is rendered into the action prompt and the violation
@@ -1201,6 +1201,108 @@ here and either `GR2068`/`GR2069` there is meeting one underlying pull twice, no
 CONTRACT rather than prose, which pushes toward the same one-task-per-collaborator split this paragraph
 already asks for).
 
+**The check runs at the end of EVERY attempt, in both modes (issue #816).** Phase 1 above runs only after an
+action that SUCCEEDED. Every other attempt ending used to return before it — a failed action, a `timeout`, a
+`max-turns` stop, a stall, a cancel, a staging failure, a rejected fragment or harness write — and its out-of-scope
+writes were carried forward unchecked: in serial mode straight into the next attempt (the workspace is never reset
+and the timeout/max-turns feedback says to CONTINUE from the partial work), in worktree mode into the salvage stash
+(§3.2, #306) the next attempt is pointed at. A dogfood implement task rewrote its upstream task's tests across
+attempts that each ended in a timeout or a turn cap, and ended up grading itself against them. Now:
+- **End-of-attempt check.** Any attempt that does not reach phase 1 runs the SAME `WriteScopeCheck.Check`, #705
+  patch capture (`out-of-scope.patch`) and `ScopedRevert` at its end — before the salvage stash, before a
+  transient pause re-runs it, and (serial mode only) before a cancelled attempt is journaled back to pending, since
+  a resume continues from the serial workspace as it stands. It never fails an attempt by itself (the attempt has
+  already failed for its own reason); the attempt keeps its outcome (`max-turns`, `timeout`, …), its summary gains
+  `; out-of-scope write(s) reverted: <paths>`, and its `feedback.md` gains a SEPARATE
+  `## Out-of-scope writes were reverted` section (`RetryPolicy.ForOutOfScopeWritesReverted`) naming each reverted
+  path, the enforced scope, the kept copy (for a human, not the agent) and, for a prompt action, the `needsHuman`
+  route — appended after the failure-specific text, which is left as it was. A git error there is best-effort (no
+  offense can be named from an undiffable tree), and a failed revert is reported rather than thrown. The paths are
+  recorded for #707's repeat rule, so the same out-of-scope path on a second attempt halts `needs-human`
+  (`write-scope-violation`) even when every attempt ended in a timeout or a turn cap — rule 1 only; rule 2 judges an
+  attempt's COMPLETE work, which an attempt stopped mid-way does not have. A needs-human escalation, a permission
+  wall halt and the #764 tamper halt are terminal and reach a human; they are not given the end-of-attempt revert
+  (a worktree escalation's salvage is already scope-filtered, #554).
+- **Serial mode is checked.** A serial run used to run NO write-scope check at all (`enforcedWriteScope` was
+  non-null only for a real segment). Serial mode has no segment and no `taskBase`, so the base is a SNAPSHOT
+  (`ScopeDiffBase`): immediately before each attempt the harness stages the workspace into a PRIVATE index
+  (`GIT_INDEX_FILE`, seeded from the real index for its stat cache, under the system temp dir) and writes it as a
+  tree; phase 1, phase-1 revert and the end-of-attempt check then re-stage that private index and diff it against
+  that tree. The verdict therefore names exactly what changed DURING the attempt — never an earlier serial task's
+  uncommitted work or the operator's own pending changes — and the operator's real index is never read for the
+  verdict or written. The plan's own `logs/` and `state/` (when the plan folder is inside the workspace) are
+  dropped from that diff by prefix (git refuses an exclude pathspec naming a `.gitignore`d directory). Phase 2
+  (the post-guardrail strip) and #707 rule 2 (commit trailers) stay worktree-only: serial mode commits nothing per
+  task. **Line endings (second review):** the snapshot and every diff run in NORMAL mode, exactly like worktree
+  mode — the repo's own `core.autocrlf`/`.gitattributes` apply — so a stat-clean tracked file (whose seeded blob is
+  the normalised one) and a re-hashed one agree, and an identical-bytes re-save is never an offense. A TRACKED file
+  is reverted through git's normal checkout (the repo's own smudge); a REGULAR file (mode 100644/100755, read from
+  `ls-files -s -z`) the real index did NOT track at snapshot time has its RAW bytes captured then (`git hash-object
+  -w --no-filters`, path → blob id + executable bit held with the snapshot) and a revert writes those bytes back
+  verbatim (`git cat-file blob`), restoring the exec bit on Unix. Symlinks (120000) and gitlinks (160000 — an
+  untracked nested repository such as a Claude Code worktree) are never captured and revert through the normal
+  path; a revert never writes THROUGH a link (a link now standing at the path is removed first). The capture is
+  fault-tolerant per path (a failed batch is bisected): one unhashable or vanished file loses only its own
+  byte-exact restore (listed in `write-scope-check.log`), never the snapshot. **Linked ancestors (fourth review):**
+  in BOTH modes, every revert — raw restore, `git checkout`, `git rm` — first walks the path's ancestor directories
+  from the workspace root, and a directory on the way that is now a symlink or a Windows junction (git follows a
+  junction as a directory, so even its own checkout of a tracked file writes through — measured) is handled by
+  MODE. **Worktree mode** removes THE LINK ENTRY itself (never its target; at most 16 removals per path) and restores
+  the path inside the segment, NAMING every removed link in the attempt summary (`removed link(s) out of the
+  worktree before reverting under them: …`) and `write-scope-check.log` — the segment is the task's own tree, and
+  leaving the link was measured to be worse: every later git operation on it (the segment commit, a retry's reset,
+  `git worktree remove --force`) deletes or rewrites the outside files through it. **Serial mode never removes a
+  link**: the workspace is the operator's own checkout, where the link may be theirs (a pre-existing junction to a
+  shared folder), so the path is REFUSED — left on disk, the link left in place, reported like any failed revert
+  and naming both the path and the link. A link that cannot be removed in worktree mode is refused the same way. Removals run FIRST, so a symlink that replaced a directory (which git
+  sees as a new path) is removed before its former children are recreated. A phase-2 (post-guardrail) strip that
+  cannot finish is reported loudly on the attempt (`write scope NOT checked this attempt: …`) and never aborts the
+  run as a fault. Detection reads `LinkTarget` only — not the ReparsePoint attribute, which non-link reparse points
+  (OneDrive Files-On-Demand folders) also carry. (A raw-bytes snapshot mode was tried and
+  removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
+  tracked files and an identical re-save read as a change.) Every scope git
+  call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to
+  its end first deadlocked once `core.autocrlf=true` line-ending warnings filled the stderr pipe, ~35 files), adds
+  `core.safecrlf=false` and `core.quotePath=false`, lists changes with `-z`, hands git at most 100 paths per
+  child, and is bounded by a timeout plus the attempt's cancellation. **Shared checkout (review Q1):** editing the
+  checkout during a serial run is NOT supported but is LOUD — `guardrails run` prints a run-start `Note:` that
+  anything changing during an attempt outside the running task's writeScope is reverted whoever changed it (bytes
+  kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
+  writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
+  **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
+  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert — BEFORE the halt is
+  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths
+  to their summary. Every attempt record built after an end-of-attempt revert carries it as
+  `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),
+  so run.json and the live `AttemptFinished` row see them, not only text written afterwards.
+  **Interrupted attempts (second review):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7)
+  when a serial attempt starts and cleared when it ends (and by every settle). At RUN START, before any dispatch,
+  every task still carrying one — an attempt that never ended (kill, crash, host sleep) — is handled once: in
+  serial mode the workspace is diffed against that tree and the out-of-scope differences are REPORTED, NOT
+  reverted (the harness cannot tell that attempt's writes from a human's post-crash fix or a `git pull`): kept as
+  `out-of-scope.patch` in the task's log dir, announced loudly (`IRunObserver.InterruptedAttemptChangesFound`, on
+  both consoles) and handed to that task's first attempt as `interrupted-attempt-scope.md` ("do not build on them;
+  if they block you, write needsHuman"), COMBINED with that task's latest recorded feedback, never replacing it.
+  The field is cleared in every mode; `guardrails reset` drops it too. **Plainly: report-only resume leaves a
+  crashed attempt's out-of-scope edits IN PLACE as the next attempt's baseline** — announced and handed to the
+  agent, but not enforced (the next attempt's snapshot starts from them, so they are not offenses of that
+  attempt), and not fed to #707's repeat rule. There is no interactive prompt; reverting them is the human's call
+  (the kept patch names them).
+  **Loud when not checked (review WEAK 6):** a
+  snapshot that fails, an end-of-attempt git error or a failed revert is reported on the console
+  (`IRunObserver.WriteScopeNotChecked`, plain and live), in `write-scope-check.log` and in the attempt summary
+  (`write scope NOT checked this attempt: <reason>`). **The limit:** the snapshot needs the workspace to be the top level of a git work tree. Where it is not,
+  no retrospective check runs, and that is LOUD: `guardrails run` prints a run-start `Note:` line, and each
+  attempt's log dir carries `write-scope-check.log` saying the scope was NOT checked and why. The write-time hook
+  below still applies there.
+- **Write-time denial.** For a prompt action on a runner that loads hooks (`NeedsContainmentHook(kind)` — Claude,
+  including a §9.10 gateway block, whose composed settings merge it), the harness installs a second `PreToolUse`
+  hook (`WriteScopeHook`, §9.4) in BOTH modes that refuses `Write`/`Edit`/`MultiEdit`/`NotebookEdit` on a path
+  INSIDE the effective workspace but outside the enforced scope, with a message naming the scope and the
+  `needsHuman` route. It always allows `.guardrails-agent-io/` (the staged `GUARDRAILS_STATE_OUT`, §9.5),
+  `.guardrails-staging/` (§3.5) and anything outside the workspace. Bash is not policed by it (builds and test runs
+  write outside the scope legitimately); the retrospective check stays the backstop for every route it cannot see.
+
 When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
 authorize), not the pre-move staging writes — the surface the check protects (what reaches the
@@ -1222,7 +1324,9 @@ without. Both surfaces come from the enforced array, never from author prose, so
 verdict — before this the only statement of scope an agent saw was a hand-copied paragraph, and plans 39 and
 40 shipped 48 prompts whose paragraph read "Write only to the path(s) listed above" and listed nothing. An
 EMPTY scope is stated in words (`writeScope` is EMPTY) on both surfaces, never rendered as a heading or lead-in
-over no entries. Serial mode renders no section: no check runs there, so "harness-enforced" would be false.
+over no entries. The section is rendered whenever the retrospective check can run — worktree mode, and since #816
+serial mode in a git top level; a serial workspace that is not a git top level renders none, because no check
+runs there and "harness-enforced" would be false.
 
 **A write-scope gap the PLAN caused halts `needs-human` instead of retrying (issue #707).** Every retry is
 handed the same scope, so no retry can clear a gap in it; plan 40's task 20 spent four attempts, two overwatch
@@ -2949,6 +3053,15 @@ fails the write, loudly, with a message naming the likely cause.
       // reset, block, or resume load — a marker from a previous process describes an attempt nobody runs).
       // ABSENT (never null noise) whenever nothing is in flight — which is the shape of this example task,
       // shown populated here only to document it — and in every journal written before the field existed.
+      // #816: "scopeSnapshotTree": "<tree sha>" — OPTIONAL, serial mode only: the write-scope snapshot of the
+      //   task's current attempt (§3.4), set when it starts and removed when it ends or any settle is recorded.
+      //   Kept by the resume load (unlike inFlightAttempt), because a value surviving into a later process marks
+      //   an attempt that never ended; the next run REPORTS (never reverts) its out-of-scope differences at run
+      //   start and clears it, in every mode. Dropped by `guardrails reset`. ABSENT otherwise and in older journals.
+      // #816: attempts[] also gain two OPTIONAL write-scope fields — "scopeRevertedPaths": ["path", …] (paths the
+      //   END-OF-ATTEMPT check reverted on an attempt that never reached the ordinary check) and
+      //   "writeScopeNotChecked": "<reason>" (the snapshot failed, the check hit a git error, or a revert failed).
+      //   Both ABSENT in the ordinary case and in older journals.
       "inFlightAttempt": {
         "attempt": 4,               // the JOURNAL number: one past the highest recorded attempt, so it continues
                                     //   across resumes and `guardrails reset`. The same N as this attempt's
@@ -6599,7 +6712,8 @@ result by another route and the deliverable landed. **It is also SCOPE-AWARE (#7
 INSIDE the scope the attempt is enforced against — the declared `writeScope` plus the implicit `stagingOutputs`
 destinations (§3.4/§3.5) — can be this task's deliverable, because the write-scope check would reject any other
 one anyway; so only such a path is a write wall, and a refused path outside that scope is auxiliary exactly like
-a refused command. With NO enforced scope (serial mode, where no write-scope check runs) every path INSIDE the
+a refused command. With NO enforced scope (a serial workspace that is not a git top level, where no write-scope check runs — since
+#816 a serial run in a git top level HAS an enforced scope) every path INSIDE the
 workspace stays a wall; one outside it never is, scope or no scope. The comparison resolves SPELLINGS, not just
 separators: the refusal is reported however the refused tool call named it, while the workspace may be the #383
 short junction (`C:\.a\…`) or a macOS `/var` alias (#452), so a lexical miss is retried over both sides'
@@ -6813,8 +6927,24 @@ runtime boundary: for every worktree-mode prompt invocation (action OR guardrail
 is still an agent that can call `Write`/`Edit`/`Bash`), the harness generates a Claude Code
 **PreToolUse hook** and injects it via `claude -p --settings <path>` (session-scoped — never touches
 the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`). `--settings` is
-**absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to.
+**absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to —
+except that since #816 a serial prompt ACTION gets the write-scope hook below, alone, under its own settings file.
 
+- **The write-scope hook (issue #816).** A sibling `PreToolUse` hook, `Guardrails.Core.Prompts.WriteScopeHook`,
+  enforces the task's **enforced `writeScope`** (§3.4: declared scope + implicit staging destinations) at write
+  time for prompt ACTIONS (not guardrails), in BOTH modes, gated on the same `NeedsContainmentHook(kind)`. Matcher
+  `Write|Edit|MultiEdit|NotebookEdit` — NOT `Bash` (builds and test runs write outside the scope legitimately; the
+  retrospective check covers Bash). A target resolved (same `.`/`..` collapse and accepted-root list as below, no
+  symlink resolution) INSIDE the effective workspace (the segment, or the serial plan workspace) and not matched by
+  the scope is refused (exit 2) with `BLOCKED by Guardrails write-scope hook: '<rel>' is outside this task's
+  writeScope: <entries>. …` naming the `needsHuman` route. Always allowed: a target outside the workspace
+  (containment's question, not this hook's), `.guardrails-agent-io/` (§9.5) and `.guardrails-staging/` (§3.5). The
+  scope test is `WriteScope.IsInScope`'s rule compiled ONCE in C# to anchored, case-insensitive patterns
+  (`WriteScope.ToAnchoredPatterns`, the common subset of POSIX ERE and .NET regex) baked into the OS-picked script
+  (`write-scope-hook.ps1`/`.sh`) as data — the scripts never interpret a glob, and `WriteScopePatternTests` proves
+  the patterns agree with `IsInScope`. In worktree mode it is composed into `containment-settings.json` as a SECOND
+  matcher group (a runner receives exactly one `--settings`); in serial mode it is written alone as
+  `write-scope-settings.json`. The retrospective check (§3.4) stays the backstop.
 - **The splice is conditioned on `PromptRunnerKinds.NeedsContainmentHook(kind)` (plan 28 §3.5/§3.6,
   issue #223).** `ActionRunner` and `GuardrailRunner` both gate the injection on
   `isWorktreeMode && NeedsContainmentHook(kind)` — for a kind whose runner offers none of

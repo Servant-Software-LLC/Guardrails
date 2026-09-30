@@ -483,6 +483,14 @@ public static class RunCommand
             io.Out.WriteLine($"Note: {withheld}");
         }
 
+        // #816: a serial run checks every attempt's writeScope against a git snapshot of the workspace. Where there is
+        // no git work tree rooted at the workspace that check cannot run; say so at the start rather than let the
+        // scope go unenforced without a word (each attempt's log dir repeats it in write-scope-check.log).
+        if (!worktreeMode)
+        {
+            io.Out.WriteLine(SerialWriteScopeNote(ScopeDiffBase.SerialUnavailableReason(probe.Plan.Workspace)));
+        }
+
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
         // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):
@@ -3563,6 +3571,22 @@ public static class RunCommand
     /// this is the seam its tests drive.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The serial run-start write-scope notice (issue #816). With a snapshot available, it warns that the run is in
+    /// the operator's own checkout and that editing it mid-run is NOT supported: anything that changes during an
+    /// attempt outside the running task's writeScope is reverted, whoever changed it (#816 review Q1). Without one
+    /// (<paramref name="unavailableReason"/> non-null), it says the scope will not be checked retrospectively at all.
+    /// Public for the same reason as <see cref="RenderGitProbeFailureWarning"/>: the Cli ships no InternalsVisibleTo.
+    /// </summary>
+    public static string SerialWriteScopeNote(string? unavailableReason) =>
+        unavailableReason is null
+            ? "Note: this is a serial run in your own checkout. Do not edit it while the run is going: anything that " +
+              "changes during an attempt outside the running task's writeScope is REVERTED when the attempt ends, " +
+              "whoever changed it (the bytes are kept in that attempt's out-of-scope.patch)."
+            : $"Note: writeScope will NOT be checked when attempts end — {unavailableReason}. Only an out-of-scope " +
+              "Write/Edit on a hook-capable runner is refused; run from the top level of a git repository to have " +
+              "every attempt checked.";
+
     public static void RenderGitProbeFailureWarning(
         WorktreeModeResolution resolution, Core.Model.PlanDefinition plan, TextWriter output)
     {

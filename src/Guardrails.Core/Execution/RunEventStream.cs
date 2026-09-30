@@ -319,6 +319,14 @@ public sealed class RunEventStream : IRunObserver
         _inner.OutOfScopeStripped(task, stripped);
 
     /// <inheritdoc/>
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    /// <inheritdoc/>
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
+
+    /// <inheritdoc/>
     public void DecisionRecorded(DecisionEntry entry) => _inner.DecisionRecorded(entry);
 
     /// <inheritdoc/>

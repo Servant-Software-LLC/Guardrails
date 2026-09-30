@@ -16,7 +16,7 @@ namespace Guardrails.Integration.Tests;
 /// <c>feedback.md</c>, <c>run.json</c> — because the defects these pin were all invisible to a unit test of
 /// one collaborator: plan 40's task 20 spent four attempts against a scope it was never shown (#706).
 /// </summary>
-public sealed class WriteScopeRunTests
+public sealed partial class WriteScopeRunTests
 {
     /// <summary>The lead-in line the violation feedback's allowed-path list follows (#706).</summary>
     private const string AllowedPathsLead = "This task's writeScope allows changes ONLY to:";
@@ -44,23 +44,6 @@ public sealed class WriteScopeRunTests
         Assert.Equal(
             ["src/Skill.cs", ".claude/skills/demo/**", ".guardrails-staging/**"],
             ListedScope(composed));
-    }
-
-    [Fact]
-    public async Task Serial_ComposedPrompt_HasNoWriteScopeSection_BecauseNothingEnforcesIt_Issue706()
-    {
-        // DECLARED CONTROL for the gating — green before #706 and after. No write-scope check runs in
-        // serial mode, so a section headed "harness-enforced" there would be a false claim.
-        using var repo = new TempGitRepo();
-        string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("01-read", ["src/Read.cs"]));
-        var agent = new ScriptedAgent((_, _, _) => { });
-
-        RunReport report = await RunSerialAsync(planDir, agent);
-
-        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
-        string composed = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-read", 1), "composed-prompt.md"));
-        Assert.Contains("## Output contract", composed); // not vacuous: this IS the composed prompt
-        Assert.DoesNotContain("## Write scope", composed);
     }
 
     [Fact]
@@ -615,9 +598,13 @@ public sealed class WriteScopeRunTests
     /// exactly what an agent's file-editing tool would have produced. Writes no state fragment.
     /// </summary>
     private sealed class ScriptedAgent(
-        Action<string, int, PromptInvocation> act, IReadOnlyList<string>? refusedPaths = null) : IPromptRunner
+        Action<string, int, PromptInvocation> act,
+        IReadOnlyList<string>? refusedPaths = null,
+        Func<string, int, PromptFailureKind>? outcome = null) : IPromptRunner
     {
         private readonly Action<string, int, PromptInvocation> _act = act;
+        /// <summary>#816: how each invocation ENDS — a turn cap or a timeout instead of a clean finish.</summary>
+        private readonly Func<string, int, PromptFailureKind>? _outcome = outcome;
         /// <summary>#708: write paths the runtime refused this attempt, as the scanner would report them.</summary>
         private readonly IReadOnlyList<string> _refusedPaths = refusedPaths ?? [];
         private readonly Dictionary<string, int> _calls = new(StringComparer.Ordinal);
@@ -634,6 +621,20 @@ public sealed class WriteScopeRunTests
             }
 
             _act(taskId, call, invocation);
+            PromptFailureKind failure = _outcome?.Invoke(taskId, call) ?? PromptFailureKind.None;
+            if (failure != PromptFailureKind.None)
+            {
+                return Task.FromResult(new PromptResult
+                {
+                    // A turn cap completes with is_error; a timeout never completes at all.
+                    Completed = failure != PromptFailureKind.Timeout,
+                    IsError = true,
+                    FailureKind = failure,
+                    Summary = $"scripted agent stopped: {failure}",
+                    BlockedWritePaths = _refusedPaths
+                });
+            }
+
             return Task.FromResult(new PromptResult
             {
                 Completed = true,
@@ -721,7 +722,8 @@ public sealed class WriteScopeRunTests
         return await new Scheduler(plan, executor, journal).RunAsync(plan, TestContext.Current.CancellationToken);
     }
 
-    private static (TaskExecutor, RunJournal, Core.Model.PlanDefinition) BuildExecutor(string planDir, IPromptRunner agent)
+    private static (TaskExecutor, RunJournal, Core.Model.PlanDefinition) BuildExecutor(
+        string planDir, IPromptRunner agent, IRunObserver? observer = null)
     {
         PlanLoadResult load = new PlanLoader().Load(planDir);
         Assert.NotNull(load.Plan);
@@ -733,7 +735,7 @@ public sealed class WriteScopeRunTests
         RunJournal journal = RunJournal.LoadOrCreate(plan);
         var executor = new TaskExecutor(
             plan, new ProcessRunner(), new InterpreterMap(new PathExecutableProbe(), plan.Config.Interpreters),
-            stateManager, journal, IRunObserver.Null, PromptRunnerRegistry.Build(plan.Config, _ => agent));
+            stateManager, journal, observer ?? IRunObserver.Null, PromptRunnerRegistry.Build(plan.Config, _ => agent));
         return (executor, journal, plan);
     }
 

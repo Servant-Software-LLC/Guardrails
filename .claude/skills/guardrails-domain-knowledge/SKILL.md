@@ -406,6 +406,29 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
   boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
+  never reaches the phase-1 check (failed action, timeout, max-turns, stall, staging/fragment/harness-write
+  rejection, a serial cancel, a transient pause's re-run) gets the SAME check + #705 `out-of-scope.patch` +
+  scoped revert at its end, BEFORE the salvage stash; its outcome is unchanged, its summary gains
+  `; out-of-scope write(s) reverted: ...`, and its feedback gains a separate `## Out-of-scope writes were
+  reverted` section. The reverted paths feed #707's REPEAT rule, so the same out-of-scope path on a second
+  attempt halts `needs-human` even when every attempt timed out. **Serial mode is now checked** against a
+  per-attempt git SNAPSHOT of the workspace (`ScopeDiffBase`: private `GIT_INDEX_FILE`, plan `logs/`+`state/`
+  ignored), so the prompt shows `## Write scope (harness-enforced)` there too; it needs the workspace to be a git
+  top level, else no retrospective check runs and that is loud (run-start `Note:` + per-attempt
+  `write-scope-check.log`). **Write-time denial:** a prompt action on a hook-capable runner (claude, incl.
+  gateway) also gets the `WriteScopeHook` PreToolUse hook in both modes, refusing an out-of-scope
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the workspace (never Bash; `.guardrails-agent-io/` and
+  `.guardrails-staging/` always allowed), naming the scope and the needsHuman route. Review follow-ups: the serial
+  snapshot runs in NORMAL mode like worktree mode (tracked files revert through the repo's own smudge; files
+  untracked at snapshot time have their raw bytes captured and written back verbatim); editing the checkout
+  mid-serial-run is unsupported but LOUD (run-start Note; revert text says the changes may not be the agent's);
+  serial needs-human/tamper/wall halts revert too, BEFORE journaling, and `attempts[].scopeRevertedPaths` /
+  `writeScopeNotChecked` ride run.json; the snapshot tree is journaled (`tasks.<id>.scopeSnapshotTree`) and a
+  leftover one is REPORTED at run start (never reverted — so a crashed attempt's out-of-scope edits stay as the next
+  baseline, announced but not enforced) and handed to that task's first attempt; raw-byte capture covers regular
+  untracked files only (never symlinks/gitlinks) and a single bad path never fails the snapshot; a check that
+  could not run says `write scope NOT checked this attempt` in the summary and on both consoles.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode

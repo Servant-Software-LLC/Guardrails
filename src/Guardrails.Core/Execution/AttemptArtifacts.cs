@@ -61,6 +61,79 @@ internal static class AttemptArtifacts
     }
 
     /// <summary>
+    /// Issue #816: say, in the attempt's own log dir, that its writeScope was NOT checked retrospectively and why —
+    /// a serial workspace that is not a git top level has no base to diff against. The write-time hook still refuses
+    /// an out-of-scope file edit on a hook-capable runner; a Bash or script write there goes unchecked. Best-effort.
+    /// </summary>
+    public static void WriteScopeUncheckedNote(string logDir, string reason)
+    {
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            AtomicFile.WriteAllText(
+                Path.Combine(logDir, "write-scope-check.log"),
+                "# write-scope check (SSOT §3.4, issue #816)\n" +
+                $"This attempt's writeScope was NOT checked when the attempt ended: {reason}.\n" +
+                "Serial mode snapshots the workspace with git before each attempt and diffs against that snapshot; without a\n" +
+                "git work tree whose top level is the workspace there is nothing to diff against. The write-time hook still\n" +
+                "refuses an out-of-scope Write/Edit on a runner that supports hooks, but a Bash or script write outside the\n" +
+                "scope is not caught. Run the plan from the top level of a git repository to have every attempt checked.\n");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics only.
+        }
+    }
+
+    /// <summary>
+    /// Issue #816 third review: name the untracked files whose RAW bytes the serial snapshot could not capture (they
+    /// vanished between staging and hashing, or could not be read). Only their byte-exact restore is lost — a revert
+    /// of one falls back to git's normal checkout of the snapshot blob. Appended to <c>write-scope-check.log</c>;
+    /// no-op when there are none. Best-effort.
+    /// </summary>
+    public static void WriteRawCaptureSkippedNote(string logDir, IReadOnlyList<string> skipped)
+    {
+        if (skipped.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            File.AppendAllText(
+                Path.Combine(logDir, "write-scope-check.log"),
+                "# write-scope snapshot (issue #816): raw bytes NOT captured for these untracked file(s); a revert of one\n" +
+                "# restores git's (possibly line-ending-normalised) copy instead of the exact bytes:\n" +
+                string.Concat(skipped.Select(p => p + "\n")));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics only.
+        }
+    }
+
+    /// <summary>
+    /// Issue #816 fifth review: name the links a worktree-mode revert removed (directories replaced by a link out of
+    /// the segment, under which an out-of-scope path had to be reverted). Appended to <c>write-scope-check.log</c>.
+    /// </summary>
+    public static void WriteRemovedLinksNote(string logDir, string links)
+    {
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            File.AppendAllText(
+                Path.Combine(logDir, "write-scope-check.log"),
+                "# write-scope revert (issue #816): removed these link(s) out of the worktree (the link entry only, never its " +
+                "target) before reverting the out-of-scope path(s) under them:\n" + links + "\n");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics only.
+        }
+    }
+
+    /// <summary>
     /// Write <c>scope-clean.log</c> naming the out-of-scope paths a phase-2 scope-clean stripped from
     /// the segment after the guardrails PASSED (SSOT §3.4, issue #280). A durable, UI-independent trace
     /// (the #253 "don't silently vanish files" posture): the paths were a passing guardrail's side

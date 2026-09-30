@@ -165,6 +165,37 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        lock (_gate)
+        {
+            // #816 review WEAK 6: a scope check that could not run must be said where the operator is looking.
+            _output.WriteLine("  " + WriteScopeNotCheckedNotice(task, attempt, reason));
+        }
+    }
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        lock (_gate)
+        {
+            _output.WriteLine(InterruptedAttemptNotice(task, paths, patchPath));
+        }
+    }
+
+    /// <summary>The #816 run-start interrupted-attempt notice, shared by the plain and the live console.</summary>
+    internal static string InterruptedAttemptNotice(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        string list = string.Join(", ", paths.Select(o => $"{o.Status} {o.Path}"));
+        string copy = patchPath is null ? "" : $" A copy of the differences: {patchPath}.";
+        return $"[write-scope] WARNING {task.Id}: an attempt interrupted in an earlier run never had its writeScope " +
+               $"checked. These {paths.Count} path(s) outside its writeScope differ from when it started — they may be " +
+               $"its out-of-scope edits, or changes made since. NOT reverted; review them: {list}.{copy}";
+    }
+
+    /// <summary>The #816 "not checked" notice, shared by the plain and the live console.</summary>
+    internal static string WriteScopeNotCheckedNotice(TaskNode task, int attempt, string reason) =>
+        $"[write-scope] {task.Id}: attempt {attempt} — write scope NOT checked: {reason}";
+
     public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)

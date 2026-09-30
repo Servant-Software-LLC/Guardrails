@@ -61,7 +61,8 @@ internal sealed class ActionRunner
         TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot = null,
-        IReadOnlyList<string>? enforcedWriteScope = null)
+        IReadOnlyList<string>? enforcedWriteScope = null,
+        IReadOnlyList<string>? writeTimeScope = null)
     {
         if (task.Action.Kind != ActionKind.Prompt)
         {
@@ -82,7 +83,7 @@ internal sealed class ActionRunner
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
             logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot,
-            enforcedWriteScope).ConfigureAwait(false);
+            enforcedWriteScope, writeTimeScope).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -111,7 +112,8 @@ internal sealed class ActionRunner
         TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot,
-        IReadOnlyList<string>? enforcedWriteScope)
+        IReadOnlyList<string>? enforcedWriteScope,
+        IReadOnlyList<string>? writeTimeScope)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
         PromptFile promptFile = PromptExecutionSupport.LoadPromptFile(task.Action.Path);
@@ -190,9 +192,20 @@ internal sealed class ActionRunner
         // other one could drop the boundary for a file-writing runner whenever the two differ. This is
         // not a weakening — NeedsContainmentHook answers TRUE for every kind but the ones registered as
         // tool-less, so a future writing runner inherits the boundary rather than silently losing it.
-        if (isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook((route?.Runner ?? runnerConfig).Kind))
+        //
+        // #816: the write-scope hook (WriteScopeHook) rides the same mechanism in BOTH modes — composed into the
+        // containment settings in worktree mode, alone in serial mode — so a file-editing tool call outside the
+        // task's writeScope is refused at the moment of the write, naming the scope and the needsHuman door. The
+        // retrospective write-scope check at the end of every attempt stays the backstop.
+        WriteScopeHook.Spec? scopeHook = writeTimeScope is not null
+            ? new WriteScopeHook.Spec(effectiveWorkspaceRoot, writeTimeScope)
+            : null;
+        if (PromptRunnerKinds.NeedsContainmentHook((route?.Runner ?? runnerConfig).Kind)
+            && (isWorktreeMode || scopeHook is not null))
         {
-            string settingsPath = WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!);
+            string settingsPath = isWorktreeMode
+                ? WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!, writeScope: scopeHook)
+                : WriteScopeHook.WriteHookFiles(logDir, scopeHook!);
             settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", settingsPath] };
         }
 
