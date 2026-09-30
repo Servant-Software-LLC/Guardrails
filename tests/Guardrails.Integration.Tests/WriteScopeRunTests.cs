@@ -722,7 +722,8 @@ public sealed partial class WriteScopeRunTests
         return await new Scheduler(plan, executor, journal).RunAsync(plan, TestContext.Current.CancellationToken);
     }
 
-    private static (TaskExecutor, RunJournal, Core.Model.PlanDefinition) BuildExecutor(string planDir, IPromptRunner agent)
+    private static (TaskExecutor, RunJournal, Core.Model.PlanDefinition) BuildExecutor(
+        string planDir, IPromptRunner agent, IRunObserver? observer = null)
     {
         PlanLoadResult load = new PlanLoader().Load(planDir);
         Assert.NotNull(load.Plan);
@@ -734,7 +735,7 @@ public sealed partial class WriteScopeRunTests
         RunJournal journal = RunJournal.LoadOrCreate(plan);
         var executor = new TaskExecutor(
             plan, new ProcessRunner(), new InterpreterMap(new PathExecutableProbe(), plan.Config.Interpreters),
-            stateManager, journal, IRunObserver.Null, PromptRunnerRegistry.Build(plan.Config, _ => agent));
+            stateManager, journal, observer ?? IRunObserver.Null, PromptRunnerRegistry.Build(plan.Config, _ => agent));
         return (executor, journal, plan);
     }
 

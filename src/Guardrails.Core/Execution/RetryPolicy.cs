@@ -865,6 +865,44 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Issue #816 second review: the previous-attempt feedback for a task's first attempt when run start found that
+    /// an attempt of it in an EARLIER process never ended, and that paths outside its writeScope now differ from the
+    /// snapshot that attempt started from. Deliberately NOT a revert report — nothing was reverted, because the
+    /// harness cannot tell that attempt's writes from a human's fix or a <c>git pull</c> since.
+    /// </summary>
+    public static string ForInterruptedAttemptChanges(TaskNode task, WriteScopeCheckResult check, string? patchPath)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# An earlier attempt of task '{task.Id}' was interrupted and never checked");
+        text.AppendLine();
+        text.AppendLine("That attempt never ended (the harness was stopped, crashed, or the machine slept), so its write-scope");
+        text.AppendLine("check never ran. At the start of this run, these paths OUTSIDE your writeScope differ from the tree that");
+        text.AppendLine("attempt started from:");
+        AppendOffenses(text, check.OffendingPaths, gap: null);
+        text.AppendLine();
+        text.AppendLine("They may be that attempt's out-of-scope edits, or changes a person made since — the harness cannot");
+        text.AppendLine("tell, so it left them in place. Do NOT build on them, and do not write them yourself: they are outside");
+        text.AppendLine("your scope, and a change you make to them is reverted when this attempt ends.");
+        text.AppendLine();
+        AppendAllowedScope(text, check.Scope);
+        if (patchPath is { Length: > 0 })
+        {
+            text.AppendLine();
+            text.AppendLine($"A copy of those differences is at `{patchPath.Replace('\\', '/')}` for a human.");
+        }
+
+        if (task.Action.Kind == ActionKind.Prompt)
+        {
+            text.AppendLine();
+            text.AppendLine("If they block you — for example a test that no longer matches what the plan intends — do not work");
+            text.AppendLine("around them. Write `{ \"needsHuman\": { \"question\": \"<which path, and why it blocks this task>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead.");
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
     /// #816 review Q1: in SERIAL mode the attempt ran in the operator's own checkout, where anything that changed while
     /// it ran counts as changed "during the attempt" — including an edit a person or another process made. Editing that
     /// checkout during a serial run is not supported, but the text must not blame the agent for what it may not have

@@ -310,8 +310,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
         _inner.WriteScopeNotChecked(task, attempt, reason);
 
-    public void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths) =>
-        _inner.InterruptedAttemptScopeReverted(task, paths);
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
 
     public void WaveStarting(WaveNode wave, int index, int total) =>
         _inner.WaveStarting(wave, index, total);

@@ -19,6 +19,12 @@ namespace Guardrails.Core.Execution;
 /// exactly what changed DURING the attempt — never an earlier task's work, never the operator's own pending
 /// changes made before the run.</para>
 ///
+/// <para><b>Normal mode, like worktree mode (#816 second review).</b> Staging and diffing apply the repository's
+/// own <c>core.autocrlf</c> / <c>.gitattributes</c> rules, so a stat-clean tracked file (whose seeded blob is the
+/// normalised one) and a re-hashed one agree, and an identical-bytes re-save is never a change. A TRACKED file is
+/// reverted through git's normal checkout (its smudge is the repo's own, which is what put the file on disk). An
+/// UNTRACKED file's raw bytes are kept separately (<see cref="UntrackedRawBlobs"/>) and written back verbatim.</para>
+///
 /// <para>Never an offense, so never reverted: the reconstructable/scaffolding set every harness staging site
 /// excludes (<see cref="SegmentStaging"/>), plus the plan's <c>logs/</c> and <c>state/</c> directories when the
 /// plan folder sits inside the workspace — the harness itself writes there while the attempt runs. Those two are
@@ -27,13 +33,25 @@ namespace Guardrails.Core.Execution;
 /// </summary>
 public sealed class ScopeDiffBase : IDisposable
 {
-    private ScopeDiffBase(string repoPath, string baseTreeish, string? indexFile, IReadOnlyList<string> harnessOwnedPrefixes)
+    private ScopeDiffBase(
+        string repoPath, string baseTreeish, string? indexFile, IReadOnlyList<string> harnessOwnedPrefixes,
+        IReadOnlyDictionary<string, string>? untrackedRawBlobs = null)
     {
         RepoPath = repoPath;
         Base = baseTreeish;
         IndexFile = indexFile;
         HarnessOwnedPrefixes = harnessOwnedPrefixes;
+        UntrackedRawBlobs = untrackedRawBlobs ?? new Dictionary<string, string>(StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// #816 second review: for every file the snapshot holds that the operator's REAL index did not track, the id of
+    /// a blob holding its RAW bytes (<c>git hash-object -w --no-filters</c>). The snapshot itself is taken in normal
+    /// mode, so a file's snapshot blob can be a line-ending-normalised copy; a TRACKED file is restored through git's
+    /// normal checkout (the repo's own smudge — correct for its own settings), but an untracked file has no such
+    /// round trip, so a revert writes these raw bytes back instead. Empty in worktree mode.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> UntrackedRawBlobs { get; }
 
     /// <summary>The repository working tree the check stages and reverts in.</summary>
     public string RepoPath { get; }
@@ -83,8 +101,8 @@ public sealed class ScopeDiffBase : IDisposable
     }
 
     /// <summary>
-    /// Snapshot <paramref name="workspace"/> for a serial attempt (see the type remarks), in raw-bytes mode
-    /// (<see cref="ScopeGit"/>) so a revert later writes back exactly the bytes that were on disk. On any git
+    /// Snapshot <paramref name="workspace"/> for a serial attempt (see the type remarks), keeping the raw bytes of
+    /// every file the real index does not track (<see cref="UntrackedRawBlobs"/>). On any git
     /// failure returns null with <paramref name="failure"/> set — the caller runs the attempt without the
     /// retrospective check and says so LOUDLY; a snapshot failure must never fail the attempt itself.
     /// </summary>
@@ -101,7 +119,10 @@ public sealed class ScopeDiffBase : IDisposable
         {
             SegmentStaging.StageAll(workspace, indexFile, cancellationToken);
             string tree = ScopeGit.Run(workspace, indexFile, ["write-tree"], cancellationToken).Trim();
-            return new ScopeDiffBase(workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory));
+            IReadOnlyList<string> prefixes = PlanOwnedPrefixes(workspace, planDirectory);
+            return new ScopeDiffBase(
+                workspace, tree, indexFile, prefixes,
+                CaptureUntrackedRawBlobs(workspace, indexFile, prefixes, cancellationToken));
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -109,6 +130,42 @@ public sealed class ScopeDiffBase : IDisposable
             failure = $"git could not snapshot the workspace before the attempt ({ex.Message})";
             return null;
         }
+    }
+
+    /// <summary>
+    /// The paths the private index holds that the operator's real index does not (the files git does not track),
+    /// each hashed RAW (<c>hash-object -w --no-filters</c>) into the object store, keyed by path. Harness-owned paths
+    /// are skipped. The objects are unreferenced and pruned by git in its own time, like the snapshot tree.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> CaptureUntrackedRawBlobs(
+        string workspace, string indexFile, IReadOnlyList<string> harnessOwnedPrefixes, CancellationToken cancellationToken)
+    {
+        var tracked = new HashSet<string>(
+            ScopeGit.Run(workspace, null, ["ls-files", "-z"], cancellationToken).Split('\0', StringSplitOptions.RemoveEmptyEntries),
+            StringComparer.Ordinal);
+        List<string> untracked = ScopeGit.Run(workspace, indexFile, ["ls-files", "-z"], cancellationToken)
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Where(p => !tracked.Contains(p)
+                        && !harnessOwnedPrefixes.Any(prefix => p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        && !p.Contains('\n'))
+            .ToList();
+
+        var blobs = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (untracked.Count == 0)
+        {
+            return blobs;
+        }
+
+        string[] ids = ScopeGit.Run(
+                workspace, indexFile, ["hash-object", "-w", "--no-filters", "--stdin-paths"], cancellationToken,
+                standardInput: string.Join("\n", untracked) + "\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < untracked.Count && i < ids.Length; i++)
+        {
+            blobs[untracked[i]] = ids[i].Trim();
+        }
+
+        return blobs;
     }
 
     /// <summary>

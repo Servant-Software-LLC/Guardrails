@@ -197,11 +197,13 @@ public interface IRunObserver
     void WriteScopeNotChecked(TaskNode task, int attempt, string reason) { }
 
     /// <summary>
-    /// Issue #816: out-of-scope changes were reverted OUTSIDE an ordinary attempt — a resumed task found them
-    /// against the snapshot journaled by an attempt that never ended (the harness was killed, crashed, or the host
-    /// slept). <paramref name="paths"/> are the reverted paths. Default no-op.
+    /// Issue #816: at RUN START, the workspace differs from the snapshot an earlier attempt of
+    /// <paramref name="task"/> journaled and never finished with (the harness was killed, crashed, or the host slept)
+    /// on <paramref name="paths"/>, all outside the task's writeScope. They are REPORTED, not reverted — they may be
+    /// that attempt's out-of-scope edits, or a human's fix since. <paramref name="patchPath"/> is the kept copy of
+    /// the differences, or null when none could be written. Default no-op.
     /// </summary>
-    void InterruptedAttemptScopeReverted(TaskNode task, IReadOnlyList<WriteScopeOffense> paths) { }
+    void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) { }
 
     /// <summary>
     /// An autonomy-policy decision was recorded to the unified <c>decisions[]</c> log (SSOT §2.1/§7): the

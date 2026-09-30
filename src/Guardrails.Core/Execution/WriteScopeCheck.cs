@@ -411,8 +411,22 @@ public static class WriteScopeCheck
         if (paths.Count == 0) return;
 
         HashSet<string> existing = ExistingAtBase(diffBase, paths, cancellationToken);
-        List<string> existedAtBase = paths.Where(existing.Contains).ToList();
         List<string> addedSinceBase = paths.Where(p => !existing.Contains(p)).ToList();
+
+        // #816 second review: a file the operator's git did NOT track at snapshot time is restored from its RAW
+        // bytes, written verbatim — the snapshot blob may be a line-ending-normalised copy, and an untracked file
+        // has no smudge round trip that would undo that. Tracked files go through git's normal checkout below.
+        List<string> restoreRaw = paths.Where(p => existing.Contains(p) && diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
+        foreach (string path in restoreRaw)
+        {
+            byte[] bytes = ScopeGit.RunBytes(
+                diffBase.RepoPath, diffBase.IndexFile, ["cat-file", "blob", diffBase.UntrackedRawBlobs[path]], cancellationToken);
+            string full = Path.Combine(diffBase.RepoPath, path.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllBytes(full, bytes);
+        }
+
+        List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
 
         // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
         foreach (List<string> batch in Batches(existedAtBase))

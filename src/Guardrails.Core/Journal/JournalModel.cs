@@ -676,10 +676,10 @@ public sealed record TaskJournalEntry
     /// <summary>
     /// SSOT §7 <c>tasks.&lt;id&gt;.scopeSnapshotTree</c> (issue #816): the git tree id of the serial-mode write-scope
     /// snapshot taken as this task's CURRENT attempt started — present only while that attempt has not ended
-    /// normally. An attempt that ends (settled, retried, cancelled) clears it after its own end-of-attempt check; a
-    /// value that survives into a later process therefore marks an attempt that never ended — the harness was
-    /// killed, crashed, or the host slept — and the resumed task diffs the workspace against it (reverting and
-    /// reporting out-of-scope changes) before its next attempt starts. Deliberately NOT on
+    /// normally. An attempt that ends (settled, retried, cancelled) clears it after its own end-of-attempt check, and
+    /// every settle clears it too; a value that survives into a later process therefore marks an attempt that never
+    /// ended — the harness was killed, crashed, or the host slept — and the next run REPORTS (never reverts) the
+    /// out-of-scope differences against it at run start, then clears it in every mode. Deliberately NOT on
     /// <see cref="InFlightAttempt"/>: the resume rules drop that marker at load (it belongs to the previous
     /// process), which is exactly when this is needed. ABSENT in worktree mode, when no snapshot was taken, and in
     /// every journal written before this field existed — a resume then simply skips the check.
@@ -911,6 +911,23 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HarnessWriteRecord? HarnessWrite { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].scopeRevertedPaths</c> (issue #816): the paths outside the task's writeScope that the
+    /// END-OF-ATTEMPT check reverted — on an attempt that never reached the ordinary write-scope check (a timeout,
+    /// a turn cap, a failed action, a halt …). Absent when nothing was reverted that way, and in older journals. A
+    /// phase-1 violation is recorded by its outcome (<c>write-scope-violation</c>), not here.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? ScopeRevertedPaths { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].writeScopeNotChecked</c> (issue #816): why this attempt's writeScope was NOT fully
+    /// checked or enforced — the serial snapshot failed, the check hit a git error, or a revert failed. Absent on
+    /// every attempt whose check ran normally, and in older journals.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteScopeNotChecked { get; init; }
 }
 
 /// <summary>

@@ -163,13 +163,11 @@ public sealed class TaskExecutor : ITaskExecutor
         // RUNTIME refused, this reads what the write-scope CHECK found.
         var pathsWrittenOutOfScope = new HashSet<string>(StringComparer.Ordinal);
 
-        // #816 review Q2b: a serial attempt that never ENDED in an earlier process (killed, crashed, host slept) left
-        // its snapshot journaled; its out-of-scope changes are still in the workspace, unchecked. Diff against that
-        // snapshot NOW, before the first attempt of this run inherits them, and hand what was reverted to that
-        // attempt as its previous-attempt feedback.
-        if (!IsRealGitSegment(worktree))
+        // #816: an attempt of this task that never ENDED in an earlier process left out-of-scope changes that
+        // PrepareRun found at run start (it reports them, never reverts them); hand that list to the first attempt.
+        if (_interruptedAttemptFeedback.TryRemove(task.Id, out string? interruptedFeedback))
         {
-            feedbackPath = ReconcileInterruptedSerialAttempt(task) ?? feedbackPath;
+            feedbackPath = interruptedFeedback;
         }
 
         // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
@@ -818,13 +816,24 @@ public sealed class TaskExecutor : ITaskExecutor
             scopeBase = null;
         }
 
-        var scopeNotes = new AttemptScopeNotes { NotChecked = snapshotFailure };
+        var scopeNotes = new AttemptScopeAnnotation { NotChecked = snapshotFailure };
+        // #816 second review (WEAK A): the journaler reads these facts when it builds this attempt's record, so
+        // run.json and AttemptFinished carry them — they are all settled before any journaler call.
+        _journaler.BeginScopeAnnotation(task.Id, scopeNotes);
         using (scopeBase)
         {
-            AttemptResult attempt = await RunAttemptCoreAsync(
-                task, worktree, attemptNumber, previousFeedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken,
-                priorSilentStalls, priorThrashes, scopeBase, unavailable, scopeNotes).ConfigureAwait(false);
+            AttemptResult attempt;
+            try
+            {
+                attempt = await RunAttemptCoreAsync(
+                    task, worktree, attemptNumber, previousFeedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
+                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken,
+                    priorSilentStalls, priorThrashes, scopeBase, unavailable, scopeNotes).ConfigureAwait(false);
+            }
+            finally
+            {
+                _journaler.EndScopeAnnotation(task.Id);
+            }
 
             if (scopeBase?.IndexFile is not null)
             {
@@ -852,83 +861,89 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     /// <summary>
-    /// #816 review Q2b: if <paramref name="task"/>'s journal entry still carries a serial scope snapshot, the attempt
-    /// that took it never ended (the harness was killed, crashed, or the host slept) and its out-of-scope changes are
-    /// still in the workspace. Diff the workspace against that snapshot now, keep a copy of and revert what falls
-    /// outside the enforced scope, clear the snapshot, and return the path of a feedback file naming what was
-    /// reverted (for the next attempt's previous-attempt feedback), or null when there was nothing to do. Loud, never
-    /// fatal: a snapshot git can no longer read is reported through <see cref="IRunObserver.WriteScopeNotChecked"/>.
-    /// The paths are NOT fed to #707's repeat rule — in serial mode they may be edits made outside the agent.
+    /// #816 second review (WEAK B): run-start handling of an attempt that never ENDED in an earlier process (the
+    /// harness was killed, crashed, or the host slept), found as a leftover <c>scopeSnapshotTree</c> in the journal.
+    /// Runs before any task is dispatched, so nothing this run does can be mistaken for it. In SERIAL mode the
+    /// workspace is diffed against that snapshot and every out-of-scope difference is REPORTED — kept as a patch in
+    /// the task's log dir, announced loudly (<see cref="IRunObserver.InterruptedAttemptChangesFound"/>) and handed to
+    /// that task's first attempt as feedback — but NOT reverted: the harness cannot tell the dead attempt's writes
+    /// from a human's post-crash fix or a <c>git pull</c>. The field is cleared in EVERY mode (a worktree resume never
+    /// reuses the old segment, so there is nothing to diff there).
     /// </summary>
-    private string? ReconcileInterruptedSerialAttempt(TaskNode task)
+    public void PrepareRun(bool worktreeMode)
     {
-        if (!_journal.Document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
-            || entry.ScopeSnapshotTree is not { Length: > 0 } tree)
+        foreach (TaskNode task in _plan.Tasks)
         {
-            return null;
+            if (!_journal.Document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
+                || entry.ScopeSnapshotTree is not { Length: > 0 } tree)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (!worktreeMode)
+                {
+                    ReportInterruptedAttempt(task, tree);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                _observer.WriteScopeNotChecked(
+                    task, _journal.NextAttemptNumber(task.Id), $"the interrupted earlier attempt could not be checked: {ex.Message}");
+            }
+            finally
+            {
+                _journal.SetScopeSnapshotTree(task.Id, null);
+            }
+        }
+    }
+
+    private void ReportInterruptedAttempt(TaskNode task, string tree)
+    {
+        int nextAttempt = _journal.NextAttemptNumber(task.Id);
+        if (SerialScopeUnavailableReason() is { } unavailable)
+        {
+            _observer.WriteScopeNotChecked(task, nextAttempt, unavailable);
+            return;
+        }
+
+        using ScopeDiffBase? interrupted = ScopeDiffBase.TryFromSerialTree(
+            _plan.Workspace, _plan.PlanDirectory, tree, out string? failure);
+        if (interrupted is null)
+        {
+            _observer.WriteScopeNotChecked(task, nextAttempt, $"the interrupted earlier attempt could not be checked: {failure}");
+            return;
+        }
+
+        WriteScopeCheckResult check = WriteScopeCheck.Check(
+            interrupted, WithImplicitStagingScope(task.WriteScope ?? [], task.StagingOutputs));
+        if (check.OffendingPaths.FirstOrDefault(o => o.Status == '?') is { } gitError)
+        {
+            _observer.WriteScopeNotChecked(task, nextAttempt, $"the interrupted earlier attempt could not be checked: {gitError.Path}");
+            return;
+        }
+
+        if (check.OffendingPaths.Count == 0)
+        {
+            return;
         }
 
         string logDir = TaskLevelLogDir(task.Id);
-        try
-        {
-            if (SerialScopeUnavailableReason() is { } unavailable)
-            {
-                _observer.WriteScopeNotChecked(task, _journal.NextAttemptNumber(task.Id), unavailable);
-                return null;
-            }
+        string? patchPath = AttemptArtifacts.WriteOutOfScopePatch(
+            logDir, WriteScopeCheck.CaptureOffendingPatch(interrupted, check.OffendingPaths));
+        _observer.InterruptedAttemptChangesFound(task, check.OffendingPaths, patchPath);
 
-            using ScopeDiffBase? interrupted = ScopeDiffBase.TryFromSerialTree(
-                _plan.Workspace, _plan.PlanDirectory, tree, out string? failure);
-            if (interrupted is null)
-            {
-                _observer.WriteScopeNotChecked(
-                    task, _journal.NextAttemptNumber(task.Id),
-                    $"the interrupted earlier attempt could not be checked: {failure}");
-                return null;
-            }
-
-            var notes = new AttemptScopeNotes();
-            EndOfAttemptScope? reverted = EnforceScopeAtAttemptEnd(
-                interrupted, WithImplicitStagingScope(task.WriteScope ?? [], task.StagingOutputs), logDir,
-                new HashSet<string>(StringComparer.Ordinal), notes);
-            if (notes.NotChecked is { } notChecked)
-            {
-                _observer.WriteScopeNotChecked(task, _journal.NextAttemptNumber(task.Id), notChecked);
-            }
-
-            if (reverted is null)
-            {
-                return null;
-            }
-
-            _observer.InterruptedAttemptScopeReverted(task, reverted.Check.OffendingPaths);
-            string feedback =
-                $"# An earlier run of task '{task.Id}' was interrupted mid-attempt\n\n" +
-                "That attempt never ended (the harness was stopped, crashed, or the machine slept), so its write-scope\n" +
-                "check never ran. It ran now, before this attempt started, against the snapshot taken as that attempt began.\n" +
-                RetryPolicy.ForOutOfScopeWritesReverted(
-                    reverted.Check, reverted.PatchPath, reverted.Reverted, task.Action.Kind, sharedWorkspace: true);
-            Directory.CreateDirectory(logDir);
-            string path = Path.Combine(logDir, "interrupted-attempt-scope.md");
-            AtomicFile.WriteAllText(path, feedback);
-            return path;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _observer.WriteScopeNotChecked(task, _journal.NextAttemptNumber(task.Id), ex.Message);
-            return null;
-        }
-        finally
-        {
-            _journal.SetScopeSnapshotTree(task.Id, null);
-        }
+        Directory.CreateDirectory(logDir);
+        string feedback = Path.Combine(logDir, "interrupted-attempt-scope.md");
+        AtomicFile.WriteAllText(feedback, RetryPolicy.ForInterruptedAttemptChanges(task, check, patchPath));
+        _interruptedAttemptFeedback[task.Id] = feedback;
     }
 
-    /// <summary>What the write-scope machinery could NOT do this attempt (#816 review WEAK 6); set by the attempt.</summary>
-    private sealed class AttemptScopeNotes
-    {
-        public string? NotChecked { get; set; }
-    }
+    /// <summary>#816: run-start interrupted-attempt reports, consumed by each task's first attempt (see PrepareRun).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _interruptedAttemptFeedback =
+        new(StringComparer.Ordinal);
+
 
     /// <summary>
     /// Join <paramref name="clause"/> onto a summary with "; " (#816 review NIT 12): a summary that already ends in a
@@ -979,7 +994,7 @@ public sealed class TaskExecutor : ITaskExecutor
         int priorThrashes,
         ScopeDiffBase? scopeBase,
         string? scopeUnavailableReason,
-        AttemptScopeNotes scopeNotes)
+        AttemptScopeAnnotation scopeNotes)
     {
         var startedAt = DateTimeOffset.UtcNow;
         string logDir = AttemptLogDir(task.Id, attemptNumber);
@@ -1257,6 +1272,11 @@ public sealed class TaskExecutor : ITaskExecutor
                 endOfAttemptScopeRan = true;
                 endOfAttemptScope = EnforceScopeAtAttemptEnd(
                     scopeBase, enforcedWriteScope, logDir, pathsWrittenOutOfScope, scopeNotes);
+                if (endOfAttemptScope is { } done)
+                {
+                    // Read by the journaler when it builds this attempt's record (run.json scopeRevertedPaths).
+                    scopeNotes.RevertedPaths = done.Check.OffendingPaths.Select(o => o.Path).ToList();
+                }
             }
 
             return endOfAttemptScope;
@@ -1272,11 +1292,25 @@ public sealed class TaskExecutor : ITaskExecutor
 
         // #816 review Q2a: a terminal halt (tamper, needsHuman, a permission wall) in SERIAL mode leaves the workspace
         // as it stands for the human and for a resume, so it gets the end-of-attempt revert too — and the escalation
-        // names what was reverted. Appended to the halt's own feedback.md and summary after the journaler wrote them,
-        // so every halt path is covered without rewriting each one's text.
-        AttemptResult WithSerialScopeReport(AttemptResult halted)
+        // names what was reverted. Wrapping a halt is ONE line — `return WithSerialScopeReport(() => _journaler.X(...));`
+        // — and the ORDER is the point (#816 second review, WEAK A): the revert runs FIRST, so the journaler's record
+        // (run.json scopeRevertedPaths) and AttemptFinished already carry it; the section and the summary clause are
+        // then added to the halt's feedback.md and result before anything downstream (the escalation) reads them.
+        // For a site whose halt DECISION is made inside a helper that journals (WallHalt): run the serial revert first.
+        // Memoised, so the retry path that follows when the helper does not halt re-uses the same result.
+        void PreEnforceForSerialHalt()
         {
-            if (!sharedWorkspace || EnforceEndOfAttemptScope() is not { } reverted)
+            if (sharedWorkspace)
+            {
+                EnforceEndOfAttemptScope();
+            }
+        }
+
+        AttemptResult WithSerialScopeReport(Func<AttemptResult> halt)
+        {
+            EndOfAttemptScope? reverted = sharedWorkspace ? EnforceEndOfAttemptScope() : null;
+            AttemptResult halted = halt();
+            if (reverted is null)
             {
                 return halted;
             }
@@ -1339,7 +1373,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 "what grades it. The attempt is failed and the task settled needs-human rather than retried, " +
                 "because a retry would be graded by the rewritten files. Inspect the changes (git diff on the plan " +
                 "folder), restore what should not have changed, and re-run.\n";
-            return WithSerialScopeReport(_journaler.FailedAttempt(
+            return WithSerialScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, tamperFeedback, isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1364,7 +1398,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // triaging human, the firstmate — can be pointed at.
         if (action.NeedsHumanQuestion is { } question)
         {
-            return WithSerialScopeReport(_journaler.NeedsHuman(
+            return WithSerialScopeReport(() => _journaler.NeedsHuman(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, question,
                 action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance,
                 salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []),
@@ -1614,7 +1648,7 @@ public sealed class TaskExecutor : ITaskExecutor
             // (not "structural") even when a .claude/ read-source wall coexists this attempt.
             if (wall.HasRepeated)
             {
-                return WithSerialScopeReport(_journaler.PermissionWall(
+                return WithSerialScopeReport(() => _journaler.PermissionWall(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     new PermissionWallDecision(true, [], wall.RepeatedPaths, wall.RepeatedCommands),
                     provenance: provenance, segments: AttemptJournaler.SegmentsFor(action)));
@@ -1631,7 +1665,7 @@ public sealed class TaskExecutor : ITaskExecutor
             // structural-only feedback/summary wording.
             if (wall.HasStructural)
             {
-                return WithSerialScopeReport(_journaler.PermissionWall(
+                return WithSerialScopeReport(() => _journaler.PermissionWall(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall,
                     provenance: provenance, segments: AttemptJournaler.SegmentsFor(action)));
             }
@@ -1774,6 +1808,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 // #708: this attempt did not converge — the staged deliverable was never produced — and a wall
                 // stands that no retry clears. Halt instead, reporting the staging failure as the cause and the
                 // outcome (#538/#329), and preserving exactly what the retry below would have preserved.
+                // #816: in serial mode the revert runs BEFORE a halt journals, so the halt's record carries it.
+                PreEnforceForSerialHalt();
                 if (WallHalt(
                         task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                         AttemptOutcome.StagingFailed,
@@ -1784,7 +1820,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         () => StashForHalt(task, worktree, attemptNumber),
                         provenance, AttemptJournaler.SegmentsFor(action), harnessWrite: null) is { } stagingHalt)
                 {
-                    return WithSerialScopeReport(stagingHalt);
+                    return WithSerialScopeReport(() => stagingHalt);
                 }
 
                 // #816: enforce the scope BEFORE the salvage stash, so the stash never carries an out-of-scope write.
@@ -1851,6 +1887,8 @@ public sealed class TaskExecutor : ITaskExecutor
             // nothing: a rejected fragment keeps the documented fragment-rejection boundary. Staying SILENT about
             // that is what misleads, so the feedback says the work was not preserved rather than simply omitting
             // a salvage section, which reads as "there was nothing worth keeping".
+            // #816: in serial mode the revert runs BEFORE a halt journals, so the halt's record carries it.
+            PreEnforceForSerialHalt();
             if (WallHalt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     AttemptOutcome.InvalidFragment,
@@ -1863,7 +1901,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     provenance, AttemptJournaler.SegmentsFor(action), harnessWrite: null,
                     workNotPreserved: true) is { } nestedHalt)
             {
-                return WithSerialScopeReport(nestedHalt);
+                return WithSerialScopeReport(() => nestedHalt);
             }
 
             return _journaler.FailedAttempt(
@@ -1949,6 +1987,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 // #708: the third pre-guardrail rejection site. Nothing was written and no guardrail ran, so this
                 // attempt did not converge — and a wall stands that no retry clears. The rejection stays the
                 // reported cause; the wall is why there is no further attempt. Preserves what the retry would have.
+                // #816: in serial mode the revert runs BEFORE a halt journals, so the halt's record carries it.
+                PreEnforceForSerialHalt();
                 if (WallHalt(
                         task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                         AttemptOutcome.HarnessWriteRejected,
@@ -1961,7 +2001,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         () => StashForHalt(task, worktree, attemptNumber),
                         provenance, AttemptJournaler.SegmentsFor(action), harnessWriteRecord) is { } hatchHalt)
                 {
-                    return WithSerialScopeReport(hatchHalt);
+                    return WithSerialScopeReport(() => hatchHalt);
                 }
 
                 // #816: enforce the scope BEFORE the salvage stash, so the stash never carries an out-of-scope write.
@@ -2047,7 +2087,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     WriteScopeCheck.ScopedRevert(
                         phaseOneBase, scopeCheck.OffendingPaths.Where(o => o.Status != '?').ToList());
                 }
-                catch (InvalidOperationException ex)
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
                 {
                     scopeNotes.NotChecked = $"reverting the out-of-scope path(s) failed, so they are still on disk ({ex.Message})";
                 }
@@ -2704,7 +2744,7 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static EndOfAttemptScope? EnforceScopeAtAttemptEnd(
         ScopeDiffBase? scopeBase, IReadOnlyList<string>? scope, string logDir, HashSet<string> pathsWrittenOutOfScope,
-        AttemptScopeNotes? notes = null)
+        AttemptScopeAnnotation? notes = null)
     {
         if (scopeBase is null || scope is null)
         {
@@ -2740,7 +2780,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             WriteScopeCheck.ScopedRevert(scopeBase, offenses);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
             reverted = false;
             if (notes is not null)

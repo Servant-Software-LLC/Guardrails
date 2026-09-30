@@ -59,36 +59,96 @@ public sealed partial class WriteScopeRunTests
                      Directory.EnumerateFiles(Path.Combine(repo.RepoPath, "gen")).Any());
     }
 
-    // ── Q3: the serial revert restores RAW bytes ──────────────────────────────────────────────────
+    // ── line endings: normal-mode snapshot, byte-exact restore (#816 second review) ─────────────────
+    //
+    // Every fixture file is made NON-RACY — its mtime set an hour back BEFORE git first sees it — so git's index
+    // holds a clean stat entry and a stat-clean file is NOT re-hashed at snapshot time. That is exactly the case the
+    // first raw-bytes design got wrong (a normalised seeded blob beside raw re-hashed ones); a fixture that rewrites
+    // the file just before the snapshot is stat-dirty and cannot see it.
 
     [Theory]
-    [InlineData("lf.txt", "alpha\nbeta\n")]
-    [InlineData("crlf.txt", "alpha\r\nbeta\r\n")]
-    public void SerialRevert_RestoresTheExactBytes_WhateverAutocrlfAndGitattributesSay_Issue816(string file, string original)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ATrackedCrlfFile_TouchedWithIdenticalBytes_IsNotAnOffense_Issue816(bool eolAttributes)
     {
-        // Both conversions are switched on against us: core.autocrlf=true AND a .gitattributes that normalises every
-        // text file. A revert through them would hand back converted bytes; the snapshot must not.
-        using var repo = new TempGitRepo();
-        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "true");
-        // The attributes half needs --attr-source (git 2.40+); on an older git only the config half is neutralised.
-        WriteBytes(repo.RepoPath, ".gitattributes",
-            ScopeGit.AttrSourceSupported.Value ? "* text=auto eol=crlf\n" : "# attributes neutralisation needs git 2.40+\n");
-        WriteBytes(repo.RepoPath, file, original);
-        TempGitRepo.Git(repo.RepoPath, "add", "--", ".gitattributes", file);
-        TempGitRepo.Git(repo.RepoPath, "commit", "-m", "seed");
-        WriteBytes(repo.RepoPath, file, original); // the bytes on disk ARE the pre-attempt state, whatever git thinks
-
+        using var repo = LineEndingRepo(eolAttributes, ("docs/crlf.txt", "line1\r\nline2\r\n"));
         using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
             ?? throw new InvalidOperationException(why);
-        WriteBytes(repo.RepoPath, file, "rewritten by the attempt\n");
 
-        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
-        Assert.Equal([file], check.OffendingPaths.Select(o => o.Path));
-        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+        WriteBytes(repo.RepoPath, "docs/crlf.txt", "line1\r\nline2\r\n"); // re-saved: same bytes, new mtime
 
-        Assert.Equal(Encoding.UTF8.GetBytes(original), File.ReadAllBytes(Path.Combine(repo.RepoPath, file)));
+        Assert.Empty(WriteScopeCheck.Check(snapshot, ["src/**"], Ct).OffendingPaths);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ATrackedCrlfFile_EditedOutOfScope_IsRevertedToItsCrlfBytes_Issue816(bool eolAttributes)
+    {
+        using var repo = LineEndingRepo(eolAttributes, ("docs/crlf.txt", "line1\r\nline2\r\n"));
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+            ?? throw new InvalidOperationException(why);
+
+        WriteBytes(repo.RepoPath, "docs/crlf.txt", "rewritten\r\n");
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+        Assert.Equal(["docs/crlf.txt"], check.OffendingPaths.Select(o => o.Path));
+        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+
+        Assert.Equal(Encoding.UTF8.GetBytes("line1\r\nline2\r\n"), File.ReadAllBytes(Path.Combine(repo.RepoPath, "docs", "crlf.txt")));
+    }
+
+    [Theory]
+    [InlineData(false, "alpha\nbeta\n")]
+    [InlineData(true, "alpha\nbeta\n")]
+    [InlineData(false, "alpha\r\nbeta\r\n")]
+    public void AnUntrackedFile_EditedOutOfScope_IsRevertedToItsRawBytes_Issue816(bool eolAttributes, string original)
+    {
+        using var repo = LineEndingRepo(eolAttributes);
+        WriteNonRacy(repo.RepoPath, "scratch/untracked.txt", original); // never added: untracked in the real index
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+            ?? throw new InvalidOperationException(why);
+
+        WriteBytes(repo.RepoPath, "scratch/untracked.txt", "rewritten by the attempt\n");
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+        Assert.Equal(["scratch/untracked.txt"], check.OffendingPaths.Select(o => o.Path));
+        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+
+        Assert.Equal(Encoding.UTF8.GetBytes(original), File.ReadAllBytes(Path.Combine(repo.RepoPath, "scratch", "untracked.txt")));
+    }
+
+    /// <summary>A repo under <c>core.autocrlf=true</c> (optionally also <c>* text=auto eol=crlf</c>) with committed, NON-RACY files.</summary>
+    private static TempGitRepo LineEndingRepo(bool eolAttributes, params (string Path, string Content)[] tracked)
+    {
+        var repo = new TempGitRepo();
+        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "true");
+        var paths = new List<string>();
+        if (eolAttributes)
+        {
+            WriteNonRacy(repo.RepoPath, ".gitattributes", "* text=auto eol=crlf\n");
+            paths.Add(".gitattributes");
+        }
+
+        foreach ((string path, string content) in tracked)
+        {
+            WriteNonRacy(repo.RepoPath, path, content);
+            paths.Add(path);
+        }
+
+        if (paths.Count > 0)
+        {
+            TempGitRepo.Git(repo.RepoPath, ["add", "--", .. paths]);
+            TempGitRepo.Git(repo.RepoPath, "commit", "-m", "seed");
+        }
+
+        return repo;
+    }
+
+    private static void WriteNonRacy(string root, string relativePath, string content)
+    {
+        WriteBytes(root, relativePath, content);
+        File.SetLastWriteTimeUtc(
+            Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)), DateTime.UtcNow.AddHours(-1));
+    }
     // ── WEAK 4: non-ASCII paths ──────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -232,17 +292,17 @@ public sealed partial class WriteScopeRunTests
         Assert.Contains($"`{UpstreamTest}`", escalation);
     }
 
-    // ── Q2b: an attempt that never ended is reconciled on resume ─────────────────────────────────
+    // ── WEAK B: an attempt that never ended is REPORTED at run start, never reverted ──────────────
 
     [Fact]
-    public async Task Serial_AResumeAfterAnAttemptThatNeverEnded_RevertsItsOutOfScopeChanges_BeforeTheNextAttempt_Issue816()
+    public async Task RunStart_AnInterruptedSerialAttempt_IsReportedNotReverted_AndHandedToTheTasksFirstAttempt_Issue816()
     {
         using var repo = new TempGitRepo();
         repo.Commit(UpstreamTest, "original upstream test");
         string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("02-implement", ["src/Impl.cs"]));
 
-        // Run 1: the attempt writes out of scope and then the harness dies under it (an exception out of the runner
-        // is an infrastructure fault that aborts the run) — its end-of-attempt check never runs.
+        // Run 1: the attempt writes out of scope, then the harness dies under it (an exception out of the runner is an
+        // infrastructure fault that aborts the run) — its end-of-attempt check never runs.
         var dying = new ScriptedAgent((_, _, invocation) =>
         {
             WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "partial");
@@ -250,38 +310,72 @@ public sealed partial class WriteScopeRunTests
             throw new InvalidOperationException("simulated harness death mid-attempt");
         });
         await RunSerialAsync(planDir, dying);
-        Assert.Equal("weakened upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
         Assert.False(string.IsNullOrEmpty(
             JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].ScopeSnapshotTree));
 
-        // Run 2 (the resume): before its first attempt, the workspace is diffed against the journaled snapshot.
+        // Run 2: before ANY dispatch, the difference is reported — and left in place.
+        var observer = new ScopeEventObserver();
         string? testSeen = null;
-        string? implSeen = null;
         string? previousFeedback = null;
         var resumed = new ScriptedAgent((_, _, invocation) =>
         {
+            observer.Events.Add("attempt");
             testSeen = File.ReadAllText(Path.Combine(invocation.WorkingDirectory, "tests", "UpstreamTests.cs"));
-            implSeen = File.ReadAllText(Path.Combine(invocation.WorkingDirectory, "src", "Impl.cs"));
             previousFeedback = invocation.Environment.GetValueOrDefault("GUARDRAILS_FEEDBACK") is { } fb && File.Exists(fb)
                 ? File.ReadAllText(fb)
                 : null;
             WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "done");
         });
-        RunReport report = await RunSerialAsync(planDir, resumed);
+        (TaskExecutor executor, RunJournal journal, Core.Model.PlanDefinition plan) = BuildExecutor(planDir, resumed, observer);
+        RunReport report = await new Scheduler(plan, executor, journal).RunAsync(plan, Ct);
 
         Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
-        Assert.Equal("original upstream test", testSeen);
-        Assert.Equal("partial", implSeen);
+        Assert.Equal(
+            ["interrupted:tests/UpstreamTests.cs", "attempt"],
+            observer.Events.Where(e => !e.StartsWith("finished:", StringComparison.Ordinal)));
+        Assert.Equal("weakened upstream test", testSeen); // NOT reverted: it may be a human's fix since
         Assert.NotNull(previousFeedback);
-        Assert.Contains("was interrupted mid-attempt", previousFeedback);
+        Assert.Contains("was interrupted and never checked", previousFeedback);
         Assert.Contains($"`{UpstreamTest}`", previousFeedback);
+        Assert.Contains("Do NOT build on them", previousFeedback);
+        Assert.Contains("weakened upstream test", File.ReadAllText(observer.PatchPath!));
         Assert.Null(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].ScopeSnapshotTree);
     }
 
     [Fact]
-    public async Task Serial_AJournalWithNoSnapshotField_ResumesNormally_Issue816()
+    public void RunStart_AStaleSnapshotInWorktreeMode_IsClearedWithoutAnyReport_Issue816()
     {
-        // DECLARED CONTROL: an ordinary completed run leaves no snapshot behind, so a resume has nothing to reconcile.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("01-impl", ["src/Impl.cs"]));
+        var observer = new ScopeEventObserver();
+        (TaskExecutor executor, RunJournal journal, _) = BuildExecutor(planDir, new ScriptedAgent((_, _, _) => { }), observer);
+        journal.SetScopeSnapshotTree("01-impl", "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+
+        executor.PrepareRun(worktreeMode: true);
+
+        Assert.Empty(observer.Events);
+        Assert.Null(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-impl"].ScopeSnapshotTree);
+    }
+
+    [Fact]
+    public void RunStart_AnUnreadableStaleSnapshot_IsLoud_AndCleared_Issue816()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("01-impl", ["src/Impl.cs"]));
+        var observer = new ScopeEventObserver();
+        (TaskExecutor executor, RunJournal journal, _) = BuildExecutor(planDir, new ScriptedAgent((_, _, _) => { }), observer);
+        journal.SetScopeSnapshotTree("01-impl", "0123456789012345678901234567890123456789");
+
+        executor.PrepareRun(worktreeMode: false);
+
+        Assert.Contains(observer.Events, e => e.StartsWith("not-checked:", StringComparison.Ordinal));
+        Assert.Null(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-impl"].ScopeSnapshotTree);
+    }
+
+    [Fact]
+    public async Task ASettledAttempt_NeverCarriesTheSnapshotField_Issue816()
+    {
+        // DECLARED CONTROL: an ordinary completed run leaves no snapshot behind, so a resume has nothing to report.
         using var repo = new TempGitRepo();
         string planDir = WritePlan(repo.RepoPath, defaultRetries: 0, new TaskSpec("01-impl", ["src/Impl.cs"]));
         var agent = new ScriptedAgent((_, _, invocation) => WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "done"));
@@ -289,6 +383,67 @@ public sealed partial class WriteScopeRunTests
         Assert.Equal(TaskOutcome.Succeeded, Assert.Single((await RunSerialAsync(planDir, agent)).Tasks).Outcome);
         Assert.Null(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-impl"].ScopeSnapshotTree);
         Assert.DoesNotContain("scopeSnapshotTree", File.ReadAllText(RunJournal.PathFor(planDir)));
+    }
+
+    // ── WEAK A: the facts ride the attempt RECORD, not only text written after it ─────────────────
+
+    [Fact]
+    public async Task TheAttemptRecord_CarriesTheRevertedPaths_ForAnUnfinishedAttemptAndASerialHalt_Issue816()
+    {
+        using var repo = new TempGitRepo();
+        repo.Commit(UpstreamTest, "original upstream test");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 1, new TaskSpec("02-implement", ["src/Impl.cs"]));
+        var observer = new ScopeEventObserver();
+        var agent = new ScriptedAgent(
+            (_, call, invocation) =>
+            {
+                WriteFile(invocation.WorkingDirectory, call == 1 ? UpstreamTest : "docs/stray.md", "out of scope");
+                if (call == 2)
+                {
+                    string stateOut = invocation.Environment["GUARDRAILS_STATE_OUT"];
+                    Directory.CreateDirectory(Path.GetDirectoryName(stateOut)!);
+                    File.WriteAllText(stateOut, """{ "needsHuman": "stuck" }""");
+                }
+            },
+            outcome: (_, call) => call == 1 ? PromptFailureKind.MaxTurns : PromptFailureKind.None);
+        (TaskExecutor executor, RunJournal journal, Core.Model.PlanDefinition plan) = BuildExecutor(planDir, agent, observer);
+
+        await new Scheduler(plan, executor, journal).RunAsync(plan, Ct);
+
+        IReadOnlyList<AttemptRecord> attempts = JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts;
+        Assert.Equal([UpstreamTest], attempts[0].ScopeRevertedPaths);
+        Assert.Equal(AttemptOutcome.NeedsHuman, attempts[1].Outcome);
+        Assert.Equal(["docs/stray.md"], attempts[1].ScopeRevertedPaths);
+        // And the live AttemptFinished event saw the same record, not a copy built before the revert.
+        Assert.Equal([$"finished:1:{UpstreamTest}", "finished:2:docs/stray.md"],
+            observer.Events.Where(e => e.StartsWith("finished:", StringComparison.Ordinal)));
+    }
+
+    /// <summary>Records the #816 observer events in order (and each attempt's reverted paths as AttemptFinished saw them).</summary>
+    private sealed class ScopeEventObserver : IRunObserver
+    {
+        public List<string> Events { get; } = [];
+
+        public string? PatchPath { get; private set; }
+
+        public void TaskStarting(Core.Model.TaskNode task) { }
+
+        public void TaskFinished(TaskResult result) { }
+
+        public void GuardrailFinished(Core.Model.TaskNode task, GuardrailResult result) { }
+
+        public void AttemptFinished(Core.Model.TaskNode task, AttemptRecord record) =>
+            Events.Add($"finished:{record.Attempt}:{string.Join(",", record.ScopeRevertedPaths ?? [])}");
+
+        public void InterruptedAttemptChangesFound(
+            Core.Model.TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+        {
+            PatchPath = patchPath;
+            Events.Add("interrupted:" + string.Join(",", paths.Select(p => p.Path)));
+        }
+
+        public void WriteScopeNotChecked(Core.Model.TaskNode task, int attempt, string reason) =>
+            Events.Add("not-checked:" + reason);
     }
 
     // ── WEAK 6: "not checked" is loud ────────────────────────────────────────────────────────────
@@ -312,6 +467,9 @@ public sealed partial class WriteScopeRunTests
         string log = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-impl", 1), "write-scope-check.log"));
         Assert.Contains("NOT checked", log);
         Assert.Contains("git error", log);
+        // And run.json's attempt record carries it — it was known before the journaler built the record.
+        Assert.Contains("git error",
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-impl"].Attempts[0].WriteScopeNotChecked);
     }
 
     [Fact]

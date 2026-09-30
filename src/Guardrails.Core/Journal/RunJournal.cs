@@ -329,7 +329,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked, InFlightAttempt = null });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked, InFlightAttempt = null, ScopeSnapshotTree = null });
             Persist();
         }
     }
@@ -353,7 +353,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Status = newStatus,
                 Attempts = attempts,
                 // #798: the attempt has settled into attempts[], so it is no longer in flight.
-                InFlightAttempt = null,
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
@@ -437,7 +437,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = status,
                 // #798: a settled task has no attempt in flight.
-                InFlightAttempt = null,
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
@@ -496,7 +496,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Status = status,
                 Attempts = attempts,
                 // #798: the attempt has settled into attempts[], so it is no longer in flight.
-                InFlightAttempt = null,
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,

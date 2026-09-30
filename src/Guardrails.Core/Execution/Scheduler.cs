@@ -206,6 +206,10 @@ public sealed class Scheduler
         // it touches nothing but the plan: no worktree, no journal, no DAG.
         EmitVerifierAdvisories(plan);
 
+        // #816 second review: before ANY task is dispatched, so an interrupted attempt's leftovers are reported
+        // against a workspace no task of this run has touched yet.
+        _executor.PrepareRun(worktreeMode: _worktreeProvider is not null);
+
         // Shared, CONTINUOUS run state across every wave (SSOT §14): ONE settled map (all waves' task
         // results coexist in the final report), ONE directoryOwner map for the end-of-run sweep, ONE
         // runId, ONE integration handle / plan branch, and ONE journal (_journal). A WAVED run drives N

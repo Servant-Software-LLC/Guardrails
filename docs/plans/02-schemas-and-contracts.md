@@ -1233,9 +1233,14 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   verdict or written. The plan's own `logs/` and `state/` (when the plan folder is inside the workspace) are
   dropped from that diff by prefix (git refuses an exclude pathspec naming a `.gitignore`d directory). Phase 2
   (the post-guardrail strip) and #707 rule 2 (commit trailers) stay worktree-only: serial mode commits nothing per
-  task. **Raw bytes (review Q3):** every git call on the private index runs with `core.autocrlf=false` and
-  `--attr-source=<empty tree>` (git 2.40+; omitted on an older git, where a `.gitattributes` conversion can still
-  apply), so the snapshot hashes, and a revert writes back, exactly the bytes that were on disk. Every scope git
+  task. **Line endings (second review):** the snapshot and every diff run in NORMAL mode, exactly like worktree
+  mode — the repo's own `core.autocrlf`/`.gitattributes` apply — so a stat-clean tracked file (whose seeded blob is
+  the normalised one) and a re-hashed one agree, and an identical-bytes re-save is never an offense. A TRACKED file
+  is reverted through git's normal checkout (the repo's own smudge); a file the real index did NOT track at snapshot
+  time has its RAW bytes captured then (`git hash-object -w --no-filters`, path → blob id held with the snapshot)
+  and a revert writes those bytes back verbatim (`git cat-file blob`). (A raw-bytes snapshot mode was tried and
+  removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
+  tracked files and an identical re-save read as a change.) Every scope git
   call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to
   its end first deadlocked once `core.autocrlf=true` line-ending warnings filled the stderr pipe, ~35 files), adds
   `core.safecrlf=false` and `core.quotePath=false`, lists changes with `-z`, hands git at most 100 paths per
@@ -1245,15 +1250,22 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
   writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
   **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
-  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert and append the
-  `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths to their summary.
-  **Interrupted attempts (review Q2b):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7) when
-  the attempt starts and cleared when it ends; a value found at the next task start marks an attempt that never
-  ended (kill, crash, host sleep), and the task diffs the workspace against it first — reverting, keeping a copy in
-  the task's log dir, and handing `interrupted-attempt-scope.md` to its first attempt as previous-attempt feedback
-  (not fed to #707's repeat rule). `guardrails reset` drops it. **Loud when not checked (review WEAK 6):** a
+  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert — BEFORE the halt is
+  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths
+  to their summary. Every attempt record built after an end-of-attempt revert carries it as
+  `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),
+  so run.json and the live `AttemptFinished` row see them, not only text written afterwards.
+  **Interrupted attempts (second review):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7)
+  when a serial attempt starts and cleared when it ends (and by every settle). At RUN START, before any dispatch,
+  every task still carrying one — an attempt that never ended (kill, crash, host sleep) — is handled once: in
+  serial mode the workspace is diffed against that tree and the out-of-scope differences are REPORTED, NOT
+  reverted (the harness cannot tell that attempt's writes from a human's post-crash fix or a `git pull`): kept as
+  `out-of-scope.patch` in the task's log dir, announced loudly (`IRunObserver.InterruptedAttemptChangesFound`, on
+  both consoles) and handed to that task's first attempt as `interrupted-attempt-scope.md` ("do not build on them;
+  if they block you, write needsHuman"). The field is cleared in every mode; `guardrails reset` drops it too.
+  **Loud when not checked (review WEAK 6):** a
   snapshot that fails, an end-of-attempt git error or a failed revert is reported on the console
-  (`IRunObserver.WriteScopeNotChecked`), in `write-scope-check.log` and in the attempt summary
+  (`IRunObserver.WriteScopeNotChecked`, plain and live), in `write-scope-check.log` and in the attempt summary
   (`write scope NOT checked this attempt: <reason>`). **The limit:** the snapshot needs the workspace to be the top level of a git work tree. Where it is not,
   no retrospective check runs, and that is LOUD: `guardrails run` prints a run-start `Note:` line, and each
   attempt's log dir carries `write-scope-check.log` saying the scope was NOT checked and why. The write-time hook
@@ -3017,10 +3029,14 @@ fails the write, loudly, with a message naming the likely cause.
       // ABSENT (never null noise) whenever nothing is in flight — which is the shape of this example task,
       // shown populated here only to document it — and in every journal written before the field existed.
       // #816: "scopeSnapshotTree": "<tree sha>" — OPTIONAL, serial mode only: the write-scope snapshot of the
-      //   task's current attempt (§3.4), set when it starts and removed when it ends. Kept by the resume load
-      //   (unlike inFlightAttempt), because a value surviving into a later process marks an attempt that never
-      //   ended; the resumed task reconciles the workspace against it first. Dropped by `guardrails reset`.
-      //   ABSENT otherwise and in older journals, which then skip that check.
+      //   task's current attempt (§3.4), set when it starts and removed when it ends or any settle is recorded.
+      //   Kept by the resume load (unlike inFlightAttempt), because a value surviving into a later process marks
+      //   an attempt that never ended; the next run REPORTS (never reverts) its out-of-scope differences at run
+      //   start and clears it, in every mode. Dropped by `guardrails reset`. ABSENT otherwise and in older journals.
+      // #816: attempts[] also gain two OPTIONAL write-scope fields — "scopeRevertedPaths": ["path", …] (paths the
+      //   END-OF-ATTEMPT check reverted on an attempt that never reached the ordinary check) and
+      //   "writeScopeNotChecked": "<reason>" (the snapshot failed, the check hit a git error, or a revert failed).
+      //   Both ABSENT in the ordinary case and in older journals.
       "inFlightAttempt": {
         "attempt": 4,               // the JOURNAL number: one past the highest recorded attempt, so it continues
                                     //   across resumes and `guardrails reset`. The same N as this attempt's
