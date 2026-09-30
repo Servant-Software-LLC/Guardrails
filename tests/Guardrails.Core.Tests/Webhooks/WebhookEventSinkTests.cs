@@ -77,12 +77,26 @@ public sealed class WebhookEventSinkTests
     private sealed class ParkedTransport : IDisposable
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _parked;
 
-        public bool Released => _release.Task.IsCompleted;
+        /// <summary>
+        /// Requests currently waiting on the gate: incremented on entry, decremented only when the gate lets one go.
+        /// Non-zero after teardown proves a request was STILL inside SendAsync when teardown gave up on it.
+        /// </summary>
+        public int StillParked => Volatile.Read(ref _parked);
 
         public async Task<HttpResponseMessage> Park(HttpRequestMessage request, int attempt, CancellationToken cancellationToken)
         {
-            await _release.Task.ConfigureAwait(false);
+            Interlocked.Increment(ref _parked);
+            try
+            {
+                await _release.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _parked);
+            }
+
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
 
@@ -91,10 +105,21 @@ public sealed class WebhookEventSinkTests
 
     /// <summary>
     /// Awaits a teardown under a hung-test guard orders of magnitude above any budget in play: a regression that
-    /// waits on a <see cref="ParkedTransport"/> with no bound fails here instead of hanging the suite.
+    /// waits on a <see cref="ParkedTransport"/> with no bound fails here, with <paramref name="cause"/> as its
+    /// message, instead of hanging the suite.
     /// </summary>
-    private static Task HangGuarded(ValueTask teardown) =>
-        teardown.AsTask().WaitAsync(TimeSpan.FromMinutes(2), TestContext.Current.CancellationToken);
+    private static async Task HangGuarded(ValueTask teardown, string cause)
+    {
+        TimeSpan guard = TimeSpan.FromMinutes(2);
+        try
+        {
+            await teardown.AsTask().WaitAsync(guard, TestContext.Current.CancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"{cause} within {guard.TotalMinutes:0} min");
+        }
+    }
 
     /// <summary>A transport that fails on every send AND on its own disposal (behaviour 8).</summary>
     private sealed class ThrowingDisposeHandler : HttpMessageHandler
@@ -1107,11 +1132,13 @@ public sealed class WebhookEventSinkTests
         cts.Cancel();
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await HangGuarded(sink.DisposeAsync());
+        await HangGuarded(sink.DisposeAsync(), "DisposeAsync did not bound the parked pump");
         stopwatch.Stop();
 
-        // Nothing was released before this line, so every assertion below sees a pump that was still parked.
-        Assert.False(parked.Released, "the gate must stay closed until teardown has returned");
+        // The in-flight POST was attempted exactly once and is STILL inside SendAsync: teardown gave up on a
+        // stuck pump rather than finding one that had already returned.
+        Assert.Equal(1, handler.CountFor("in-flight"));
+        Assert.True(parked.StillParked >= 1, "no request was still parked when teardown returned");
 
         // WHICH BUDGET was selected, not how long the machine took to run it. The wall-clock form of this
         // assertion (elapsed < 2s) FAILED on a contended windows CI runner at 2.374s while passing locally
@@ -1181,9 +1208,12 @@ public sealed class WebhookEventSinkTests
             sink.Emit(Row($"row-{i}"));
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await HangGuarded(sink.DisposeAsync());
+        await HangGuarded(sink.DisposeAsync(), "DisposeAsync did not bound the parked pump");
         stopwatch.Stop();
-        Assert.False(parked.Released, "the gate must stay closed until teardown has returned");
+
+        // The pump's first row was attempted exactly once and is STILL inside SendAsync when teardown returns.
+        Assert.Equal(1, handler.CountFor("row-0"));
+        Assert.True(parked.StillParked >= 1, "no request was still parked when teardown returned");
 
         // WHICH BUDGET teardown selected, not how long the machine took to run it (#518) - the same move
         // the cancelled-teardown test above already makes, and for the same reason. The wall-clock form

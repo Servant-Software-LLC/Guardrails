@@ -5,7 +5,9 @@ namespace Guardrails.Core.Tests.Prompts;
 
 /// <summary>
 /// #800 through the REAL Claude runner and session, with a fake <c>claude</c> process (the
-/// <c>PromptDenialFailFastTests</c> pattern, OS-picked). Each test asserts the decision — the failure kind, whether the
+/// <c>PromptDenialFailFastTests</c> pattern, OS-picked). The coincide-with-the-timeout test (#828) instead drives
+/// <see cref="StreamJsonCliSession"/> directly with the runner's own dialect, arguments, environment and permission
+/// scanner, so it can switch off the grace timer. Each test asserts the decision — the failure kind, whether the
 /// harness had to end the session, what was kept — never a duration.
 /// </summary>
 public sealed class AutocompactThrashSessionTests : IDisposable
