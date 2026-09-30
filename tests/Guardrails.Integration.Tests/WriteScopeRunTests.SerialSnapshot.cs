@@ -116,6 +116,118 @@ public sealed partial class WriteScopeRunTests
         Assert.Equal(Encoding.UTF8.GetBytes(original), File.ReadAllBytes(Path.Combine(repo.RepoPath, "scratch", "untracked.txt")));
     }
 
+    // ── third review: the raw capture never takes the snapshot down ─────────────────────────────
+
+    [Fact]
+    public void AnUntrackedNestedRepository_DoesNotBreakTheSnapshot_AndTheCheckStillRuns_Issue816()
+    {
+        // `git add -A` stages an untracked nested repository (a Claude Code worktree under .claude/worktrees, a
+        // vendored clone) as a gitlink — a directory — which `hash-object` cannot hash. That used to fail EVERY serial
+        // snapshot of the run.
+        using var repo = new TempGitRepo();
+        string nested = Path.Combine(repo.RepoPath, "vendor", "nested");
+        Directory.CreateDirectory(nested);
+        TempGitRepo.Git(nested, "init");
+        TempGitRepo.Git(nested, "config", "user.email", "t@t");
+        TempGitRepo.Git(nested, "config", "user.name", "t");
+        WriteBytes(nested, "file.txt", "nested");
+        TempGitRepo.Git(nested, "add", ".");
+        TempGitRepo.Git(nested, "commit", "-m", "nested");
+        WriteNonRacy(repo.RepoPath, "scratch/untracked.txt", "keep me\n");
+
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+            ?? throw new InvalidOperationException($"the snapshot failed: {why}");
+
+        Assert.Empty(snapshot.RawCaptureSkipped);
+        Assert.True(snapshot.UntrackedRawBlobs.ContainsKey("scratch/untracked.txt"));
+        Assert.DoesNotContain(snapshot.UntrackedRawBlobs.Keys, k => k.StartsWith("vendor/", StringComparison.Ordinal));
+
+        WriteBytes(repo.RepoPath, "scratch/untracked.txt", "changed\n");
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+        Assert.Equal(["scratch/untracked.txt"], check.OffendingPaths.Select(o => o.Path));
+        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+        Assert.Equal("keep me\n", File.ReadAllText(Path.Combine(repo.RepoPath, "scratch", "untracked.txt")));
+    }
+
+    [Fact]
+    public void AFileVanishingBetweenStagingAndHashing_LosesOnlyItsOwnRawCopy_Issue816()
+    {
+        using var repo = new TempGitRepo();
+        WriteNonRacy(repo.RepoPath, "scratch/stays.txt", "stays\n");
+        WriteNonRacy(repo.RepoPath, "scratch/vanishes.txt", "vanishes\n");
+
+        ScopeDiffBase.BeforeRawCaptureForTest.Value =
+            () => File.Delete(Path.Combine(repo.RepoPath, "scratch", "vanishes.txt"));
+        ScopeDiffBase? snapshot;
+        try
+        {
+            snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct);
+            Assert.True(snapshot is not null, $"the snapshot failed: {why}");
+        }
+        finally
+        {
+            ScopeDiffBase.BeforeRawCaptureForTest.Value = null;
+        }
+
+        using (snapshot)
+        {
+            Assert.Equal(["scratch/vanishes.txt"], snapshot!.RawCaptureSkipped);
+            Assert.True(snapshot.UntrackedRawBlobs.ContainsKey("scratch/stays.txt"));
+        }
+    }
+
+    [Fact]
+    public void AnUntrackedFileReplacedByASymlink_IsRestoredWithoutWritingThroughTheLink_Issue816()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "symlink creation needs privileges on Windows");
+
+        using var repo = new TempGitRepo();
+        WriteNonRacy(repo.RepoPath, "scratch/note.txt", "original\n");
+        string outside = Path.Combine(Path.GetTempPath(), "gr-outside-" + Guid.NewGuid().ToString("N") + ".txt");
+        File.WriteAllText(outside, "outside the workspace\n");
+        try
+        {
+            using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+                ?? throw new InvalidOperationException(why);
+
+            string note = Path.Combine(repo.RepoPath, "scratch", "note.txt");
+            File.Delete(note);
+            File.CreateSymbolicLink(note, outside);
+
+            WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+            WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+
+            Assert.Equal("outside the workspace\n", File.ReadAllText(outside)); // never written through
+            Assert.Null(new FileInfo(note).LinkTarget);                        // the link itself is gone
+            Assert.Equal("original\n", File.ReadAllText(note));
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void ARecreatedUntrackedExecutable_GetsItsExecBitBack_Issue816()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        using var repo = new TempGitRepo();
+        WriteNonRacy(repo.RepoPath, "scripts/run.sh", "#!/bin/sh\necho hi\n");
+        string script = Path.Combine(repo.RepoPath, "scripts", "run.sh");
+        File.SetUnixFileMode(script, File.GetUnixFileMode(script) | UnixFileMode.UserExecute);
+
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+            ?? throw new InvalidOperationException(why);
+        File.Delete(script);
+
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+
+        Assert.True(File.GetUnixFileMode(script).HasFlag(UnixFileMode.UserExecute));
+    }
+
     /// <summary>A repo under <c>core.autocrlf=true</c> (optionally also <c>* text=auto eol=crlf</c>) with committed, NON-RACY files.</summary>
     private static TempGitRepo LineEndingRepo(bool eolAttributes, params (string Path, string Content)[] tracked)
     {
@@ -340,6 +452,42 @@ public sealed partial class WriteScopeRunTests
         Assert.Contains("Do NOT build on them", previousFeedback);
         Assert.Contains("weakened upstream test", File.ReadAllText(observer.PatchPath!));
         Assert.Null(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].ScopeSnapshotTree);
+    }
+
+    [Fact]
+    public async Task RunStart_TheInterruptedNotice_IsCombinedWithTheTasksLatestFeedback_NotSubstitutedForIt_Issue816()
+    {
+        using var repo = new TempGitRepo();
+        repo.Commit(UpstreamTest, "original upstream test");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 1, new TaskSpec("02-implement", ["src/Impl.cs"]));
+
+        // Run 1: attempt 1 ends on its turn cap (and so writes feedback.md); attempt 2 dies mid-way.
+        var dying = new ScriptedAgent(
+            (_, call, invocation) =>
+            {
+                if (call == 2)
+                {
+                    WriteFile(invocation.WorkingDirectory, UpstreamTest, "weakened upstream test");
+                    throw new InvalidOperationException("simulated harness death mid-attempt");
+                }
+            },
+            outcome: (_, _) => PromptFailureKind.MaxTurns);
+        await RunSerialAsync(planDir, dying);
+
+        string? previousFeedback = null;
+        var resumed = new ScriptedAgent((_, _, invocation) =>
+        {
+            previousFeedback = invocation.Environment.GetValueOrDefault("GUARDRAILS_FEEDBACK") is { } fb && File.Exists(fb)
+                ? File.ReadAllText(fb)
+                : null;
+            WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "done");
+        });
+        await RunSerialAsync(planDir, resumed);
+
+        Assert.NotNull(previousFeedback);
+        Assert.Contains("was interrupted and never checked", previousFeedback);
+        Assert.Contains("The latest recorded attempt's feedback", previousFeedback);
+        Assert.Contains("ran out of turns", previousFeedback); // attempt 1's own max-turns feedback survives
     }
 
     [Fact]

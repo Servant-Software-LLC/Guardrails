@@ -419,11 +419,37 @@ public static class WriteScopeCheck
         List<string> restoreRaw = paths.Where(p => existing.Contains(p) && diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
         foreach (string path in restoreRaw)
         {
-            byte[] bytes = ScopeGit.RunBytes(
-                diffBase.RepoPath, diffBase.IndexFile, ["cat-file", "blob", diffBase.UntrackedRawBlobs[path]], cancellationToken);
+            ScopeDiffBase.RawBlob raw = diffBase.UntrackedRawBlobs[path];
+            byte[] bytes = ScopeGit.RunBytes(diffBase.RepoPath, diffBase.IndexFile, ["cat-file", "blob", raw.Id], cancellationToken);
             string full = Path.Combine(diffBase.RepoPath, path.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+
+            // #816 third review: NEVER write through a link. If the attempt replaced the file with a symlink (or a
+            // directory link), writing to that path would land wherever the link points — possibly outside the
+            // workspace. Remove the link itself (lstat semantics: LinkTarget is read off the entry, not its target),
+            // then recreate the regular file it replaced.
+            var entry = new FileInfo(full);
+            var directoryEntry = new DirectoryInfo(full);
+            if (directoryEntry.Exists && directoryEntry.LinkTarget is not null)
+            {
+                directoryEntry.Delete(); // non-recursive: removes the link, never what it points at
+            }
+            else if (entry.LinkTarget is not null)
+            {
+                entry.Delete();
+            }
+            else if (Directory.Exists(full))
+            {
+                throw new InvalidOperationException($"cannot restore '{path}': a directory now stands where the file was");
+            }
+
             File.WriteAllBytes(full, bytes);
+            if (raw.Executable && !OperatingSystem.IsWindows())
+            {
+                // #816 third review: a recreated untracked executable gets its exec bit back.
+                File.SetUnixFileMode(full, File.GetUnixFileMode(full)
+                    | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+            }
         }
 
         List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();

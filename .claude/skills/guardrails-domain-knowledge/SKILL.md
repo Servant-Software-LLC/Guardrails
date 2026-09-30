@@ -425,7 +425,9 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   mid-serial-run is unsupported but LOUD (run-start Note; revert text says the changes may not be the agent's);
   serial needs-human/tamper/wall halts revert too, BEFORE journaling, and `attempts[].scopeRevertedPaths` /
   `writeScopeNotChecked` ride run.json; the snapshot tree is journaled (`tasks.<id>.scopeSnapshotTree`) and a
-  leftover one is REPORTED at run start (never reverted) and handed to that task's first attempt; a check that
+  leftover one is REPORTED at run start (never reverted — so a crashed attempt's out-of-scope edits stay as the next
+  baseline, announced but not enforced) and handed to that task's first attempt; raw-byte capture covers regular
+  untracked files only (never symlinks/gitlinks) and a single bad path never fails the snapshot; a check that
   could not run says `write scope NOT checked this attempt` in the summary and on both consoles.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).

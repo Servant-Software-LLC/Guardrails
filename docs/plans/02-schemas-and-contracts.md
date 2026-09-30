@@ -1236,9 +1236,14 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   task. **Line endings (second review):** the snapshot and every diff run in NORMAL mode, exactly like worktree
   mode — the repo's own `core.autocrlf`/`.gitattributes` apply — so a stat-clean tracked file (whose seeded blob is
   the normalised one) and a re-hashed one agree, and an identical-bytes re-save is never an offense. A TRACKED file
-  is reverted through git's normal checkout (the repo's own smudge); a file the real index did NOT track at snapshot
-  time has its RAW bytes captured then (`git hash-object -w --no-filters`, path → blob id held with the snapshot)
-  and a revert writes those bytes back verbatim (`git cat-file blob`). (A raw-bytes snapshot mode was tried and
+  is reverted through git's normal checkout (the repo's own smudge); a REGULAR file (mode 100644/100755, read from
+  `ls-files -s -z`) the real index did NOT track at snapshot time has its RAW bytes captured then (`git hash-object
+  -w --no-filters`, path → blob id + executable bit held with the snapshot) and a revert writes those bytes back
+  verbatim (`git cat-file blob`), restoring the exec bit on Unix. Symlinks (120000) and gitlinks (160000 — an
+  untracked nested repository such as a Claude Code worktree) are never captured and revert through the normal
+  path; a revert never writes THROUGH a link (a link now standing at the path is removed first). The capture is
+  fault-tolerant per path: one unhashable or vanished file loses only its own byte-exact restore (listed in
+  `write-scope-check.log`), never the snapshot. (A raw-bytes snapshot mode was tried and
   removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
   tracked files and an identical re-save read as a change.) Every scope git
   call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to
@@ -1262,7 +1267,12 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   reverted (the harness cannot tell that attempt's writes from a human's post-crash fix or a `git pull`): kept as
   `out-of-scope.patch` in the task's log dir, announced loudly (`IRunObserver.InterruptedAttemptChangesFound`, on
   both consoles) and handed to that task's first attempt as `interrupted-attempt-scope.md` ("do not build on them;
-  if they block you, write needsHuman"). The field is cleared in every mode; `guardrails reset` drops it too.
+  if they block you, write needsHuman"), COMBINED with that task's latest recorded feedback, never replacing it.
+  The field is cleared in every mode; `guardrails reset` drops it too. **Plainly: report-only resume leaves a
+  crashed attempt's out-of-scope edits IN PLACE as the next attempt's baseline** — announced and handed to the
+  agent, but not enforced (the next attempt's snapshot starts from them, so they are not offenses of that
+  attempt), and not fed to #707's repeat rule. There is no interactive prompt; reverting them is the human's call
+  (the kept patch names them).
   **Loud when not checked (review WEAK 6):** a
   snapshot that fails, an end-of-attempt git error or a failed revert is reported on the console
   (`IRunObserver.WriteScopeNotChecked`, plain and live), in `write-scope-check.log` and in the attempt summary

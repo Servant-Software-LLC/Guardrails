@@ -165,9 +165,12 @@ public sealed class TaskExecutor : ITaskExecutor
 
         // #816: an attempt of this task that never ENDED in an earlier process left out-of-scope changes that
         // PrepareRun found at run start (it reports them, never reverts them); hand that list to the first attempt.
+        // Combined with — never replacing — the task's own latest previous-attempt feedback, when it has one (#816 third
+        // review): the interrupted attempt wrote none, but an earlier settled attempt's feedback.md is still the
+        // agent's best statement of what went wrong last time.
         if (_interruptedAttemptFeedback.TryRemove(task.Id, out string? interruptedFeedback))
         {
-            feedbackPath = interruptedFeedback;
+            feedbackPath = CombineWithLatestFeedback(task, interruptedFeedback, feedbackPath);
         }
 
         // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
@@ -809,6 +812,7 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 // #816 review Q2b: journal the snapshot, so a resume after a kill/crash/host-sleep can diff against it.
                 _journal.SetScopeSnapshotTree(task.Id, scopeBase.Base);
+                AttemptArtifacts.WriteRawCaptureSkippedNote(AttemptLogDir(task.Id, attemptNumber), scopeBase.RawCaptureSkipped);
             }
         }
         else
@@ -938,6 +942,42 @@ public sealed class TaskExecutor : ITaskExecutor
         string feedback = Path.Combine(logDir, "interrupted-attempt-scope.md");
         AtomicFile.WriteAllText(feedback, RetryPolicy.ForInterruptedAttemptChanges(task, check, patchPath));
         _interruptedAttemptFeedback[task.Id] = feedback;
+    }
+
+    /// <summary>
+    /// #816 third review: the interrupted-attempt notice PLUS the feedback the next attempt would otherwise have been
+    /// given — <paramref name="currentFeedback"/> if set, else the latest journaled attempt's own <c>feedback.md</c> —
+    /// written as one file beside the notice, and its path returned. The notice alone when there is nothing to add.
+    /// </summary>
+    private string CombineWithLatestFeedback(TaskNode task, string interruptedFeedback, string? currentFeedback)
+    {
+        string? previous = currentFeedback;
+        if (previous is null
+            && _journal.Document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
+            && entry.Attempts.Count > 0)
+        {
+            previous = Path.Combine(
+                _plan.PlanDirectory, entry.Attempts[^1].LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md");
+        }
+
+        if (previous is null || !File.Exists(previous))
+        {
+            return interruptedFeedback;
+        }
+
+        try
+        {
+            string combined = Path.Combine(Path.GetDirectoryName(interruptedFeedback)!, "interrupted-attempt-feedback.md");
+            AtomicFile.WriteAllText(
+                combined,
+                File.ReadAllText(interruptedFeedback) + "\n---\n\n# The latest recorded attempt's feedback\n\n" +
+                File.ReadAllText(previous));
+            return combined;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return interruptedFeedback;
+        }
     }
 
     /// <summary>#816: run-start interrupted-attempt reports, consumed by each task's first attempt (see PrepareRun).</summary>

@@ -198,7 +198,12 @@ public sealed class ObserverProjection : IRunObserver
             ["model"] = record.Provenance?.Model,
             ["runner"] = record.Provenance?.Runner,
             ["tier"] = record.Provenance?.Tier,
-            ["tierSource"] = record.Provenance?.TierSource?.ToString()
+            ["tierSource"] = record.Provenance?.TierSource?.ToString(),
+            // #816: the write-scope facts the record carries, so an attached client rebuilds the same record.
+            ["scopeRevertedPaths"] = record.ScopeRevertedPaths is { } reverted
+                ? new JsonArray(reverted.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray())
+                : null,
+            ["writeScopeNotChecked"] = record.WriteScopeNotChecked
         });
         _inner.AttemptFinished(task, record);
     }

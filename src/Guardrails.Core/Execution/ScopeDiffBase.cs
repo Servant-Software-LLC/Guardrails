@@ -35,23 +35,42 @@ public sealed class ScopeDiffBase : IDisposable
 {
     private ScopeDiffBase(
         string repoPath, string baseTreeish, string? indexFile, IReadOnlyList<string> harnessOwnedPrefixes,
-        IReadOnlyDictionary<string, string>? untrackedRawBlobs = null)
+        IReadOnlyDictionary<string, RawBlob>? untrackedRawBlobs = null, IReadOnlyList<string>? rawCaptureSkipped = null)
     {
         RepoPath = repoPath;
         Base = baseTreeish;
         IndexFile = indexFile;
         HarnessOwnedPrefixes = harnessOwnedPrefixes;
-        UntrackedRawBlobs = untrackedRawBlobs ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        UntrackedRawBlobs = untrackedRawBlobs ?? new Dictionary<string, RawBlob>(StringComparer.Ordinal);
+        RawCaptureSkipped = rawCaptureSkipped ?? [];
     }
 
     /// <summary>
-    /// #816 second review: for every file the snapshot holds that the operator's REAL index did not track, the id of
-    /// a blob holding its RAW bytes (<c>git hash-object -w --no-filters</c>). The snapshot itself is taken in normal
-    /// mode, so a file's snapshot blob can be a line-ending-normalised copy; a TRACKED file is restored through git's
-    /// normal checkout (the repo's own smudge — correct for its own settings), but an untracked file has no such
-    /// round trip, so a revert writes these raw bytes back instead. Empty in worktree mode.
+    /// Test seam (#816 third review): runs between staging the snapshot and capturing raw bytes — the window in which
+    /// a file can vanish. <see cref="AsyncLocal{T}"/>, so a test scopes it to its own flow and never races another.
     /// </summary>
-    public IReadOnlyDictionary<string, string> UntrackedRawBlobs { get; }
+    internal static readonly AsyncLocal<Action?> BeforeRawCaptureForTest = new();
+
+    /// <summary>The raw copy of one untracked regular file: its blob id and whether it was executable (mode 100755).</summary>
+    public sealed record RawBlob(string Id, bool Executable);
+
+    /// <summary>
+    /// #816 second review: for every REGULAR file (mode 100644/100755) the snapshot holds that the operator's REAL
+    /// index did not track, a blob holding its RAW bytes (<c>git hash-object -w --no-filters</c>). The snapshot itself
+    /// is taken in normal mode, so a file's snapshot blob can be a line-ending-normalised copy; a TRACKED file is
+    /// restored through git's normal checkout (the repo's own smudge — correct for its own settings), but an untracked
+    /// file has no such round trip, so a revert writes these raw bytes back instead. Symlinks (120000) and gitlinks
+    /// (160000 — a nested repository) are never captured: they are restored through the normal path. Empty in
+    /// worktree mode.
+    /// </summary>
+    public IReadOnlyDictionary<string, RawBlob> UntrackedRawBlobs { get; }
+
+    /// <summary>
+    /// #816 third review: untracked regular files whose raw bytes could NOT be captured (vanished between staging and
+    /// hashing, unreadable …). Each loses only its byte-exact restore — a revert falls back to the normal checkout —
+    /// never the snapshot. Reported in the attempt's <c>write-scope-check.log</c>.
+    /// </summary>
+    public IReadOnlyList<string> RawCaptureSkipped { get; }
 
     /// <summary>The repository working tree the check stages and reverts in.</summary>
     public string RepoPath { get; }
@@ -120,9 +139,10 @@ public sealed class ScopeDiffBase : IDisposable
             SegmentStaging.StageAll(workspace, indexFile, cancellationToken);
             string tree = ScopeGit.Run(workspace, indexFile, ["write-tree"], cancellationToken).Trim();
             IReadOnlyList<string> prefixes = PlanOwnedPrefixes(workspace, planDirectory);
-            return new ScopeDiffBase(
-                workspace, tree, indexFile, prefixes,
-                CaptureUntrackedRawBlobs(workspace, indexFile, prefixes, cancellationToken));
+            BeforeRawCaptureForTest.Value?.Invoke();
+            (IReadOnlyDictionary<string, RawBlob> blobs, IReadOnlyList<string> skipped) =
+                CaptureUntrackedRawBlobs(workspace, indexFile, prefixes, cancellationToken);
+            return new ScopeDiffBase(workspace, tree, indexFile, prefixes, blobs, skipped);
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -133,40 +153,98 @@ public sealed class ScopeDiffBase : IDisposable
     }
 
     /// <summary>
-    /// The paths the private index holds that the operator's real index does not (the files git does not track),
-    /// each hashed RAW (<c>hash-object -w --no-filters</c>) into the object store, keyed by path. Harness-owned paths
-    /// are skipped. The objects are unreferenced and pruned by git in its own time, like the snapshot tree.
+    /// The REGULAR files the private index holds that the operator's real index does not (read with
+    /// <c>ls-files -s -z</c>: modes 100644 and 100755 only — a symlink or a gitlink such as an untracked nested
+    /// repository is skipped, since <c>hash-object</c> cannot hash a directory and must never read through a link),
+    /// each hashed RAW (<c>hash-object -w --no-filters</c>) into the object store. Fault-tolerant per path: the batch
+    /// is tried first, and if it fails every path is hashed alone, so one unhashable or vanished file loses only its
+    /// own raw copy (returned in the skipped list) and never the snapshot. Harness-owned paths are skipped.
     /// </summary>
-    private static IReadOnlyDictionary<string, string> CaptureUntrackedRawBlobs(
+    private static (IReadOnlyDictionary<string, RawBlob> Blobs, IReadOnlyList<string> Skipped) CaptureUntrackedRawBlobs(
         string workspace, string indexFile, IReadOnlyList<string> harnessOwnedPrefixes, CancellationToken cancellationToken)
     {
         var tracked = new HashSet<string>(
             ScopeGit.Run(workspace, null, ["ls-files", "-z"], cancellationToken).Split('\0', StringSplitOptions.RemoveEmptyEntries),
             StringComparer.Ordinal);
-        List<string> untracked = ScopeGit.Run(workspace, indexFile, ["ls-files", "-z"], cancellationToken)
-            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
-            .Where(p => !tracked.Contains(p)
-                        && !harnessOwnedPrefixes.Any(prefix => p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                        && !p.Contains('\n'))
-            .ToList();
 
-        var blobs = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (untracked.Count == 0)
+        var candidates = new List<(string Path, bool Executable)>();
+        foreach (string entry in ScopeGit.Run(workspace, indexFile, ["ls-files", "-s", "-z"], cancellationToken)
+                     .Split('\0', StringSplitOptions.RemoveEmptyEntries))
         {
-            return blobs;
+            // "<mode> <object> <stage>\t<path>"
+            int tab = entry.IndexOf('\t');
+            if (tab < 0)
+            {
+                continue;
+            }
+
+            string mode = entry[..entry.IndexOf(' ')];
+            string path = entry[(tab + 1)..];
+            if (mode is not ("100644" or "100755")
+                || tracked.Contains(path)
+                || path.Contains('\n')
+                || harnessOwnedPrefixes.Any(prefix => path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            candidates.Add((path, mode == "100755"));
         }
 
-        string[] ids = ScopeGit.Run(
-                workspace, indexFile, ["hash-object", "-w", "--no-filters", "--stdin-paths"], cancellationToken,
-                standardInput: string.Join("\n", untracked) + "\n")
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < untracked.Count && i < ids.Length; i++)
+        var blobs = new Dictionary<string, RawBlob>(StringComparer.Ordinal);
+        var skipped = new List<string>();
+        if (candidates.Count == 0)
         {
-            blobs[untracked[i]] = ids[i].Trim();
+            return (blobs, skipped);
         }
 
-        return blobs;
+        try
+        {
+            string[] ids = HashRaw(workspace, candidates.Select(c => c.Path), cancellationToken);
+            if (ids.Length == candidates.Count)
+            {
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    blobs[candidates[i].Path] = new RawBlob(ids[i], candidates[i].Executable);
+                }
+
+                return (blobs, skipped);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // One path spoiled the batch; fall through to hashing each alone.
+        }
+
+        foreach ((string path, bool executable) in candidates)
+        {
+            try
+            {
+                string[] id = HashRaw(workspace, [path], cancellationToken);
+                if (id.Length == 1)
+                {
+                    blobs[path] = new RawBlob(id[0], executable);
+                    continue;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Recorded below: this path loses only its byte-exact restore.
+            }
+
+            skipped.Add(path);
+        }
+
+        return (blobs, skipped);
     }
+
+    private static string[] HashRaw(string workspace, IEnumerable<string> paths, CancellationToken cancellationToken) =>
+        ScopeGit.Run(
+                workspace, null, ["hash-object", "-w", "--no-filters", "--stdin-paths"], cancellationToken,
+                standardInput: string.Join("\n", paths) + "\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(id => id.Trim())
+            .ToArray();
 
     /// <summary>
     /// A serial base over a snapshot tree an EARLIER process journaled (#816 review, Q2b): an attempt that never

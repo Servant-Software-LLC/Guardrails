@@ -321,10 +321,28 @@ public static class AttachCommand
                         CostUsd = node["costUsd"]?.GetValue<decimal>(),
                         Turns = node["turns"]?.GetValue<int>(),
                         NeedsHumanKind = OptionalString(node, "needsHumanKind"),
-                        Provenance = provenance
+                        Provenance = provenance,
+                        // #816: OPTIONAL on read — a stream written before these existed replays without them.
+                        ScopeRevertedPaths = OptionalPaths(node, "scopeRevertedPaths"),
+                        WriteScopeNotChecked = OptionalString(node, "writeScopeNotChecked")
                     });
                 break;
             }
+
+            // #816: the write-scope notices are what an operator watching an unattended run most needs to see.
+            case "WriteScopeNotChecked":
+                renderer.WriteScopeNotChecked(
+                    TaskFor(node, taskById), RequireInt(node, "attempt"), RequireString(node, "reason"));
+                break;
+
+            case "InterruptedAttemptChangesFound":
+                renderer.InterruptedAttemptChangesFound(
+                    TaskFor(node, taskById), Offenses(node, "paths"), OptionalString(node, "patchPath"));
+                break;
+
+            case "OutOfScopeStripped":
+                renderer.OutOfScopeStripped(TaskFor(node, taskById), Offenses(node, "strippedPaths"));
+                break;
 
             case "TaskFinished":
                 renderer.TaskFinished(new TaskResult
@@ -394,6 +412,17 @@ public static class AttachCommand
         node[field]?.GetValue<string>() ?? throw new FormatException($"observer.jsonl line is missing '{field}'.");
 
     private static string? OptionalString(JsonNode node, string field) => node[field]?.GetValue<string>();
+
+    /// <summary>#816: an optional array of path strings, or null when the field is absent or null.</summary>
+    private static IReadOnlyList<string>? OptionalPaths(JsonNode node, string field) =>
+        node[field] is JsonArray array ? array.Select(p => p!.GetValue<string>()).ToList() : null;
+
+    /// <summary>
+    /// #816: a path array rebuilt as offenses for the renderer. The wire carries paths only, so the git status letter
+    /// is unknown here and replays as <c>?</c> — the live notices name the paths, which is what they are for.
+    /// </summary>
+    private static IReadOnlyList<WriteScopeOffense> Offenses(JsonNode node, string field) =>
+        (OptionalPaths(node, field) ?? []).Select(p => new WriteScopeOffense { Path = p, Status = '?' }).ToList();
 
     private static int RequireInt(JsonNode node, string field) =>
         node[field]?.GetValue<int>() ?? throw new FormatException($"observer.jsonl line is missing '{field}'.");
