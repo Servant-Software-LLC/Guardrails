@@ -404,6 +404,70 @@ public sealed class TeardownLinkSafetyTests : IDisposable
         Assert.True(Directory.Exists(again.WorktreePath));
     }
 
+    // ── #826 final review: the write-scope revert and a LEAF link ─────────────────────────────────────────────
+
+    /// <summary>
+    /// SERIAL (the operator's checkout): the attempt replaced a tracked FILE <c>cfg</c> with a junction to an outside
+    /// folder. The children are refused (their ancestor is a link), but <c>cfg</c> itself used to pass the
+    /// ancestors-only check, and <c>git checkout &lt;snapshot&gt; -- cfg</c> then replaced the "directory" by deleting
+    /// recursively THROUGH the junction (21 → 0). The leaf must be refused too, the link left in place, and named.
+    /// </summary>
+    [Fact]
+    public void SerialRevert_ATrackedFileReplacedByAJunction_IsRefusedAtTheLeaf_OutsideSurvives()
+    {
+        File.WriteAllText(Path.Combine(_repo, "cfg"), "setting=1\n");
+        Git(_repo, "add", "cfg");
+        Git(_repo, "commit", "-q", "-m", "track cfg");
+        string outside = TestLinks.OutsideFolder(_base, "outside-serial-leaf");
+
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(_repo, _repo, out string? why, CancellationToken.None)
+            ?? throw new InvalidOperationException(why);
+        string cfg = Path.Combine(_repo, "cfg");
+        File.Delete(cfg);
+        TestLinks.DirectoryLink(cfg, outside);
+
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], CancellationToken.None);
+        Assert.Contains(check.OffendingPaths, o => o.Path == "cfg");
+        Exception? revert = Record.Exception(() => WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, CancellationToken.None));
+
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.True(LinkSafeTree.IsLink(cfg), "serial mode never removes the operator's link");
+        Assert.IsType<InvalidOperationException>(revert);
+        Assert.Contains("cfg (is itself now a link", revert!.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// WORKTREE: the same shape with NO child in the offense list (the junction's contents are ignored), so no
+    /// child's ancestor check can remove the junction by accident first. The leaf check removes it, names it, and the
+    /// file is restored inside the segment.
+    /// </summary>
+    [Fact]
+    public void WorktreeRevert_ATrackedFileReplacedByAJunction_WithNoChildOffenses_IsRemovedAtTheLeaf_AndRestored()
+    {
+        (_, _, WorktreeHandle segment) = Segment();
+        string wt = segment.WorktreePath;
+        File.WriteAllText(Path.Combine(wt, "cfg"), "setting=1\n");
+        File.AppendAllText(Path.Combine(wt, ".gitignore"), "cfg/\n");
+        Git(wt, "add", "cfg", ".gitignore");
+        Git(wt, "commit", "-q", "-m", "track cfg");
+        string taskBase = Git(wt, "rev-parse", "HEAD").Trim();
+        string outside = TestLinks.OutsideFolder(_base, "outside-worktree-leaf");
+        string cfg = Path.Combine(wt, "cfg");
+        File.Delete(cfg);
+        TestLinks.DirectoryLink(cfg, outside);
+
+        ScopeDiffBase diffBase = ScopeDiffBase.ForSegment(wt, taskBase);
+        WriteScopeCheckResult check = WriteScopeCheck.Check(diffBase, ["src/**"], CancellationToken.None);
+        Assert.Equal(["cfg"], check.OffendingPaths.Select(o => o.Path)); // no children: the ordering accident is off
+        var removedLinks = new List<string>();
+        WriteScopeCheck.ScopedRevert(diffBase, check.OffendingPaths, CancellationToken.None, removedLinks);
+
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.Contains("cfg", removedLinks);
+        Assert.False(LinkSafeTree.IsLink(cfg));
+        Assert.Equal("setting=1\n", File.ReadAllText(cfg).Replace("\r\n", "\n"));
+    }
+
     // ── a link that cannot be removed: refuse, leave everything, report loudly ────────────────────────────────
 
     [Fact]

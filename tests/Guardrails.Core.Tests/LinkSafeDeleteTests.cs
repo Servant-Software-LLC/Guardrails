@@ -220,12 +220,15 @@ public sealed class LinkSafeDeleteTests : IDisposable
 
 
     /// <summary>
-    /// The shared-primitive guarantee, held at the source (#826 reviews): every recursive delete in the harness is
-    /// <see cref="SafeDelete"/>, no <c>git worktree remove</c> runs anywhere, and every git verb that writes or
-    /// deletes working-tree files and so follows a link — <c>reset --hard</c>, <c>clean</c>, <c>checkout</c>,
-    /// <c>restore</c>, <c>stash</c>, <c>rm</c> — is either preceded by a link guard CALL in the SAME METHOD, or
-    /// carries an explicit <c>// #826 link-guard: &lt;why&gt;</c> justification on the line above it. The scanner
-    /// itself is proven against each evasion below.
+    /// A TRIPWIRE for the #826 rules at the source — not a proof. It flags the literal, common shapes of a recursive
+    /// delete outside <see cref="SafeDelete"/>, any <c>git worktree remove</c>, and the git verbs that write or delete
+    /// working-tree files through a link (<c>reset --hard/--merge/--keep</c>, <c>clean</c>, <c>checkout</c>,
+    /// <c>restore</c>, <c>stash</c>, <c>rm</c>, <c>switch</c>, <c>read-tree</c>) that lack a link-guard CALL earlier in
+    /// the same method body or a substantive <c>// #826 link-guard: &lt;why&gt;</c> justification on the line above.
+    /// It does NOT prove the guard dominates the call on every path, nor see a verb assembled at run time (an
+    /// interpolated or computed argument): a guard is a reviewed invariant, and this only catches the obvious
+    /// regression — the #826 final review found a real hole (a leaf link <c>Safe()</c> never checked) sitting
+    /// behind a justification this scanner accepted.
     /// </summary>
     [Fact]
     public void Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive()
@@ -271,12 +274,23 @@ public sealed class LinkSafeDeleteTests : IDisposable
     [InlineData("X.cs", "void B()\n{\n    void DisarmLinksBeforeGitRewrite(string w) { }\n    GitIn(wt, \"reset\", \"--hard\", x);\n}")]
     // A guard AFTER the rewrite does not count.
     [InlineData("X.cs", "void B()\n{\n    GitIn(wt, \"clean\", \"-fd\");\n    DisarmLinksBeforeGitRewrite(wt);\n}")]
-    // A justification marker with no reason does not count.
+    // A justification marker with no reason — or a token one — does not count.
     [InlineData("X.cs", "void B()\n{\n    // #826 link-guard:\n    GitIn(wt, \"checkout\", c, \"--\", p);\n}")]
+    [InlineData("X.cs", "void B()\n{\n    // #826 link-guard: it is fine\n    GitIn(wt, \"checkout\", c, \"--\", p);\n}")]
+    [InlineData("X.cs", "void B()\n{\n    // #826 link-guard: safe-by-construction-trust-me\n    GitIn(wt, \"checkout\", c, \"--\", p);\n}")]
+    // The other link-following rewrites (#826 final review).
+    [InlineData("X.cs", "void M() { GitIn(wt, \"reset\", \"--merge\", sha); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"reset\", \"--keep\", sha); }")]
+    [InlineData("X.cs", "void M() { Run(\"git reset --keep HEAD~1\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"switch\", \"--discard-changes\", b); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"switch\", \"-f\", b); }")]
+    [InlineData("X.cs", "void M() { Run(\"git switch --force main\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"read-tree\", \"-u\", \"--reset\", t); }")]
+    [InlineData("X.cs", "void M() { Run(\"git read-tree -u -m HEAD\"); }")]
     // The #826 review BLOCKER as it shipped in c17a7b1f: an unguarded reset + clean.
     [InlineData("GitWorktreeProvider.cs",
         "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
-    public void Scanner_CatchesEveryEvasion(string file, string code) =>
+    public void Scanner_CatchesTheLiteralShapes(string file, string code) =>
         Assert.NotEmpty(LinkSafetyScan.Violations(file, code));
 
     [Theory]
@@ -312,7 +326,11 @@ public sealed class LinkSafeDeleteTests : IDisposable
         // Argument-list forms ("reset", "--hard" / ArgumentList.Add("clean")) and one-string command forms
         // ("git stash pop"). Prose that merely mentions a verb (`git stash` in a prompt) is not a call.
         private static readonly Regex GitRewrite = new(
-            @"""--hard""|""(clean|checkout|restore|stash|rm)""\s*[,)]|""git (reset --hard|clean -[a-z]*f|checkout|restore|stash|rm )");
+            @"""--(hard|merge|keep|discard-changes)""|""(clean|checkout|restore|stash|rm|switch|read-tree)""\s*[,)]"
+            + @"|""git (reset --(hard|merge|keep)|clean -[a-z]*f|checkout|restore|stash|rm |switch|read-tree)");
+
+        private const int MinReasonWords = 3;
+        private const int MinReasonChars = 20;
 
         // A CALL of a guard — never its definition (a parameter list follows a definition's name).
         private static readonly Regex RewriteGuard = new(
@@ -359,7 +377,10 @@ public sealed class LinkSafeDeleteTests : IDisposable
             return $"{fileName}: {text[start..(end < 0 ? text.Length : end)].Trim()}";
         }
 
-        /// <summary>The line above (or the line of) <paramref name="index"/> carries a justification with a reason.</summary>
+        /// <summary>
+        /// The line above (or the line of) <paramref name="index"/> carries a justification whose reason is substantive
+        /// (at least <see cref="MinReasonWords"/> words and <see cref="MinReasonChars"/> characters).
+        /// </summary>
         private static bool Justified(string text, int index)
         {
             int lineStart = text.LastIndexOf('\n', Math.Max(0, index - 1)) + 1;
@@ -369,7 +390,10 @@ public sealed class LinkSafeDeleteTests : IDisposable
             if (at < 0) return false;
             string reason = lines[(at + Justification.Length)..];
             int nl = reason.IndexOf('\n');
-            return (nl < 0 ? reason : reason[..nl]).Trim().Length > 0;
+            string why = (nl < 0 ? reason : reason[..nl]).Trim();
+            // A substantive reason: a sentence naming the invariant, not a token ("ok", "fine", "trust me").
+            return why.Length >= MinReasonChars
+                && why.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length >= MinReasonWords;
         }
 
         /// <summary>

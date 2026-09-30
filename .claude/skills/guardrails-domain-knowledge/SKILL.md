@@ -415,7 +415,9 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   integration rollback/rewind) disarm links first too -- a junction replacing a tracked dir was written INTO and
   cleaned out (21 -> 1); on a tree the operator may own (serial supplied-drain rollback, `RewindPlanBranch`) links
   are never removed and a reset that would write or delete through one (a path under it at the target, HEAD, or in
-  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. A link that cannot be
+  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. The write-scope
+  revert checks the LEAF too, not only ancestors: a tracked file replaced by a junction is removed (worktree) or
+  refused (serial) before any `git checkout`/`rm` batch -- git deletes through a leaf junction (21 -> 0). A link that cannot be
   removed REFUSES (`LinkRemovalException`): tree + registration + branch left in place, reported loudly (console
   `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`, a retry reset faults the run), never risked.
 - **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that

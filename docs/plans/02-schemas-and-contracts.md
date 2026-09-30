@@ -1009,8 +1009,10 @@ operator's links shadow tracked paths, and that `git reset --hard <target>` is s
 way. (Measured: a path at HEAD but not in the index is left alone by git; the HEAD probe is belt-and-braces.) A
 link with nothing tracked under it (an ignored `node_modules/` entry) does not block. The same guard covers the
 other link-following rewrites: the auto-supply path `checkout` in the integration worktree disarms links first,
-and the write-scope revert's `checkout` / `rm` run only on paths whose linked ancestors were removed or refused
-(#816).
+and the write-scope revert's `checkout` / `rm` run only on paths that are neither links themselves nor under a
+linked ancestor — a link at the LEAF (a tracked file replaced by a junction reads to git as a directory, and git
+deletes recursively THROUGH it when replacing it: measured 21 → 0) is handled by mode like an ancestor, removed and
+named in worktree mode BEFORE any git batch, refused and left in place in serial mode (#816 + #826 final review).
 
 **A link that cannot be removed REFUSES the teardown** (`LinkRemovalException`, naming each link and telling the
 operator to remove the ENTRY by hand — `rmdir <link>` / `rm <link>`, never recursively): the worktree, its
@@ -1018,10 +1020,13 @@ registration and its branch are left in place, and the refusal is reported, neve
 consoles print `[worktree] <task>: worktree LEFT IN PLACE — …` (via `IRunObserver.CleanupFailed`), the reclaim/GC
 log prints `WARNING:`, `reset` / `run --fresh` print `WARNING:` on stderr and say a worktree was left in place
 instead of "all worktrees torn down", and a run-start stale-run prune that cannot finish stops the run (a stale
-segment must not be mistaken for integrated work). A source-level test holds all of this: no recursive delete
-outside `SafeDelete`, no `git worktree remove` anywhere, and every link-following git rewrite (`reset --hard`,
-`clean`, `checkout`, `restore`, `stash`, `rm`) preceded by a link-guard CALL in the same method body, or carrying
-an explicit `// #826 link-guard: <why>` justification on the line above.
+segment must not be mistaken for integrated work). A source-level TRIPWIRE (not a proof) flags the literal,
+common shapes of a regression: a recursive delete outside `SafeDelete`, any `git worktree remove`, and a
+link-following git rewrite (`reset --hard/--merge/--keep`, `clean`, `checkout`, `restore`, `stash`, `rm`,
+`switch`, `read-tree`) with neither a link-guard CALL earlier in the same method body nor a substantive
+`// #826 link-guard: <why>` justification (≥ 3 words, ≥ 20 characters) on the line above. It does not prove the
+guard dominates every path to the call or see a verb built at run time; the guards themselves are reviewed
+invariants.
 Cost: one directory listing per real directory in the tree — the listings the delete makes anyway — and nothing
 inside any link target.
 

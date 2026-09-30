@@ -420,8 +420,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `ResetSegment` / `ResetHardLinkSafe` (harness trees) or `ResetHardInOperatorTree` (a tree the operator may own);
   `LinkSafeDeleteTests.Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive` fails otherwise
   (it knows positional `Delete(p, true)`, `DirectoryInfo.Delete(true)`, `ArgumentList.Add("--hard")` and one-string
-  `"git …` forms of reset --hard / clean / checkout / restore / stash / rm, and requires a guard CALL earlier in the
-  SAME method body — or a `// #826 link-guard: <why>` line directly above the call).
+  `"git …` forms of reset --hard/--merge/--keep / clean / checkout / restore / stash / rm / switch / read-tree, and
+  requires a guard CALL earlier in the SAME method body — or a substantive `// #826 link-guard: <why>` line, >= 3 words
+  and >= 20 chars, directly above the call). It is a TRIPWIRE for literal shapes, not a proof: #826's final review
+  found a leaf-link hole (`WriteScopeCheck.Safe()` checked ancestors only) behind a justification it accepted —
+  a justification must state an invariant that is actually true.
   Measured: git follows a Windows junction on `worktree remove`, and `Directory.EnumerateFiles(…, AllDirectories)`
   walks into one — any tree walk that may meet a link uses `LinkSafeTree` (no-follow). Link fixtures for tests:
   `tests/Guardrails.Core.Tests/TestSupport/TestLinks.cs` (junction on Windows, symlink on Unix; linked into the
