@@ -1242,8 +1242,14 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   verbatim (`git cat-file blob`), restoring the exec bit on Unix. Symlinks (120000) and gitlinks (160000 — an
   untracked nested repository such as a Claude Code worktree) are never captured and revert through the normal
   path; a revert never writes THROUGH a link (a link now standing at the path is removed first). The capture is
-  fault-tolerant per path: one unhashable or vanished file loses only its own byte-exact restore (listed in
-  `write-scope-check.log`), never the snapshot. (A raw-bytes snapshot mode was tried and
+  fault-tolerant per path (a failed batch is bisected): one unhashable or vanished file loses only its own
+  byte-exact restore (listed in `write-scope-check.log`), never the snapshot. **Linked ancestors (fourth review):**
+  in BOTH modes, every revert — raw restore, `git checkout`, `git rm` — first walks the path's ancestor directories
+  from the workspace root and REFUSES a path under a directory that is now a symlink or a Windows junction (git
+  follows a junction as a directory, so even its own checkout of a tracked file writes through — measured). A
+  refused path stays on disk and is reported like any failed revert. Removals run FIRST, so a symlink that replaced
+  a directory (which git sees as a new path) is removed before its former children are recreated inside the
+  workspace. (A raw-bytes snapshot mode was tried and
   removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
   tracked files and an identical re-save read as a change.) Every scope git
   call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to

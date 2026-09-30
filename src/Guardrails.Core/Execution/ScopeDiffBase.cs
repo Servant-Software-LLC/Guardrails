@@ -198,44 +198,51 @@ public sealed class ScopeDiffBase : IDisposable
             return (blobs, skipped);
         }
 
+        HashBisecting(workspace, candidates, blobs, skipped, cancellationToken);
+        return (blobs, skipped);
+    }
+
+    /// <summary>
+    /// Hash <paramref name="batch"/> in one git child; if that fails, split it in half and try each half, down to
+    /// single paths (#816 fourth review NIT: a few processes for one bad path, not one per file). A single path that
+    /// still fails is added to <paramref name="skipped"/> — it loses only its own byte-exact restore.
+    /// </summary>
+    private static void HashBisecting(
+        string workspace, IReadOnlyList<(string Path, bool Executable)> batch,
+        Dictionary<string, RawBlob> blobs, List<string> skipped, CancellationToken cancellationToken)
+    {
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
         try
         {
-            string[] ids = HashRaw(workspace, candidates.Select(c => c.Path), cancellationToken);
-            if (ids.Length == candidates.Count)
+            string[] ids = HashRaw(workspace, batch.Select(c => c.Path), cancellationToken);
+            if (ids.Length == batch.Count)
             {
-                for (int i = 0; i < candidates.Count; i++)
+                for (int i = 0; i < batch.Count; i++)
                 {
-                    blobs[candidates[i].Path] = new RawBlob(ids[i], candidates[i].Executable);
+                    blobs[batch[i].Path] = new RawBlob(ids[i], batch[i].Executable);
                 }
 
-                return (blobs, skipped);
+                return;
             }
         }
         catch (InvalidOperationException)
         {
-            // One path spoiled the batch; fall through to hashing each alone.
+            // A path in this batch spoiled it; narrow down below.
         }
 
-        foreach ((string path, bool executable) in candidates)
+        if (batch.Count == 1)
         {
-            try
-            {
-                string[] id = HashRaw(workspace, [path], cancellationToken);
-                if (id.Length == 1)
-                {
-                    blobs[path] = new RawBlob(id[0], executable);
-                    continue;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Recorded below: this path loses only its byte-exact restore.
-            }
-
-            skipped.Add(path);
+            skipped.Add(batch[0].Path);
+            return;
         }
 
-        return (blobs, skipped);
+        int half = batch.Count / 2;
+        HashBisecting(workspace, batch.Take(half).ToList(), blobs, skipped, cancellationToken);
+        HashBisecting(workspace, batch.Skip(half).ToList(), blobs, skipped, cancellationToken);
     }
 
     private static string[] HashRaw(string workspace, IEnumerable<string> paths, CancellationToken cancellationToken) =>

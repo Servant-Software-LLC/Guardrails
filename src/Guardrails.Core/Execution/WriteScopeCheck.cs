@@ -413,21 +413,48 @@ public static class WriteScopeCheck
         HashSet<string> existing = ExistingAtBase(diffBase, paths, cancellationToken);
         List<string> addedSinceBase = paths.Where(p => !existing.Contains(p)).ToList();
 
+        // #816 fourth review: NO restore, removal or directory creation may land outside the workspace through a
+        // LINKED ANCESTOR — a directory the attempt replaced with a symlink or a Windows junction. git follows a
+        // junction as if it were a directory (so `data/x.txt` reads as merely modified), and a leaf-only check cannot
+        // see it. Every path is therefore checked, component by component from the workspace root, immediately before
+        // it is touched, and a path under a linked ancestor is REFUSED — left on disk and reported, never written.
+        var refused = new List<string>();
+        bool Safe(string path)
+        {
+            if (LinkedAncestor(diffBase.RepoPath, path) is not { } linked)
+            {
+                return true;
+            }
+
+            refused.Add($"{path} (under '{linked}', which is now a link)");
+            return false;
+        }
+
+        // Newly-added paths FIRST — no base blob exists, so they are removed from the index and the working tree.
+        // First, because a link that REPLACED a directory is itself such a path (on Unix git sees `data` as a new
+        // symlink): removing the link before its former children are restored means they are recreated inside the
+        // workspace, where they belong, rather than refused.
+        foreach (List<string> batch in Batches(addedSinceBase.Where(Safe).ToList()))
+        {
+            var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
+            args.AddRange(batch);
+            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
+        }
+
         // #816 second review: a file the operator's git did NOT track at snapshot time is restored from its RAW
         // bytes, written verbatim — the snapshot blob may be a line-ending-normalised copy, and an untracked file
         // has no smudge round trip that would undo that. Tracked files go through git's normal checkout below.
         List<string> restoreRaw = paths.Where(p => existing.Contains(p) && diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
-        foreach (string path in restoreRaw)
+        foreach (string path in restoreRaw.Where(Safe))
         {
             ScopeDiffBase.RawBlob raw = diffBase.UntrackedRawBlobs[path];
             byte[] bytes = ScopeGit.RunBytes(diffBase.RepoPath, diffBase.IndexFile, ["cat-file", "blob", raw.Id], cancellationToken);
             string full = Path.Combine(diffBase.RepoPath, path.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
 
-            // #816 third review: NEVER write through a link. If the attempt replaced the file with a symlink (or a
-            // directory link), writing to that path would land wherever the link points — possibly outside the
-            // workspace. Remove the link itself (lstat semantics: LinkTarget is read off the entry, not its target),
-            // then recreate the regular file it replaced.
+            // #816 third review: NEVER write through a link at the LEAF either. If the attempt replaced the file with a
+            // symlink (or a directory link), remove the link itself (lstat semantics: LinkTarget is read off the entry,
+            // not its target), then recreate the regular file it replaced.
             var entry = new FileInfo(full);
             var directoryEntry = new DirectoryInfo(full);
             if (directoryEntry.Exists && directoryEntry.LinkTarget is not null)
@@ -452,24 +479,54 @@ public static class WriteScopeCheck
             }
         }
 
+        // Modified/deleted tracked files: restore the base blob into the index AND the working tree. git replaces a
+        // link at the LEAF itself; a linked ANCESTOR is refused above, since git follows a junction straight through.
         List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
-
-        // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
-        foreach (List<string> batch in Batches(existedAtBase))
+        foreach (List<string> batch in Batches(existedAtBase.Where(Safe).ToList()))
         {
             var args = new List<string> { "--literal-pathspecs", "checkout", diffBase.Base, "--" };
             args.AddRange(batch);
             ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
         }
 
-        // Newly-added files: no base blob exists, so git checkout would fail ("did not match any file");
-        // remove them from the index and the working tree instead.
-        foreach (List<string> batch in Batches(addedSinceBase))
+        if (refused.Count > 0)
         {
-            var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
-            args.AddRange(batch);
-            ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
+            // Every caller already reports a failed revert loudly ("reverting … failed, so they are still on disk").
+            throw new InvalidOperationException(
+                $"refused to restore {refused.Count} path(s) that now sit under a link out of the workspace, so they are " +
+                $"still on disk: {string.Join("; ", refused)}");
         }
+    }
+
+    /// <summary>
+    /// #816 fourth review: the first directory on the way from <paramref name="root"/> to <paramref name="relativePath"/>'s
+    /// PARENT that is a link — a symlink, a dangling symlink, or a Windows junction — as a forward-slashed relative
+    /// path, or null when none is. Read with lstat semantics (the entry itself, never its target). A missing directory
+    /// ends the walk: nothing below it exists to be linked. The root itself is not checked — the workspace is allowed
+    /// to be reached through a link (macOS <c>/var</c> → <c>/private/var</c>).
+    /// </summary>
+    internal static string? LinkedAncestor(string root, string relativePath)
+    {
+        string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string current = root;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+            var directory = new DirectoryInfo(current);
+            bool isLink = directory.LinkTarget is not null
+                          || (directory.Exists && directory.Attributes.HasFlag(FileAttributes.ReparsePoint));
+            if (isLink)
+            {
+                return string.Join('/', segments[..(i + 1)]);
+            }
+
+            if (!directory.Exists)
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

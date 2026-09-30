@@ -207,6 +207,120 @@ public sealed partial class WriteScopeRunTests
         }
     }
 
+    // ── fourth review: never write through a LINKED ANCESTOR ─────────────────────────────────────
+
+    [Theory]
+    [InlineData(false)] // untracked at snapshot: the raw-bytes restore
+    [InlineData(true)]  // tracked at snapshot: git's own checkout
+    public void ADirectoryReplacedByALinkOutOfTheWorkspace_IsNeverWrittenThrough_Issue816(bool tracked)
+    {
+        // The attempt replaces `data/` with a link (a Windows junction — no privileges needed — or a Unix symlink) to a
+        // directory OUTSIDE the workspace that holds its own x.txt. git follows a junction as if it were a directory, so
+        // `data/x.txt` reads as modified; restoring it must not write the outside file.
+        using var repo = new TempGitRepo();
+        if (tracked)
+        {
+            repo.Commit("data/x.txt", "ORIGINAL");
+        }
+        else
+        {
+            WriteNonRacy(repo.RepoPath, "data/x.txt", "ORIGINAL");
+        }
+
+        string outside = Path.Combine(Path.GetTempPath(), "gr-outside-dir-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "x.txt"), "OUTSIDE");
+        try
+        {
+            using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+                ?? throw new InvalidOperationException(why);
+
+            string data = Path.Combine(repo.RepoPath, "data");
+            Directory.Delete(data, recursive: true);
+            LinkDirectory(data, outside);
+
+            WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
+            Assert.NotEmpty(check.OffendingPaths);
+            Exception? revert = Record.Exception(() => WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct));
+
+            Assert.Equal("OUTSIDE", File.ReadAllText(Path.Combine(outside, "x.txt"))); // the outside file is untouched
+            if (new DirectoryInfo(data).LinkTarget is not null)
+            {
+                // Still a link (a junction git follows): the path was refused, and that is reported, not swallowed.
+                Assert.IsType<InvalidOperationException>(revert);
+                Assert.Contains("under 'data'", revert!.Message);
+            }
+            else
+            {
+                // The link was itself an offense (a Unix symlink git sees as a new path): removed first, then the
+                // file recreated INSIDE the workspace.
+                Assert.Null(revert);
+                Assert.Equal("ORIGINAL", File.ReadAllText(Path.Combine(data, "x.txt")));
+            }
+        }
+        finally
+        {
+            string link = Path.Combine(repo.RepoPath, "data");
+            if (new DirectoryInfo(link).LinkTarget is not null)
+            {
+                Directory.Delete(link); // the link only
+            }
+
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LinkedAncestor_FindsAJunctionOrSymlinkOnThePath_AndIgnoresAMissingOne_Issue816()
+    {
+        using var repo = new TempGitRepo();
+        string outside = Path.Combine(Path.GetTempPath(), "gr-outside-dir-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(repo.RepoPath, "real", "deeper"));
+            LinkDirectory(Path.Combine(repo.RepoPath, "real", "linked"), outside);
+
+            Assert.Null(WriteScopeCheck.LinkedAncestor(repo.RepoPath, "real/deeper/x.txt"));
+            Assert.Null(WriteScopeCheck.LinkedAncestor(repo.RepoPath, "absent/deeper/x.txt"));
+            Assert.Equal("real/linked", WriteScopeCheck.LinkedAncestor(repo.RepoPath, "real/linked/x.txt"));
+            Assert.Equal("real/linked", WriteScopeCheck.LinkedAncestor(repo.RepoPath, "real/linked/a/b.txt"));
+            Assert.Null(WriteScopeCheck.LinkedAncestor(repo.RepoPath, "real/linked")); // the leaf itself is not an ancestor
+        }
+        finally
+        {
+            Directory.Delete(Path.Combine(repo.RepoPath, "real", "linked"));
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    /// <summary>A directory link that needs no privileges: a junction on Windows, a symlink elsewhere.</summary>
+    private static void LinkDirectory(string link, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(link, target);
+            return;
+        }
+
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (string arg in new[] { "/c", "mklink", "/J", link, target })
+        {
+            psi.ArgumentList.Add(arg);
+        }
+
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        proc.StandardOutput.ReadToEnd();
+        string err = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        Assert.True(proc.ExitCode == 0, $"mklink /J failed: {err}");
+    }
+
     [Fact]
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     public void ARecreatedUntrackedExecutable_GetsItsExecBitBack_Issue816()
