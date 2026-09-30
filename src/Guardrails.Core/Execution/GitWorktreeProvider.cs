@@ -452,10 +452,12 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
     /// <summary>
     /// <c>git reset --hard <paramref name="target"/></c> in a tree the harness may NOT own — the operator's
-    /// checkout (serial mode) — where a link is theirs and is never removed. A link with paths TRACKED at
-    /// <paramref name="target"/> under it would be written through, so in that case the working tree is left
-    /// alone: only the INDEX is reset (<c>git reset -q</c>, which writes no working-tree file) and a
-    /// <see cref="LinkRemovalException"/> names the links. Otherwise the plain hard reset runs.
+    /// checkout (serial mode) — where a link is theirs and is never removed. A hard reset WRITES every path tracked
+    /// at the target and DELETES every path tracked at HEAD or staged in the index but absent at the target, so a
+    /// link with such a path beneath it would be written or deleted through (#826 re-review: a file tracked only at
+    /// HEAD, under a junctioned directory, was deleted from the junction's target). In that case the working tree
+    /// is left alone — only HEAD and the index move (<c>git reset -q</c>, which writes no working-tree file) — and
+    /// a <see cref="LinkRemovalException"/> with its own, accurate message says so. Otherwise the hard reset runs.
     /// </summary>
     internal static void ResetHardInOperatorTree(string workspace, string target)
     {
@@ -463,18 +465,20 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         if (shadowing.Count > 0)
         {
             GitIn(workspace, "reset", "-q", target);
-            throw new LinkRemovalException(workspace, shadowing, "hard-reset the working tree of");
+            throw LinkRemovalException.OperatorResetRefused(workspace, target, shadowing);
         }
 
         GitIn(workspace, "reset", "--hard", target);
     }
 
     /// <summary>
-    /// Every link under <paramref name="workspace"/> (found without removing or following any) that has a path
-    /// tracked at <paramref name="commit"/> beneath it — the links a <c>git reset --hard</c> would write through.
+    /// Every link under <paramref name="workspace"/> (found without removing or following any) with a path beneath it
+    /// that a <c>git reset --hard <paramref name="target"/></c> would touch — tracked at the TARGET (written), at
+    /// HEAD or in the INDEX (deleted when absent at the target).
     /// </summary>
-    private static List<string> LinksShadowingTrackedPaths(string workspace, string commit)
+    private static List<string> LinksShadowingTrackedPaths(string workspace, string target)
     {
+        bool headExists = TryGitIn(workspace, "rev-parse", "--verify", "--quiet", "HEAD").exitCode == 0;
         var shadowing = new List<string>();
         foreach (string link in LinkSafeTree.FindLinks(workspace, skipRootGitDirectory: true).Unremoved)
         {
@@ -485,8 +489,16 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
                 continue;
             }
 
-            var (listing, exit) = TryGitIn(workspace, "--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", commit, "--", rel + "/");
-            if (exit != 0 || listing.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length > 0)
+            string pathspec = rel + "/";
+            bool Tracked(params string[] args)
+            {
+                var (listing, exit) = TryGitIn(workspace, ["--literal-pathspecs", .. args, "--", pathspec]);
+                return exit != 0 || listing.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length > 0;
+            }
+
+            if (Tracked("ls-tree", "-r", "-z", "--name-only", target)
+                || (headExists && Tracked("ls-tree", "-r", "-z", "--name-only", "HEAD"))
+                || Tracked("ls-files", "-z", "--cached"))
             {
                 shadowing.Add(link);
             }

@@ -300,6 +300,30 @@ public sealed class LinkRemovalException : IOException
         Unremoved = unremoved;
     }
 
+    private LinkRemovalException(string message, IReadOnlyList<string> trees, IReadOnlyList<string> unremoved)
+        : base(message)
+    {
+        Trees = trees;
+        Unremoved = unremoved;
+    }
+
+    /// <summary>
+    /// #826: a hard reset of a tree the OPERATOR may own was narrowed to HEAD + index, because the operator's own
+    /// links (never removed — they are theirs, and removable) have tracked paths beneath them. The message says
+    /// exactly what state the tree is now in and what makes the hard reset safe; it is NOT the "could not be
+    /// removed" text, which would be wrong for a link nobody tried to remove.
+    /// </summary>
+    public static LinkRemovalException OperatorResetRefused(string workspace, string target, IReadOnlyList<string> links) =>
+        new(
+            $"reset '{workspace}' to {target} WITHOUT touching its working tree: HEAD and the index are now at {target}, " +
+            $"but the working tree was left as it was — files from the undone change(s) remain on disk, now untracked or " +
+            $"modified relative to {target}. `git reset --hard` was NOT run because these link(s), which are yours and were " +
+            $"left in place, have tracked paths beneath them, and a hard reset would write or delete files THROUGH them in " +
+            $"the folders they point at (issue #826): {string.Join("; ", links)}. Once each such link is moved out of the " +
+            $"way, `git reset --hard {target}` is safe to run.",
+            [workspace],
+            links);
+
     /// <summary>The tree(s) left in place.</summary>
     public IReadOnlyList<string> Trees { get; }
 

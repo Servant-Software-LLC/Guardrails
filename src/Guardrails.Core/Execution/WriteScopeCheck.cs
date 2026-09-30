@@ -472,6 +472,7 @@ public static class WriteScopeCheck
         // workspace, where they belong, rather than refused.
         foreach (List<string> batch in Batches(addedSinceBase.Where(Safe).ToList()))
         {
+            // #826 link-guard: every path passed Safe() above — its linked ancestors were removed (worktree) or the path refused (serial).
             var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--quiet", "--" };
             args.AddRange(batch);
             ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);
@@ -520,6 +521,7 @@ public static class WriteScopeCheck
         List<string> existedAtBase = paths.Where(p => existing.Contains(p) && !diffBase.UntrackedRawBlobs.ContainsKey(p)).ToList();
         foreach (List<string> batch in Batches(existedAtBase.Where(Safe).ToList()))
         {
+            // #826 link-guard: every path passed Safe() above — its linked ancestors were removed (worktree) or the path refused (serial).
             var args = new List<string> { "--literal-pathspecs", "checkout", diffBase.Base, "--" };
             args.AddRange(batch);
             ScopeGit.Run(diffBase.RepoPath, diffBase.IndexFile, args, cancellationToken);

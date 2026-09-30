@@ -5536,6 +5536,10 @@ public sealed class Scheduler
     /// </summary>
     private static void GitCheckoutPathsFromCommit(string workingDir, string sourceCommit, IReadOnlyList<string> paths)
     {
+        // #826: a path checkout writes THROUGH a junction standing where a parent directory was; the integration
+        // worktree is harness-owned, so its links are removed first (an unremovable one throws — the caller's
+        // commit-failed path).
+        GitWorktreeProvider.DisarmLinksBeforeGitRewrite(workingDir);
         var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDir,

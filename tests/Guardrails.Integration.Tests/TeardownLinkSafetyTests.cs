@@ -286,6 +286,78 @@ public sealed class TeardownLinkSafetyTests : IDisposable
         Assert.False(File.Exists(Path.Combine(outside, "a.cs")));
     }
 
+    /// <summary>
+    /// #826 re-review BLOCKER: the TARGET has no <c>lib/</c>; HEAD tracks <c>lib/f3.txt</c>; the operator's <c>lib/</c>
+    /// is a junction to an outside folder holding its own <c>f3.txt</c>. A hard reset to the target DELETES the paths
+    /// tracked at HEAD — through the link. The check must see HEAD (and the index, which matches it here), not only
+    /// the target. (Measured: a path at HEAD but NOT in the index is left alone by git — reset --hard works from the
+    /// index — so the HEAD probe is belt-and-braces and the index probe is the one this case needs.)
+    /// </summary>
+    [Fact]
+    public void ResetHardInOperatorTree_APathTrackedOnlyAtHead_UnderALink_IsNotDeletedThroughIt()
+    {
+        string target = Git(_repo, "rev-parse", "HEAD").Trim();                  // c1: no lib/
+        Directory.CreateDirectory(Path.Combine(_repo, "lib"));
+        File.WriteAllText(Path.Combine(_repo, "lib", "file-3.txt"), "tracked at HEAD\n");
+        Git(_repo, "add", "lib");
+        Git(_repo, "commit", "-q", "-m", "c2 adds lib/file-3.txt");               // HEAD: lib/file-3.txt
+        string outside = TestLinks.OutsideFolder(_base, "outside-head-only");      // holds its own file-3.txt
+        Directory.Delete(Path.Combine(_repo, "lib"), recursive: true);
+        TestLinks.DirectoryLink(Path.Combine(_repo, "lib"), outside);
+
+        LinkRemovalException refusal = Assert.Throws<LinkRemovalException>(
+            () => GitWorktreeProvider.ResetHardInOperatorTree(_repo, target));
+
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.True(File.Exists(Path.Combine(outside, "file-3.txt")), "the outside file-3.txt must survive");
+        Assert.Contains(Path.Combine(_repo, "lib"), refusal.Unremoved);
+        Assert.Equal(target, Git(_repo, "rev-parse", "HEAD").Trim()); // HEAD + index moved; working tree left alone
+    }
+
+    /// <summary>The same with the path only STAGED (the serial supply-drain rollback after a failed commit).</summary>
+    [Fact]
+    public void ResetHardInOperatorTree_APathStagedOnlyInTheIndex_UnderALink_IsNotDeletedThroughIt()
+    {
+        string outside = TestLinks.OutsideFolder(_base, "outside-index-only");
+        TestLinks.DirectoryLink(Path.Combine(_repo, "lib"), outside);
+        // Stage a path under the link as git sees it (index-only; never committed). --add of a path under a
+        // junction is refused by git itself on some versions, so write the index entry directly.
+        string blob = Git(_repo, "hash-object", "-w", "README.md").Trim();
+        Git(_repo, "update-index", "--add", "--cacheinfo", $"100644,{blob},lib/file-3.txt");
+
+        LinkRemovalException refusal = Assert.Throws<LinkRemovalException>(
+            () => GitWorktreeProvider.ResetHardInOperatorTree(_repo, "HEAD"));
+
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.True(File.Exists(Path.Combine(outside, "file-3.txt")));
+        Assert.Contains(Path.Combine(_repo, "lib"), refusal.Unremoved);
+    }
+
+    /// <summary>
+    /// #826 re-review WEAK 1: the operator-tree refusal says what actually happened — HEAD and the index moved, the
+    /// working tree did not, which link(s) shadow tracked paths, and when a hard reset becomes safe. It must NOT
+    /// carry the "could not be removed … remove each link ENTRY" text meant for a harness link that resisted removal.
+    /// </summary>
+    [Fact]
+    public void ResetHardInOperatorTree_Refusal_SaysWhatStateTheTreeIsIn()
+    {
+        string outside = TestLinks.OutsideFolder(_base, "outside-message");
+        string src = Path.Combine(_repo, "src");
+        Directory.Delete(src, recursive: true);
+        TestLinks.DirectoryLink(src, outside);
+
+        string message = Assert.Throws<LinkRemovalException>(
+            () => GitWorktreeProvider.ResetHardInOperatorTree(_repo, "HEAD")).Message;
+
+        Assert.Contains("HEAD and the index are now at HEAD", message, StringComparison.Ordinal);
+        Assert.Contains("working tree was left as it was", message, StringComparison.Ordinal);
+        Assert.Contains("remain on disk", message, StringComparison.Ordinal);
+        Assert.Contains(src, message, StringComparison.Ordinal);
+        Assert.Contains("`git reset --hard HEAD` is safe to run", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("could not be removed", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("by hand", message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ResetHardInOperatorTree_ALinkWithNothingTrackedUnderIt_DoesNotBlockTheReset()
     {

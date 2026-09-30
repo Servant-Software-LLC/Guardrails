@@ -984,7 +984,9 @@ file symlink, junction, dangling link, including inside a nested repository's `.
 IMMEDIATELY before .NET's recursive delete (which does not follow links either, measured), so no window opens
 between a sweep and a link-following delete; then (2) `git worktree prune` for git's bookkeeping (prune deletes
 no working-tree file; it drops the registration of the now-missing directory, so the branch can be deleted and
-the path re-added — batched sweeps prune once, #450). `SafeDelete` is the harness's ONE recursive delete (every
+the path re-added — batched sweeps prune once, #450). Accepted side effect: `git worktree prune` is repo-wide, so
+it may also drop the registration of one of the OPERATOR's own worktrees whose directory is unreachable at that
+moment (an unmounted drive, a moved folder); `git worktree repair <path>` restores it. `SafeDelete` is the harness's ONE recursive delete (every
 other recursive `Directory.Delete` / `DirectoryInfo.Delete` routes through it): it disarms links in the same
 single walk that clears read-only attributes (#109), removes only the link when handed a link, and never touches
 anything reached through one. The orphaned-`_integration` sweep uses the same no-follow walk.
@@ -998,9 +1000,17 @@ rollback — first removes every link in the tree (the same walk; only `<worktre
 when a link cannot be removed NEITHER command runs: a `LinkRemovalException` ("refused to reset …") takes the
 call's existing failure path (a retry reset faults the run with the message; the supply rollback reports through
 `CleanupFailed`). A tree the operator may own — the serial-mode supplied-drain rollback and a plan branch checked
-out in their own checkout (`RewindPlanBranch`) — never has a link removed: when a link has paths TRACKED at the
-reset target beneath it, only the index is reset (`git reset -q`, which writes no working-tree file) and the
-refusal names the link; a link with nothing tracked under it (an ignored `node_modules/` entry) does not block.
+out in their own checkout (`RewindPlanBranch`) — never has a link removed. A hard reset WRITES every path tracked
+at the target and DELETES every path tracked in the index (or at HEAD) that the target lacks, so when a link has a
+path beneath it at the TARGET, at HEAD, or in the INDEX, only HEAD and the index move (`git reset -q`, which writes
+no working-tree file) and the refusal has its own message: HEAD and the index are now at the target, the working
+tree was left as it was (files from the undone change remain on disk, untracked or modified), which of the
+operator's links shadow tracked paths, and that `git reset --hard <target>` is safe once they are moved out of the
+way. (Measured: a path at HEAD but not in the index is left alone by git; the HEAD probe is belt-and-braces.) A
+link with nothing tracked under it (an ignored `node_modules/` entry) does not block. The same guard covers the
+other link-following rewrites: the auto-supply path `checkout` in the integration worktree disarms links first,
+and the write-scope revert's `checkout` / `rm` run only on paths whose linked ancestors were removed or refused
+(#816).
 
 **A link that cannot be removed REFUSES the teardown** (`LinkRemovalException`, naming each link and telling the
 operator to remove the ENTRY by hand — `rmdir <link>` / `rm <link>`, never recursively): the worktree, its
@@ -1009,7 +1019,9 @@ consoles print `[worktree] <task>: worktree LEFT IN PLACE — …` (via `IRunObs
 log prints `WARNING:`, `reset` / `run --fresh` print `WARNING:` on stderr and say a worktree was left in place
 instead of "all worktrees torn down", and a run-start stale-run prune that cannot finish stops the run (a stale
 segment must not be mistaken for integrated work). A source-level test holds all of this: no recursive delete
-outside `SafeDelete`, no `git worktree remove` anywhere, and every `reset --hard` / `clean` behind a link guard.
+outside `SafeDelete`, no `git worktree remove` anywhere, and every link-following git rewrite (`reset --hard`,
+`clean`, `checkout`, `restore`, `stash`, `rm`) preceded by a link-guard CALL in the same method body, or carrying
+an explicit `// #826 link-guard: <why>` justification on the line above.
 Cost: one directory listing per real directory in the tree — the listings the delete makes anyway — and nothing
 inside any link target.
 

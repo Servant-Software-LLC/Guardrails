@@ -218,11 +218,14 @@ public sealed class LinkSafeDeleteTests : IDisposable
         Assert.True(LinkSafeTree.IsLink(link));
     }
 
+
     /// <summary>
-    /// The shared-primitive guarantee, held at the source (#826 review WEAK 3): every recursive delete in the
-    /// harness is <see cref="SafeDelete"/>, no <c>git worktree remove</c> runs anywhere, and every git verb that
-    /// deletes or writes a working tree through a link (<c>reset --hard</c>, <c>clean</c>) sits behind a link
-    /// guard in <c>GitWorktreeProvider</c>. The scanner is proven against each evasion below.
+    /// The shared-primitive guarantee, held at the source (#826 reviews): every recursive delete in the harness is
+    /// <see cref="SafeDelete"/>, no <c>git worktree remove</c> runs anywhere, and every git verb that writes or
+    /// deletes working-tree files and so follows a link — <c>reset --hard</c>, <c>clean</c>, <c>checkout</c>,
+    /// <c>restore</c>, <c>stash</c>, <c>rm</c> — is either preceded by a link guard CALL in the SAME METHOD, or
+    /// carries an explicit <c>// #826 link-guard: &lt;why&gt;</c> justification on the line above it. The scanner
+    /// itself is proven against each evasion below.
     /// </summary>
     [Fact]
     public void Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive()
@@ -232,6 +235,7 @@ public sealed class LinkSafeDeleteTests : IDisposable
         foreach (string file in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
+            if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
             violations.AddRange(LinkSafetyScan.Violations(Path.GetFileName(file), File.ReadAllText(file)));
         }
 
@@ -245,76 +249,242 @@ public sealed class LinkSafeDeleteTests : IDisposable
     [InlineData("X.cs", "dir.Delete(recursive: true);")]
     [InlineData("X.cs", "GitIn(wt, \"worktree\", \"remove\", \"--force\", wt);")]
     [InlineData("X.cs", "Run(\"git worktree remove --force x\");")]
-    [InlineData("X.cs", "GitIn(wt, \"reset\", \"--hard\", sha);")]
-    [InlineData("X.cs", "Run(\"git reset --hard HEAD\");")]
-    [InlineData("X.cs", "GitIn(wt, \"clean\", \"-fd\");")]
-    [InlineData("X.cs", "Run(\"git clean -fdx\");")]
-    [InlineData("X.cs", "psi.ArgumentList.Add(\"--hard\");")]   // Scheduler's pre-review best-effort rollback shape
-    [InlineData("X.cs", "psi.ArgumentList.Add(\"clean\");")]
-    [InlineData("SafeDelete.cs", "Directory.Delete(path, recursive: true);")]            // allowed file, but no sweep before it
-    [InlineData("GitWorktreeProvider.cs", "GitIn(wt, \"worktree\", \"remove\", wt);")]  // never allowed, guard or not
-    // The #826 review BLOCKER as it shipped in c17a7b1f: an unguarded reset + clean in the allowed file.
+    [InlineData("X.cs", "void M() { GitIn(wt, \"reset\", \"--hard\", sha); }")]
+    [InlineData("X.cs", "void M() { Run(\"git reset --hard HEAD\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"clean\", \"-fd\"); }")]
+    [InlineData("X.cs", "void M() { Run(\"git clean -fdx\"); }")]
+    [InlineData("X.cs", "void M() { psi.ArgumentList.Add(\"--hard\"); }")]   // Scheduler's pre-review rollback shape
+    [InlineData("X.cs", "void M() { psi.ArgumentList.Add(\"clean\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"checkout\", \"-f\", sha); }")]
+    [InlineData("X.cs", "void M() { Run(\"git checkout --force main\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"restore\", \".\"); }")]
+    [InlineData("X.cs", "void M() { Run(\"git restore --source=HEAD .\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"stash\", \"push\", \"-u\"); }")]
+    [InlineData("X.cs", "void M() { Run(\"git stash pop\"); }")]
+    [InlineData("X.cs", "void M() { GitIn(wt, \"rm\", \"-rf\", p); }")]
+    [InlineData("SafeDelete.cs", "void D() { Directory.Delete(path, recursive: true); }")]  // allowed file, no sweep first
+    [InlineData("GitWorktreeProvider.cs", "void M() { DisarmLinksBeforeGitRewrite(wt); GitIn(wt, \"worktree\", \"remove\", wt); }")] // never allowed
+    // A guard in a DIFFERENT method does not count (the 12-line window of 7242d69d accepted this).
+    [InlineData("X.cs", "void A()\n{\n    DisarmLinksBeforeGitRewrite(wt);\n}\n\nvoid B()\n{\n    GitIn(wt, \"reset\", \"--hard\", x);\n}")]
+    // A guard that appears only as a DEFINITION does not count — neither a preceding method's nor a local function's.
+    [InlineData("X.cs", "internal static void DisarmLinksBeforeGitRewrite(string worktreePath)\n{\n}\nvoid B()\n{\n    GitIn(wt, \"reset\", \"--hard\", x);\n}")]
+    [InlineData("X.cs", "void B()\n{\n    void DisarmLinksBeforeGitRewrite(string w) { }\n    GitIn(wt, \"reset\", \"--hard\", x);\n}")]
+    // A guard AFTER the rewrite does not count.
+    [InlineData("X.cs", "void B()\n{\n    GitIn(wt, \"clean\", \"-fd\");\n    DisarmLinksBeforeGitRewrite(wt);\n}")]
+    // A justification marker with no reason does not count.
+    [InlineData("X.cs", "void B()\n{\n    // #826 link-guard:\n    GitIn(wt, \"checkout\", c, \"--\", p);\n}")]
+    // The #826 review BLOCKER as it shipped in c17a7b1f: an unguarded reset + clean.
     [InlineData("GitWorktreeProvider.cs",
         "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
     public void Scanner_CatchesEveryEvasion(string file, string code) =>
         Assert.NotEmpty(LinkSafetyScan.Violations(file, code));
 
     [Theory]
-    [InlineData("SafeDelete.cs", "var s = LinkSafeTree.RemoveLinks(path, clearReadOnly: true);\nif (!s.Safe) throw x;\nDirectory.Delete(path, recursive: true);")]
-    [InlineData("GitWorktreeProvider.cs", "DisarmLinksBeforeGitRewrite(worktreePath);\nGitIn(worktreePath, \"reset\", \"--hard\", taskBase);\nGitIn(worktreePath, \"clean\", \"-fd\");")]
-    [InlineData("X.cs", "// a comment may say git reset --hard or Directory.Delete(p, true)\n/// <c>git clean -fd</c>")]
+    [InlineData("SafeDelete.cs", "void D()\n{\n    var s = LinkSafeTree.RemoveLinks(path, clearReadOnly: true);\n    if (!s.Safe) { throw x; }\n    Directory.Delete(path, recursive: true);\n}")]
+    [InlineData("GitWorktreeProvider.cs", "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    DisarmLinksBeforeGitRewrite(worktreePath);\n    if (x) { y(); }\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
+    [InlineData("Scheduler.cs", "static void C(string d)\n{\n    GitWorktreeProvider.DisarmLinksBeforeGitRewrite(d);\n    psi.ArgumentList.Add(\"checkout\");\n}")]
+    [InlineData("X.cs", "void B()\n{\n    // #826 link-guard: every path passed Safe() above\n    var args = new List<string> { \"checkout\", b, \"--\" };\n}")]
+    [InlineData("X.cs", "// a comment may say git reset --hard or Directory.Delete(p, true)\n/// <c>git clean -fd</c>\nstring s = \"`git stash` is repo-wide\";")]
     public void Scanner_AcceptsGuardedCallsAndMentions(string file, string code) =>
         Assert.Empty(LinkSafetyScan.Violations(file, code));
 
-    /// <summary>The #826 source rules, as a function of one file's name and text so the rules themselves are testable.</summary>
+    /// <summary>
+    /// The #826 source rules, as a function of one file's name and text so the rules themselves are testable.
+    /// <para>
+    /// Why brace-scoping rather than a list of blessed wrapper methods (#826 re-review WEAK 2): the hazardous verbs
+    /// legitimately appear outside <c>GitWorktreeProvider</c> (the write-scope revert's <c>checkout</c>/<c>rm</c>, the
+    /// auto-supply path checkout), and each site's guard differs (disarm, the operator-tree shadow check, #816's
+    /// per-path <c>Safe()</c>). A name allow-list would either bless a method whose body later loses its guard, or
+    /// need a new entry per site with nothing tying the entry to a guard. Scoping the rule to "a guard CALL earlier in
+    /// the same method body, or a written justification on the line above" checks the thing that matters at every
+    /// site, and a wrapper whose guard is deleted fails on its own.
+    /// </para>
+    /// </summary>
     private static class LinkSafetyScan
     {
-        private const int GuardWindow = 12; // non-comment lines a guard may precede the guarded call by
+        private const string Justification = "#826 link-guard:";
 
         private static readonly Regex RecursiveDelete = new(
             @"Directory\.Delete\([^;]*,\s*(recursive:\s*)?true\s*\)|\.Delete\(\s*(recursive:\s*)?true\s*\)");
 
-        // Argument-list forms ("reset", "--hard" / ArgumentList.Add("--hard")) and one-string command forms
-        // ("git reset --hard …"). A bare "reset --hard" in prose (a diagnostic message) is not a call.
         private static readonly Regex WorktreeRemove = new(@"""worktree""\s*,\s*""remove""|git worktree remove");
 
-        private static readonly Regex GitRewrite = new(@"""--hard""|git reset --hard|""clean""\s*[,)]|git clean -[a-z]*f");
+        // Argument-list forms ("reset", "--hard" / ArgumentList.Add("clean")) and one-string command forms
+        // ("git stash pop"). Prose that merely mentions a verb (`git stash` in a prompt) is not a call.
+        private static readonly Regex GitRewrite = new(
+            @"""--hard""|""(clean|checkout|restore|stash|rm)""\s*[,)]|""git (reset --hard|clean -[a-z]*f|checkout|restore|stash|rm )");
+
+        // A CALL of a guard — never its definition (a parameter list follows a definition's name).
+        private static readonly Regex RewriteGuard = new(
+            @"\b(DisarmLinksBeforeGitRewrite|LinksShadowingTrackedPaths)\((?!\s*string\s)");
+
+        private static readonly Regex DeleteGuard = new(@"\bLinkSafeTree\.RemoveLinks\((?!\s*string\s)");
+
+        private static readonly HashSet<string> NotMethods =
+            ["if", "for", "foreach", "while", "switch", "catch", "using", "lock", "fixed", "when"];
 
         internal static List<string> Violations(string fileName, string text)
         {
+            (string code, string structure) = Mask(text);
             var violations = new List<string>();
-            List<string> code = text.Split('\n')
-                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal) && !l.TrimStart().StartsWith("*", StringComparison.Ordinal))
-                .ToList();
-            for (int i = 0; i < code.Count; i++)
+
+            foreach (Match m in WorktreeRemove.Matches(code))
             {
-                string line = code[i];
-                string where = $"{fileName}: {line.Trim()}";
-                if (WorktreeRemove.IsMatch(line))
-                {
-                    violations.Add($"git worktree remove follows a junction — use RemoveWorktreeLinkSafe: {where}");
-                }
+                violations.Add($"git worktree remove follows a junction — use RemoveWorktreeLinkSafe: {Where(fileName, text, m.Index)}");
+            }
 
-                if (RecursiveDelete.IsMatch(line)
-                    && !(fileName == "SafeDelete.cs" && GuardedBy(code, i, "LinkSafeTree.RemoveLinks(")))
+            foreach (Match m in RecursiveDelete.Matches(code))
+            {
+                if (!(fileName == "SafeDelete.cs" && GuardedInSameMethod(code, structure, m.Index, DeleteGuard)))
                 {
-                    violations.Add($"recursive delete outside the link-safe SafeDelete: {where}");
+                    violations.Add($"recursive delete outside the link-safe SafeDelete: {Where(fileName, text, m.Index)}");
                 }
+            }
 
-                if (GitRewrite.IsMatch(line)
-                    && !(fileName == "GitWorktreeProvider.cs"
-                         && GuardedBy(code, i, "DisarmLinksBeforeGitRewrite(", "LinksShadowingTrackedPaths(")))
+            foreach (Match m in GitRewrite.Matches(code))
+            {
+                if (!GuardedInSameMethod(code, structure, m.Index, RewriteGuard) && !Justified(text, m.Index))
                 {
-                    violations.Add($"git reset --hard / clean without a link guard first: {where}");
+                    violations.Add($"link-following git rewrite without a guard in the same method: {Where(fileName, text, m.Index)}");
                 }
             }
 
             return violations;
         }
 
-        private static bool GuardedBy(List<string> code, int index, params string[] guards) =>
-            code.Skip(Math.Max(0, index - GuardWindow)).Take(index - Math.Max(0, index - GuardWindow))
-                .Any(l => guards.Any(g => l.Contains(g, StringComparison.Ordinal)));
+        private static string Where(string fileName, string text, int index)
+        {
+            int start = text.LastIndexOf('\n', Math.Max(0, index - 1)) + 1;
+            int end = text.IndexOf('\n', index);
+            return $"{fileName}: {text[start..(end < 0 ? text.Length : end)].Trim()}";
+        }
+
+        /// <summary>The line above (or the line of) <paramref name="index"/> carries a justification with a reason.</summary>
+        private static bool Justified(string text, int index)
+        {
+            int lineStart = text.LastIndexOf('\n', Math.Max(0, index - 1)) + 1;
+            int prevStart = lineStart > 0 ? text.LastIndexOf('\n', Math.Max(0, lineStart - 2)) + 1 : lineStart;
+            string lines = text[prevStart..(text.IndexOf('\n', index) is var e and >= 0 ? e : text.Length)];
+            int at = lines.IndexOf(Justification, StringComparison.Ordinal);
+            if (at < 0) return false;
+            string reason = lines[(at + Justification.Length)..];
+            int nl = reason.IndexOf('\n');
+            return (nl < 0 ? reason : reason[..nl]).Trim().Length > 0;
+        }
+
+        /// <summary>
+        /// A guard CALL between the opening brace of the method enclosing <paramref name="index"/> and
+        /// <paramref name="index"/>. The method is the innermost enclosing block whose header ends in a parameter
+        /// list and is not a control statement, a type, or an object initializer. No such block — no guard.
+        /// </summary>
+        private static bool GuardedInSameMethod(string code, string structure, int index, Regex guard)
+        {
+            int depth = 0;
+            for (int i = index - 1; i >= 0; i--)
+            {
+                char c = structure[i];
+                if (c == '}') { depth++; continue; }
+                if (c != '{') continue;
+                if (depth > 0) { depth--; continue; }
+
+                if (IsMethodOpener(structure, i))
+                {
+                    return guard.IsMatch(code[i..index]);
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsMethodOpener(string structure, int brace)
+        {
+            int j = brace - 1;
+            while (j >= 0 && char.IsWhiteSpace(structure[j])) j--;
+            if (j < 0 || structure[j] != ')') return false;
+
+            int headerStart = Math.Max(structure.LastIndexOfAny([';', '{', '}'], j) + 1, 0);
+            string header = structure[headerStart..(j + 1)];
+            int paren = header.IndexOf('(');
+            string beforeParen = paren < 0 ? header : header[..paren];
+            string[] words = beforeParen.Split((char[])[' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0 || NotMethods.Contains(words[^1])) return false;
+            return !words.Any(w => w is "class" or "record" or "struct" or "interface" or "new");
+        }
+
+        /// <summary>
+        /// Two same-length copies of <paramref name="text"/>: <c>code</c> with comments blanked (string literals kept,
+        /// so argument-list verbs still match), and <c>structure</c> with string and char literals blanked too, so a
+        /// brace inside a string never moves the method scoping.
+        /// </summary>
+        private static (string Code, string Structure) Mask(string text)
+        {
+            char[] code = text.ToCharArray();
+            char[] structure = text.ToCharArray();
+            int i = 0;
+            while (i < text.Length)
+            {
+                if (text[i] == '/' && i + 1 < text.Length && text[i + 1] == '/')
+                {
+                    while (i < text.Length && text[i] != '\n') { code[i] = structure[i] = ' '; i++; }
+                }
+                else if (text[i] == '/' && i + 1 < text.Length && text[i + 1] == '*')
+                {
+                    int end = text.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                    end = end < 0 ? text.Length : end + 2;
+                    for (; i < end; i++) if (text[i] != '\n') code[i] = structure[i] = ' ';
+                }
+                else if (text[i] == '"')
+                {
+                    int quotes = 0;
+                    while (i + quotes < text.Length && text[i + quotes] == '"') quotes++;
+                    int end;
+                    if (quotes >= 3)
+                    {
+                        end = text.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
+                        end = end < 0 ? text.Length : end + quotes;
+                    }
+                    else
+                    {
+                        bool verbatim = i > 0 && (text[i - 1] == '@' || (i > 1 && text[i - 2] == '@' && text[i - 1] == '$'));
+                        end = i + 1;
+                        while (end < text.Length)
+                        {
+                            if (!verbatim && text[end] == '\\') { end += 2; continue; }
+                            if (text[end] == '"')
+                            {
+                                if (verbatim && end + 1 < text.Length && text[end + 1] == '"') { end += 2; continue; }
+                                end++;
+                                break;
+                            }
+
+                            end++;
+                        }
+                    }
+
+                    for (int k = i + 1; k < end - 1 && k < text.Length; k++) if (text[k] != '\n') structure[k] = ' ';
+                    i = end;
+                }
+                else if (text[i] == '\'' && i + 2 < text.Length)
+                {
+                    int end = text[i + 1] == '\\' ? text.IndexOf('\'', i + 2) : i + 2;
+                    if (end > i && end < text.Length && text[end] == '\'')
+                    {
+                        for (int k = i + 1; k < end; k++) structure[k] = ' ';
+                        i = end + 1;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+                }
+                else
+                {
+                    i++;
+                }
+            }
+
+            return (new string(code), new string(structure));
+        }
     }
 
     private static string RepoRoot()

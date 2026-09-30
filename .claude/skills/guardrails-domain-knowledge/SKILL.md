@@ -414,7 +414,8 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   remove`. `git reset --hard` / `clean -fd` on a harness tree (retry `ResetSegment`, AI-merge failure reset,
   integration rollback/rewind) disarm links first too -- a junction replacing a tracked dir was written INTO and
   cleaned out (21 -> 1); on a tree the operator may own (serial supplied-drain rollback, `RewindPlanBranch`) links
-  are never removed and a reset that would write through one is refused (index-only reset). A link that cannot be
+  are never removed and a reset that would write or delete through one (a path under it at the target, HEAD, or in
+  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. A link that cannot be
   removed REFUSES (`LinkRemovalException`): tree + registration + branch left in place, reported loudly (console
   `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`, a retry reset faults the run), never risked.
 - **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
