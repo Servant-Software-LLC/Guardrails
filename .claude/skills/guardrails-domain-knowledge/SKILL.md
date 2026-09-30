@@ -1621,8 +1621,10 @@ evidence badly (#791 omitted the token actually sent; #797 omitted what explaine
   patches are INCLUDED under a loud stderr warning. Redaction removes credentials, not IP: for private code
   on a public issue, pass `--lean`. `--include-worktree-diff` adds source and is refused with `--lean`.
 - **D1 refusal, run-wide.** If ANY runner block names an `authTokenEnv`/`apiKeyEnv` unset or empty in the
-  bundling shell, it refuses (exit 1, nothing written) and names each variable. Remedy: export it and re-run,
-  or `--without-agent-text` (all agent-derived free text removed, run-wide). There is no per-file attribution.
+  bundling shell, it refuses (exit 1, nothing written) and names each variable, telling unset from set-but-empty
+  (a bare `export NAME` exports it empty; #814). Remedies: `export NAME=<value>` and re-run; `--no-redact` for a
+  bundle that stays private (skips pass 5, zip named `-UNREDACTED`); or `--without-agent-text` (all agent-derived
+  free text removed, run-wide). There is no per-file attribution.
 - **Destination.** Default `~/guardrails-bundles/<plan>-<runId>[-<task>].zip`; `--out`/`--dir` override
   (mutually exclusive). EVERY destination inside a git working tree is refused unless `--force-path`.
 - **Size.** `--max-size` (default 20 MiB) caps the finished zip; fixed trim tiers never touch the protected

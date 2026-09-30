@@ -426,8 +426,11 @@ public sealed class BundleCliTests
         (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, "--out", zip);
 
         Assert.Equal(ExitCodes.HarnessError, exit);
-        Assert.Contains($"  export {SyntheticRun.JudgeTokenVar} in this shell and re-run `guardrails bundle`", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(
+            $"  {SyntheticRun.JudgeTokenVar} is not set: export {SyntheticRun.JudgeTokenVar}=<value> in this shell and re-run `guardrails bundle`",
+            io.ErrorText, StringComparison.Ordinal);
         Assert.Contains("--without-agent-text", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("Or pass --no-redact if this bundle stays private", io.ErrorText, StringComparison.Ordinal);
         Assert.False(File.Exists(zip));
         Assert.False(Directory.Exists(Path.GetDirectoryName(zip)));
         Assert.Equal(0, host.ToolVersionReads);
@@ -439,6 +442,61 @@ public sealed class BundleCliTests
         (int exitWith, StringConsoleIo ioWith) = await InvokeBundleAsync(
             new RecordingHost(run.Home, withToken).Host, "bundle", run.PlanDir, "--out", zip);
         Assert.True(exitWith == 0, ioWith.ErrorText);
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task ATokenVariableSetButEmpty_IsRefusedWithTheSetButEmptyWording()
+    {
+        // #814: `export NAME` with no `=value` exports an EMPTY variable. D1 still refuses; the refusal must say the
+        // variable is set but empty, not repeat the remedy the operator just followed.
+        using var run = new SyntheticRun(judgeBlock: true);
+        var empty = new Dictionary<string, string>(run.Environment) { [SyntheticRun.JudgeTokenVar] = "" };
+        string zip = Path.Combine(run.OutDir, "empty", "b.zip");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(new RecordingHost(run.Home, empty).Host, "bundle", run.PlanDir, "--out", zip);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains(
+            $"  {SyntheticRun.JudgeTokenVar} is set but EMPTY (did you run `export {SyntheticRun.JudgeTokenVar}` without `=value`?): "
+            + $"export {SyntheticRun.JudgeTokenVar}=<value> in this shell and re-run `guardrails bundle`",
+            io.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain($"{SyntheticRun.JudgeTokenVar} is not set", io.ErrorText, StringComparison.Ordinal);
+        Assert.False(File.Exists(zip));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task NoRedact_ShipsPastD1_KeepingTheAgentTextUnderAnUnredactedName()
+    {
+        // #814: the refusal's --no-redact remedy is real: the same shell D1 refuses ships with --no-redact, and the
+        // agent text a debugging bundle needs is still there.
+        using var run = new SyntheticRun(judgeBlock: true);
+        string outDir = Path.Combine(run.OutDir, "private");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(
+            new RecordingHost(run.Home, run.Environment).Host, "bundle", run.PlanDir, "--out", Path.Combine(outDir, "private.zip"), "--no-redact");
+
+        Assert.True(exit == 0, io.ErrorText);
+        Assert.DoesNotContain("refused (D1)", io.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(BundleBuilder.NotRedactedLine, io.ErrorText, StringComparison.Ordinal);
+        string written = Directory.GetFiles(outDir, "*.zip").Single();
+        Dictionary<string, byte[]> entries = Entries(written);
+        Assert.Contains(entries, e => Encoding.UTF8.GetString(e.Value).Contains(SyntheticRun.FreeTextCanary, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public void TheOptionDescriptions_NameBothWaysPastD1_AndNeitherClaimsToBeTheOnlyOne()
+    {
+        // #814: --without-agent-text once claimed to be "the only way past the D1 refusal"; --no-redact is another.
+        Command bundle = BundleCommand.Create(new StringConsoleIo());
+        string Describe(string name) => bundle.Options.Single(o => o.Name == name).Description ?? "";
+
+        Assert.DoesNotContain("only way", Describe("--without-agent-text"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("D1", Describe("--without-agent-text"), StringComparison.Ordinal);
+        Assert.Contains("D1", Describe("--no-redact"), StringComparison.Ordinal);
+        Assert.Contains("UNREDACTED", Describe("--no-redact"), StringComparison.Ordinal);
     }
 
     [Fact]

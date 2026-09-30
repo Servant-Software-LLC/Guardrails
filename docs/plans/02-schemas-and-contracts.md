@@ -8215,8 +8215,8 @@ never as a retryable blip.
   subprocesses get the child's environment. For a local gateway without authentication the token is the harmless
   placeholder. For a remote gateway with a real token, any command the model runs can read it under either name.
 - **Session transcripts can hold the token.** `guardrails bundle` scrubs the gateway token from session
-  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text`,
-  §17.6.5); the loopback log viewer (§12) does neither.
+  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text` or
+  `--no-redact`, §17.6.5); the loopback log viewer (§12) does neither.
 
 #### 9.10.2 The preflight
 
@@ -10625,9 +10625,9 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--max-size <MB>` | `20` | Cap on the **finished zip**, in MiB (§17.7). GitHub accepts attachments up to 25 MB. |
 | `--lean` | off | Withholds every **full**-class entry (§17.3), leaving only the harness-written evidence set. For a public issue when the code is private. |
 | `--include-worktree-diff` | off | Adds the full `git diff` of the integration worktree and of each selected segment. It is source code, so it is **refused with `--lean`**. |
-| `--without-agent-text` | off | The only way past the D1 refusal (§17.6.5). Ships the bundle with **all agent-derived free text removed, run-wide**. |
+| `--without-agent-text` | off | Clears the D1 refusal (§17.6.5) without the token value. Ships the bundle with **all agent-derived free text removed, run-wide**. |
 | `--keep-paths` | off | Disables path anonymization (§17.6.3). Anonymization is the default. |
-| `--no-redact` | off | Skips the credential passes (§17.6.8). Never for a public issue. |
+| `--no-redact` | off | Skips the credential passes (§17.6.8), so it also clears the D1 refusal; the zip is named `-UNREDACTED`. Never for a public issue. |
 
 **The file name.** `<plan>` is the plan folder's name. `[-<task>]` is appended only when **exactly one**
 `--task` is given; with two or more, the suffix is `-tasks-<N>` (N = the number of distinct ids given).
@@ -11127,12 +11127,20 @@ events, which can split a value across lines. Two rules cover that:
 #### 17.6.5 Pass 5 — D1: refuse when this shell cannot see a run token (run-scoped)
 
 If **any** runner block the plan declares names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in
-the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable and gives
-the remedy, e.g.:
+the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable, telling
+**unset** (the name is absent from the environment) from **set but empty** (a bare `export NAME` with no
+`=value` exports an empty variable, which D1 still refuses), then offers three remedies (#814), e.g.:
 
 ```text
-export LITELLM_MASTER_KEY in this shell and re-run `guardrails bundle`
+  LITELLM_MASTER_KEY is not set: export LITELLM_MASTER_KEY=<value> in this shell and re-run `guardrails bundle`
+  JUDGE_API_KEY is set but EMPTY (did you run `export JUDGE_API_KEY` without `=value`?): export JUDGE_API_KEY=<value> in this shell and re-run `guardrails bundle`
+  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).
+  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.
 ```
+
+`--no-redact` clears D1 because it skips pass 5 altogether (§17.6.8); it is the remedy for a bundle that stays
+with its author (moving a run between two machines to debug it), where `--without-agent-text` would strip the
+very evidence being debugged.
 
 The check is **run-scoped**, not per file, because attributing a token to individual files is unsound: a
 prompt judge picks its own block (`TierResolver.ResolveJudge` with the judge's frontmatter `runner`);
