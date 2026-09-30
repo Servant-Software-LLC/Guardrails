@@ -14,7 +14,11 @@ namespace Guardrails.Core.Execution;
 /// <param name="Compactions">The attempt's compaction episodes (<see cref="CompactionCounts.Compactions"/>).</param>
 /// <param name="Failures">How many of them failed.</param>
 /// <param name="Turns">The turn count the ratio was applied to, or null when neither a reported nor an estimated one exists.</param>
-/// <param name="TurnsEstimated">True when <paramref name="Turns"/> is <see cref="CompactionCounts.EstimatedTurns"/>, not the runner's report.</param>
+/// <param name="TurnsEstimated">
+/// True when the runner reported no turn count: <paramref name="Turns"/> is then <see cref="CompactionCounts.EstimatedTurns"/>
+/// (a lower bound), or null when the floor decided alone. Such a verdict is ADVISORY — its text only, never a budget
+/// freeze or a count toward the repeat halt.
+/// </param>
 /// <param name="Kind">How the attempt ended, which decides what the text says was (not) raised.</param>
 public sealed record ContextThrash(int Compactions, int Failures, int? Turns, bool TurnsEstimated, PromptFailureKind Kind)
 {
@@ -30,6 +34,8 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns, bo
     /// #817 dogfood): the attempt that ran out of turns after 9 compactions in 76 turns must be caught; one that compacted
     /// twice in 36 turns and succeeded must not be. When the runner reported no turns, the ratio is applied to the
     /// estimate (<see cref="CompactionCounts.EstimatedTurns"/>); only when that is missing too does the floor decide alone.
+    /// The estimate is a LOWER bound (0.35–1.0× the reported count on the dogfood streams), which pushes toward thrash,
+    /// so a verdict on it is advisory: it changes the feedback text only, never the budget or the repeat count.
     /// </summary>
     public const int TurnsPerCompaction = 12;
 
@@ -51,7 +57,7 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns, bo
         int? turns = action.Turns ?? counts.EstimatedTurns;
         return IsThrash(counts.Compactions, turns)
             ? new ContextThrash(
-                counts.Compactions, counts.Failures, turns, action.Turns is null && turns is not null, action.FailureKind)
+                counts.Compactions, counts.Failures, turns, TurnsEstimated: action.Turns is null, action.FailureKind)
             : null;
     }
 
@@ -79,11 +85,17 @@ public sealed record ContextThrash(int Compactions, int Failures, int? Turns, bo
     /// <summary>
     /// What more budget would not have fixed, naming only the budget this kind of stop actually hit: the turn cap for a
     /// max-turns stop, the clock for a timeout. "Further" because an earlier, non-thrash attempt may already have raised it.
+    /// A verdict on ESTIMATED turns is advisory (the estimate is a lower bound): the budget is raised as usual, and the
+    /// sentence says so.
     /// </summary>
-    public string BudgetSentence() => Kind switch
+    public string BudgetSentence() => (Kind, TurnsEstimated) switch
     {
-        PromptFailureKind.MaxTurns => "raising maxTurns will not help, so it was not raised further",
-        PromptFailureKind.Timeout => "extending the timeout will not help, so it was not extended further",
+        (PromptFailureKind.MaxTurns, false) => "raising maxTurns will not help, so it was not raised further",
+        (PromptFailureKind.Timeout, false) => "extending the timeout will not help, so it was not extended further",
+        (PromptFailureKind.MaxTurns, true) =>
+            "raising maxTurns is unlikely to help, but it was still raised because the turn count is only an estimate",
+        (PromptFailureKind.Timeout, true) =>
+            "extending the timeout is unlikely to help, but it was still extended because the turn count is only an estimate",
         _ => "more turns or more time will not help"
     };
 

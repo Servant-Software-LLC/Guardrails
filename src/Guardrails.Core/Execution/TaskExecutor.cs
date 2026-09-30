@@ -1372,9 +1372,17 @@ public sealed class TaskExecutor : ITaskExecutor
             }
         }
 
-        AttemptResult WithSerialScopeReport(Func<AttemptResult> halt)
+        AttemptResult WithSerialScopeReport(Func<AttemptResult> halt) => WithScopeReport(halt, enforce: sharedWorkspace);
+
+        // #817 re-review: the halts that settle an UNFINISHED action on their own (runner configuration, the #800/#817
+        // repeated-context-pressure halts, the #815 repeated silent stall) ran the end-of-attempt check in BOTH modes
+        // before #817 wrapped them, because an unfinished attempt never reaches the phase-1 check. They keep that: the
+        // check, out-of-scope.patch, scopeRevertedPaths, the section (once) and the summary clause, in worktree mode too.
+        AttemptResult WithEndOfAttemptScopeReport(Func<AttemptResult> halt) => WithScopeReport(halt, enforce: true);
+
+        AttemptResult WithScopeReport(Func<AttemptResult> halt, bool enforce)
         {
-            EndOfAttemptScope? reverted = sharedWorkspace ? EnforceEndOfAttemptScope() : null;
+            EndOfAttemptScope? reverted = enforce ? EnforceEndOfAttemptScope() : null;
             AttemptResult halted = halt();
             if (reverted is null)
             {
@@ -1614,13 +1622,14 @@ public sealed class TaskExecutor : ITaskExecutor
                 "under the same runner configuration. Change what the message above names (the runner block's " +
                 "approvalMode, its sandbox, a hook, or the account's policy), then resume.\n");
             configFeedback.Append(RetryPolicy.ForRunnerRefusals(action.RefusedToolCalls));
+            EnforceEndOfAttemptScope(); // before the stash, so it never carries an out-of-scope write (memoised)
             if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } configSalvage)
             {
                 RetryPolicy.AppendSalvageSection(configFeedback, configSalvage, SalvageFraming.Escalation);
             }
 
             // #816/#817: wrapped like every serial halt — the wrap appends the reverted section once and names the paths.
-            return WithSerialScopeReport(() => _journaler.FailedAttempt(
+            return WithEndOfAttemptScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, configFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1651,13 +1660,14 @@ public sealed class TaskExecutor : ITaskExecutor
             thrashFeedback.Append(
                 "Two attempts in a row filled the model's context faster than Claude Code could compact it. A third try " +
                 "under the same window is unlikely to converge. " + RetryPolicy.ContextLevers(thrashBlock) + "\n");
+            EnforceEndOfAttemptScope(); // before the stash, so it never carries an out-of-scope write (memoised)
             if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } thrashSalvage)
             {
                 RetryPolicy.AppendSalvageSection(thrashFeedback, thrashSalvage, SalvageFraming.Escalation);
             }
 
             // #817: wrapped like every serial halt, since a #817 thrash can now be the first of the two attempts.
-            return WithSerialScopeReport(() => _journaler.FailedAttempt(
+            return WithEndOfAttemptScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, thrashFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1688,7 +1698,7 @@ public sealed class TaskExecutor : ITaskExecutor
             silentFeedback.Append(RetryPolicy.ForContextManagement(action.ContextManagement));
 
             // #816/#817: wrapped like every serial halt, so its out-of-scope reverts are named.
-            return WithSerialScopeReport(() => _journaler.FailedAttempt(
+            return WithEndOfAttemptScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, silentFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1779,10 +1789,11 @@ public sealed class TaskExecutor : ITaskExecutor
             // #817: an attempt that compacted heavily for its turns is CONTEXT THRASH, whatever budget it hit. A second
             // consecutive context-pressure attempt (#817 or #800) settles needs-human here, before the rollback stash;
             // otherwise its own feedback, summary and (in the loop above) no budget raise replace the budget-blaming ones.
+            // A verdict on ESTIMATED turns (a lower bound) is advisory: its text, but no budget freeze and no count/halt.
             ContextThrash? thrash = ContextThrash.Diagnose(action);
-            if (thrash is not null && priorThrashes >= 1)
+            if (thrash is { TurnsEstimated: false } && priorThrashes >= 1)
             {
-                return WithSerialScopeReport(() => SettleRepeatedContextThrash(
+                return WithEndOfAttemptScopeReport(() => SettleRepeatedContextThrash(
                     task, worktree, attemptNumber, startedAt, relativeLogDir, logDir, action, thrash,
                     DispatchBlockFor(task, route), provenance, enforcedWriteScope));
             }
@@ -1882,7 +1893,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 {
                     SilentStall = action.FailureKind == PromptFailureKind.Stalled && action.Stall is { NoProgressAtAll: true },
                     ContextExhausted = action.FailureKind == PromptFailureKind.ContextExhausted,
-                    ContextThrash = thrash is not null
+                    ContextThrash = thrash is { TurnsEstimated: false }
                 };
         }
 
@@ -4026,6 +4037,13 @@ public sealed class TaskExecutor : ITaskExecutor
         feedback.Append(
             $"This attempt was CONTEXT THRASH ({thrash.Describe()}), and the attempt before it also ran out of context. " +
             "A third try under the same window is unlikely to converge. " + levers + "\n");
+
+        // #817 review W2 (re-review NIT): an error keeps the runner's own feedback (result text, refused calls) here too.
+        if (thrash.Kind == PromptFailureKind.Error && action.FailureFeedback is { } runnerFeedback)
+        {
+            feedback.Append('\n').Append(runnerFeedback);
+        }
+
         if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } salvage)
         {
             RetryPolicy.AppendSalvageSection(feedback, salvage, SalvageFraming.Escalation);

@@ -18,7 +18,8 @@ namespace Guardrails.Core.Prompts;
 /// <param name="EstimatedTurns">
 /// An ESTIMATE of the session's turns: the distinct top-level assistant <c>message.id</c>s in the stream (a subagent's,
 /// carrying a <c>parent_tool_use_id</c>, excluded), or null when there were none. It exists for the attempt whose stream
-/// ended without a result line (a timeout, a stall) and so has no <c>num_turns</c>; on real streams it came within one of
-/// the reported count (75 vs 76, 50 vs 51). Never journalled, and never presented as exact.
+/// ended without a result line (a timeout, a stall) and so has no <c>num_turns</c>. It is a LOWER bound: on the #817
+/// dogfood streams it ran 0.35–1.0× the reported count (within one on 2 of 5, about half on the other 3). Never
+/// journalled, never presented as exact, and a thrash verdict made on it is advisory only (see <c>ContextThrash</c>).
 /// </param>
 public sealed record CompactionCounts(int Compactions, int Failures, int? EstimatedTurns = null);

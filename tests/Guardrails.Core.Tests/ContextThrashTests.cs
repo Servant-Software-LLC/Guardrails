@@ -239,20 +239,20 @@ public sealed class ContextThrashTests
     }
 
     [Fact]
-    public async Task ATimedOutThrash_DoesNotExtendTheClock_AndItsSummaryNamesOnlyTheClock()
+    public async Task ATimedOutThrashOnReportedTurns_DoesNotExtendTheClock_AndItsSummaryNamesOnlyTheClock()
     {
         string root = ThrashFixture.NewRoot();
         try
         {
             PlanDefinition plan = ThrashFixture.WritePlan(root, retries: 1);
-            var runner = new SequenceRunner(TimedOut(new CompactionCounts(7, 1)), Done());
+            var runner = new SequenceRunner(TimedOut(new CompactionCounts(7, 1)) with { NumTurns = 30 }, Done());
 
             await ThrashFixture.RunSerialAsync(plan, runner, Ct);
 
             Assert.Equal(runner.Invocations[0].Timeout, runner.Invocations[1].Timeout);
             string feedback = ThrashFixture.AttemptFile(root, "feedback.md", attempt: 1);
             Assert.Contains(RetryPolicy.ContextThrashHeading, feedback, StringComparison.Ordinal);
-            Assert.Contains("(7 compactions, 1 failed)", feedback, StringComparison.Ordinal);
+            Assert.Contains("(7 compactions in 30 turns, 1 failed)", feedback, StringComparison.Ordinal);
         }
         finally { ThrashFixture.DeleteBestEffort(root); }
 
@@ -260,7 +260,8 @@ public sealed class ContextThrashTests
         try
         {
             PlanDefinition plan = ThrashFixture.WritePlan(root, retries: 0);
-            RunReport report = await ThrashFixture.RunSerialAsync(plan, new SequenceRunner(TimedOut(new CompactionCounts(7, 1))), Ct);
+            RunReport report = await ThrashFixture.RunSerialAsync(
+                plan, new SequenceRunner(TimedOut(new CompactionCounts(7, 1)) with { NumTurns = 30 }), Ct);
 
             string summary = Assert.Single(report.Tasks).Summary!;
             Assert.Contains("extending the timeout will not help, so it was not extended further", summary, StringComparison.Ordinal);
@@ -290,7 +291,7 @@ public sealed class ContextThrashTests
     }
 
     [Fact]
-    public async Task ATimeoutAboveTheThresholdOnEstimatedTurns_IsThrash_AndSaysTheTurnsAreAnEstimate()
+    public async Task ATimeoutThrashOnEstimatedTurns_IsAdvisory_TheTextSaysSo_AndTheClockIsStillExtended()
     {
         string root = ThrashFixture.NewRoot();
         try
@@ -300,9 +301,34 @@ public sealed class ContextThrashTests
 
             await ThrashFixture.RunSerialAsync(plan, runner, Ct);
 
-            Assert.Equal(runner.Invocations[0].Timeout, runner.Invocations[1].Timeout);
+            Assert.True(runner.Invocations[1].Timeout > runner.Invocations[0].Timeout);
             string feedback = ThrashFixture.AttemptFile(root, "feedback.md", attempt: 1);
+            Assert.Contains(RetryPolicy.ContextThrashHeading, feedback, StringComparison.Ordinal);
             Assert.Contains("3 compactions in about 30 turns (estimated)", feedback, StringComparison.Ordinal);
+            Assert.Contains("it was still extended because the turn count is only an estimate", feedback, StringComparison.Ordinal);
+        }
+        finally { ThrashFixture.DeleteBestEffort(root); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AnEstimatedThrash_DoesNotCountTowardTheRepeatHalt_InEitherOrder(bool estimatedFirst)
+    {
+        string root = ThrashFixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = ThrashFixture.WritePlan(root, retries: 3);
+            PromptResult estimated = TimedOut(new CompactionCounts(9, 0, EstimatedTurns: 30));
+            PromptResult measured = Pressure("thrash");
+            var runner = estimatedFirst
+                ? new SequenceRunner(estimated, measured, Done())
+                : new SequenceRunner(measured, estimated, Done());
+
+            RunReport report = await ThrashFixture.RunSerialAsync(plan, runner, Ct);
+
+            Assert.Equal(3, runner.Invocations.Count);
+            Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
         }
         finally { ThrashFixture.DeleteBestEffort(root); }
     }
@@ -322,6 +348,7 @@ public sealed class ContextThrashTests
                 ResultText = "aborted after 5 consecutive permission-denied tool calls",
                 NumTurns = 40,
                 Compactions = new CompactionCounts(9, 0),
+                RefusedToolCalls = [new ToolRefusal("shell", "git push origin main", "refused by the approval policy")],
                 Summary = "aborted after 5 consecutive permission-denied tool calls"
             };
             await ThrashFixture.RunSerialAsync(plan, new SequenceRunner(error, Done()), Ct);
@@ -329,11 +356,45 @@ public sealed class ContextThrashTests
             string feedback = ThrashFixture.AttemptFile(root, "feedback.md", attempt: 1);
             Assert.Contains("# Prompt action did not succeed", feedback, StringComparison.Ordinal);
             Assert.Contains("permission-denied", feedback, StringComparison.Ordinal);
+            Assert.Contains("## Tool calls the runner refused this attempt", feedback, StringComparison.Ordinal);
+            Assert.Contains("git push origin main", feedback, StringComparison.Ordinal);
             Assert.Contains(RetryPolicy.ContextThrashHeading, feedback, StringComparison.Ordinal);
             Assert.True(
                 feedback.IndexOf("# Prompt action did not succeed", StringComparison.Ordinal)
                 < feedback.IndexOf(RetryPolicy.ContextThrashHeading, StringComparison.Ordinal));
             Assert.Contains("more turns or more time will not help", feedback, StringComparison.Ordinal);
+        }
+        finally { ThrashFixture.DeleteBestEffort(root); }
+    }
+
+    [Fact]
+    public async Task AnErrorThrashRepeatHalt_KeepsTheRunnersOwnFeedback()
+    {
+        string root = ThrashFixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = ThrashFixture.WritePlan(root, retries: 3);
+            var error = new PromptResult
+            {
+                Completed = true,
+                IsError = true,
+                FailureKind = PromptFailureKind.Error,
+                ResultText = "the runner gave up",
+                NumTurns = 40,
+                Compactions = new CompactionCounts(9, 0),
+                RefusedToolCalls = [new ToolRefusal("shell", "rm -rf build", "refused by the approval policy")],
+                Summary = "the runner gave up"
+            };
+            var runner = new SequenceRunner(error, error, Done());
+
+            RunReport report = await ThrashFixture.RunSerialAsync(plan, runner, Ct);
+
+            Assert.Equal(2, runner.Invocations.Count);
+            Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+            string feedback = ThrashFixture.AttemptFile(root, "feedback.md", attempt: 2);
+            Assert.Contains("halted: its context ran out twice in a row", feedback, StringComparison.Ordinal);
+            Assert.Contains("# Prompt action did not succeed", feedback, StringComparison.Ordinal);
+            Assert.Contains("rm -rf build", feedback, StringComparison.Ordinal);
         }
         finally { ThrashFixture.DeleteBestEffort(root); }
     }

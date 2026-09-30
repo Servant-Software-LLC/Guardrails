@@ -439,8 +439,10 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   rests on few samples from one 64K plan). Its feedback replaces the budget-blaming text (a generic error keeps its
   own feedback and gets the thrash section appended), its summary names the block's `contextTokens` and "split the
   task", and it does NOT raise the next attempt's `maxTurns` or clock. #800 exhaustion and #817 thrash share one
-  consecutive count: two in a row, any mix, settle needs-human. The journal outcome stays `max-turns`/`timeout`/
-  `action-failed`.
+  consecutive count: two in a row, any mix, settle needs-human. A verdict on ESTIMATED turns (a lower bound, 0.35-1.0x
+  of reported) is advisory: text only, the budget is still raised and it does not count toward the halt. The
+  runner-config / repeat-context / repeat-silent-stall halts run the end-of-attempt scope check in BOTH modes. The
+  journal outcome stays `max-turns`/`timeout`/`action-failed`.
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode
   rollback instead of pure discard, and exposes it to the retry as a first-class, AGENT-CONTROLLED input.
   Immediately BEFORE the F2 reset above, the attempt's full working tree (including uncommitted writes) is

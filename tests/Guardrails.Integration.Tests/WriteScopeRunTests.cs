@@ -601,8 +601,11 @@ public sealed partial class WriteScopeRunTests
         Action<string, int, PromptInvocation> act,
         IReadOnlyList<string>? refusedPaths = null,
         Func<string, int, PromptFailureKind>? outcome = null,
-        Func<string, int, CompactionCounts?>? compactions = null) : IPromptRunner
+        Func<string, int, CompactionCounts?>? compactions = null,
+        Func<string, int, int?>? turns = null) : IPromptRunner
     {
+        /// <summary>#817: the turn count the runner reports for each invocation (null = none, as after a timeout).</summary>
+        private readonly Func<string, int, int?>? _turns = turns;
         /// <summary>#817: how often each invocation's context was compacted, as the stream parser would report it.</summary>
         private readonly Func<string, int, CompactionCounts?>? _compactions = compactions;
         private readonly Action<string, int, PromptInvocation> _act = act;
@@ -635,6 +638,7 @@ public sealed partial class WriteScopeRunTests
                     FailureKind = failure,
                     Summary = $"scripted agent stopped: {failure}",
                     Compactions = _compactions?.Invoke(taskId, call),
+                    NumTurns = _turns?.Invoke(taskId, call),
                     // #815: a stall here is one in which the session produced nothing at all.
                     Stall = failure == PromptFailureKind.Stalled
                         ? new StallReport(TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(31), SuspendsObserved: 0)

@@ -1270,10 +1270,14 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
   writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
   **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
-  permission-wall halts, the pre-guardrail wall halts, the #800/#817 repeated-context-pressure halts, the #815
-  repeated-silent-stall halt and the #767/#773 runner-configuration halt also run the end-of-attempt revert — BEFORE
-  the halt is journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths
-  to their summary. Every attempt record built after an end-of-attempt revert carries it as
+  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert — BEFORE the halt is
+  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths to
+  their summary. **The halts that settle an UNFINISHED action do it in BOTH modes (#817):** the #767/#773
+  runner-configuration halt, the #800/#817 repeated-context-pressure halts and the #815 repeated-silent-stall halt run
+  the end-of-attempt check in worktree mode as well as serial (an unfinished attempt never reaches the phase-1 check,
+  so nothing else would), BEFORE any escalation stash so the stash never carries an out-of-scope write; the offending
+  bytes go to `out-of-scope.patch`, the record carries `scopeRevertedPaths`, `feedback.md` gets the section exactly
+  once, and the summary names the paths. Every attempt record built after an end-of-attempt revert carries it as
   `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),
   so run.json and the live `AttemptFinished` row see them, not only text written afterwards.
   **Interrupted attempts (second review):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7)
@@ -6214,8 +6218,12 @@ or the clock does, and before #817 the harness then blamed the budget and raised
   action error is context thrash when it compacted **at least 3 times** AND **at least once per 12 turns**
   (`compactions × 12 ≥ turns`). The turns are the runner's `num_turns`; when a stream ends without a result line (a
   timeout or a stall) they are an ESTIMATE, the distinct top-level assistant `message.id`s in the stream (a subagent's
-  excluded), which on real streams came within one of the reported count. The estimate is never journalled and is
-  always shown as one (`in about 30 turns (estimated)`). Only when neither exists does the floor of 3 decide alone. An
+  excluded). The estimate is a LOWER bound: on the #817 dogfood streams it ran 0.35–1.0× the reported count (within
+  one on 2 of 5, about half on the other 3), and undercounting pushes toward thrash. It is never journalled and is
+  always shown as one (`in about 30 turns (estimated)`), and **a verdict on estimated turns is ADVISORY**: it changes
+  the feedback and summary text, but it does not stop the turn-budget raise or the clock extension, and it does not
+  count toward the two-in-a-row halt below. Only when neither count exists does the floor of 3 decide alone (also
+  advisory, for the same reason). An
   output cap, a context overflow, #800's context exhaustion, a transient pause and a runner-configuration fault each keep
   their own, more specific diagnosis.
   **The calibration rests on few samples from ONE plan on a 64K window** (the #817 dogfood, counted in episodes): the
@@ -6238,14 +6246,17 @@ or the clock does, and before #817 the harness then blamed the budget and raised
   have raised it. The failed-compaction count appears once, in the thrash clause, not again as `— context compaction
   failed (…)`. The journal outcome is unchanged (`max-turns`, `timeout`, `action-failed`): it records how the attempt
   ended; the diagnosis records why.
-- **No budget raise.** A thrash-diagnosed attempt does not count toward the #129 turn-budget raise or the #119
-  timeout extension, so the retry runs on the same `maxTurns` and clock. Raising either lets the same working set
+- **No budget raise.** A thrash verdict on a RUNNER-REPORTED turn count does not count toward the #129 turn-budget
+  raise or the #119 timeout extension (an advisory, estimated verdict does, and its text says the budget was still
+  raised), so the retry runs on the same `maxTurns` and clock. Raising either lets the same working set
   compact more times (each compaction on a local backend re-reads the whole window, minutes at a time), which is the
   #817 evidence: the retry "thrashed the same way with more turns". #800 made the same call for context exhaustion.
 - **Two consecutive context-pressure attempts settle `needs-human`.** #800's give-up and #817's thrash share ONE count
-  of consecutive attempts that ran out of context, so any two in a row (thrash then thrash, thrash then #800, #800 then
-  thrash) settle the task `needs-human` with the levers, and neither kind resets the other's count; any other outcome
-  does. The second attempt keeps its own journal outcome, and a thrash halt names the counts. Without it a frozen budget
+  of consecutive attempts that ran out of context (a thrash verdict counts only on a runner-reported turn count), so
+  any two in a row (thrash then thrash, thrash then #800, #800 then thrash) settle the task `needs-human` with the
+  levers, and neither kind resets the other's count; any other outcome
+  does. The second attempt keeps its own journal outcome, and a thrash halt names the counts (an error-kind thrash
+  halt also keeps the runner's own feedback). Without it a frozen budget
   would repeat the same thrash until the retries ran out.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
