@@ -149,7 +149,7 @@ public static class BundleCommand
             Description = "Remove all agent-derived free text, run-wide. Clears the D1 refusal without the token value.",
         };
         var keepPathsOption = new Option<bool>("--keep-paths") { Description = "Do not anonymize paths." };
-        var noRedactOption = new Option<bool>("--no-redact") { Description = "Skip the credential passes (also clears the D1 refusal); the zip is named -UNREDACTED. Never for a public issue." };
+        var noRedactOption = new Option<bool>("--no-redact") { Description = "Skip ALL credential scrubbing (this also clears the D1 refusal). The output's name always gets -UNREDACTED, --out and --dir included. Only for a bundle that stays private; never for a public issue." };
 
         var command = new Command("bundle", "Package one run's evidence into a redacted zip for a GitHub issue (read-only).");
         command.Add(folderArgument);
@@ -214,6 +214,17 @@ public static class BundleCommand
         if (args.Out is not null && args.Dir is not null)
         {
             return Refuse(io, "--out and --dir are mutually exclusive.");
+        }
+
+        // #814 W1: --no-redact ALWAYS marks what it writes. An explicit --out or --dir gets the -UNREDACTED suffix too,
+        // so an unscrubbed bundle is never named like a scrubbed one; every later check sees the marked path.
+        if (args.NoRedact)
+        {
+            args = args with
+            {
+                Out = args.Out is { } unmarkedOut ? MarkUnredacted(unmarkedOut, directory: false) : null,
+                Dir = args.Dir is { } unmarkedDir ? MarkUnredacted(unmarkedDir, directory: true) : null,
+            };
         }
 
         if (args.Lean && args.IncludeWorktreeDiff)
@@ -403,7 +414,31 @@ public static class BundleCommand
             1 => $"-{distinctTasks[0]}",
             _ => $"-tasks-{distinctTasks.Count.ToString(CultureInfo.InvariantCulture)}",
         };
-        return name + (noRedact ? "-UNREDACTED" : string.Empty) + ".zip";
+        return name + (noRedact ? UnredactedSuffix : string.Empty) + ".zip";
+    }
+
+    /// <summary>The <c>-UNREDACTED</c> suffix of a <c>--no-redact</c> bundle's name.</summary>
+    public const string UnredactedSuffix = "-UNREDACTED";
+
+    /// <summary>
+    /// #814 W1: an explicit <c>--out</c> or <c>--dir</c> under <c>--no-redact</c>, marked. A file gets
+    /// <c>-UNREDACTED</c> before its extension (<c>run.zip</c> → <c>run-UNREDACTED.zip</c>); a directory gets it
+    /// appended to its last segment. A name that already contains <c>-UNREDACTED</c> is returned unchanged.
+    /// </summary>
+    public static string MarkUnredacted(string path, bool directory)
+    {
+        string trimmed = Path.TrimEndingDirectorySeparator(path);
+        string name = Path.GetFileName(trimmed);
+        if (name.Contains(UnredactedSuffix, StringComparison.Ordinal))
+        {
+            return path;
+        }
+
+        string marked = directory
+            ? name + UnredactedSuffix
+            : Path.GetFileNameWithoutExtension(name) + UnredactedSuffix + Path.GetExtension(name);
+        string? parent = Path.GetDirectoryName(trimmed);
+        return string.IsNullOrEmpty(parent) ? marked : Path.Combine(parent, marked);
     }
 
     private static IEnumerable<(string Root, string What)> RunRoots(PlanDefinition plan)

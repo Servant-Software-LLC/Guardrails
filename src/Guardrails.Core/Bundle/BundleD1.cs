@@ -28,18 +28,19 @@ public static class BundleD1
     ];
 
     /// <summary>
-    /// The refusal text: each variable named, told apart as UNSET (key absent) or SET BUT EMPTY (a bare
-    /// <c>export NAME</c> with no <c>=value</c> exports an empty variable, which D1 still refuses), then the three
-    /// remedies: export the real value, <c>--no-redact</c> for a bundle that stays private, or
-    /// <c>--without-agent-text</c> (#814).
+    /// The refusal text: each variable named, told apart as UNSET (key absent) or SET BUT EMPTY (in zsh a bare
+    /// <c>export NAME</c> with no <c>=value</c> exports it empty, which D1 still refuses; in bash it stays unset), then
+    /// the three remedies: export the real value, <c>--without-agent-text</c>, or <c>--no-redact</c> for a bundle that
+    /// stays private (#814).
     /// </summary>
     public static IReadOnlyList<string> RefusalLines(IReadOnlyList<string> unset, IReadOnlyDictionary<string, string> environment) =>
     [
         "guardrails bundle: refused (D1): a runner block names a token variable that is unset or empty in this shell, "
         + "so the scrub would be blind to a token the run held. Nothing was written.",
         .. unset.Select(name => VariableLine(name, environment)),
-        "  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).",
         "  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.",
+        "  Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private (its name gets "
+        + "-UNREDACTED; never attach it to a public issue).",
     ];
 
     private static string VariableLine(string name, IReadOnlyDictionary<string, string> environment)

@@ -473,16 +473,17 @@ public sealed class BundleBuilderTests : IDisposable
     [Fact]
     public void D1RefusalOffersNoRedactForAPrivateBundleAndKeepsWithoutAgentText()
     {
-        // #814: --no-redact already bypasses D1; the refusal must name it, scoped to a bundle that stays private.
+        // #814: --no-redact already bypasses D1; the refusal must name it, scoped to a bundle that stays private,
+        // and AFTER --without-agent-text (the scrub-preserving remedy comes first).
         IReadOnlyList<string> lines = BundleD1.RefusalLines(["LITELLM_MASTER_KEY"], new Dictionary<string, string>());
 
-        Assert.Contains(
-            "  Or pass --no-redact if this bundle stays private (it is written as -UNREDACTED; never attach it to a public issue).",
-            lines);
-        Assert.Contains(
-            "  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.",
-            lines);
+        const string withoutAgentText =
+            "  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.";
+        const string noRedact =
+            "  Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private (its name gets "
+            + "-UNREDACTED; never attach it to a public issue).";
         Assert.StartsWith("guardrails bundle: refused (D1):", lines[0], StringComparison.Ordinal);
+        Assert.Equal([withoutAgentText, noRedact], lines.Skip(lines.Count - 2));
     }
 
     [Fact]

@@ -599,11 +599,12 @@ versions, and a computed `SUMMARY.md`.
 - **It refuses when it can't see a token.** If a runner block in `guardrails.json` names an `authTokenEnv`
   or `apiKeyEnv` that is unset or empty in your shell, the scrub would be blind to that token, so `bundle`
   refuses and writes nothing. Run it from the shell that exported the variable with its real value
-  (`export LITELLM_MASTER_KEY=<value>`; a bare `export LITELLM_MASTER_KEY` exports it empty, and the
-  refusal says so). If the bundle stays private (say, moving a run between your own machines), pass
-  `--no-redact` instead: it keeps all the evidence and names the zip `-UNREDACTED`; never attach that one to
-  a public issue. Or pass `--without-agent-text` to ship the bundle with all agent-derived text removed,
-  run-wide.
+  (`export LITELLM_MASTER_KEY=<value>`; in zsh a bare `export LITELLM_MASTER_KEY` exports it empty, and the
+  refusal says so; in bash it stays unset). Or pass `--without-agent-text` to ship the bundle with all
+  agent-derived text removed, run-wide. Or, only if the bundle stays private (say, moving a run between your
+  own machines), pass `--no-redact`: it skips ALL credential scrubbing and keeps all the evidence, and its
+  name always gets `-UNREDACTED` (an explicit `--out run.zip` becomes `run-UNREDACTED.zip`; a `--dir` folder
+  gets the suffix too). Never attach that one to a public issue.
 - **Where it goes.** `~/guardrails-bundles/<plan>-<runId>.zip` by default (`--out` or `--dir` to change
   it). Any destination inside a git working tree is refused, so a bundle can't be committed by accident.
   The absolute path is printed.
@@ -621,7 +622,7 @@ versions, and a computed `SUMMARY.md`.
   | `--task <id>` | Only this task's evidence (repeatable) |
   | `--include-worktree-diff` | Add the full git diff of the integration worktree and each selected task. Refused with `--lean` |
   | `--keep-paths` | Don't anonymize paths |
-  | `--no-redact` | Skip the credential passes (this also clears the token refusal above). Never use it for a public issue |
+  | `--no-redact` | Skip ALL credential scrubbing (this also clears the token refusal above). The output's name always gets `-UNREDACTED`, `--out`/`--dir` included. Never use it for a public issue |
   | `--force-path` | Allow a destination inside a git working tree |
 - **Attaching it.** `gh` can't attach files to an issue. Drag the zip into the issue's comment box in the
   browser (or attach it to a gist or release and paste the link).
