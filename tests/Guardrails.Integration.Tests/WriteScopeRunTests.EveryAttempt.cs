@@ -138,12 +138,15 @@ public sealed partial class WriteScopeRunTests
     [InlineData("thrash", "CONTEXT THRASH (9 compactions)", "halted: its context ran out twice in a row")]
     [InlineData("exhausted", "second consecutive attempt that ran out of context", "halted: its context ran out twice in a row")]
     [InlineData("silent", "runner produced no output at all", "halted: the runner produced nothing, twice")]
-    public async Task Serial_TheRepeatHalts_AlsoReportTheOutOfScopeWritesTheyReverted_Issue817(
+    [InlineData("config", "a runner-configuration fault no retry can clear", "halted: the prompt runner's configuration cannot do this work")]
+    public async Task Serial_TheNeedsHumanHalts_AlsoReportTheOutOfScopeWritesTheyReverted_Issue817(
         string kind, string summaryNames, string feedbackHeading)
     {
-        // The #817 repeated-thrash halt, the #800 repeated-exhaustion halt and the #815 repeated-silent-stall halt are
-        // terminal halts like any other: in serial mode the attempt's out-of-scope write is reverted and the halt's
-        // feedback (exactly once) and summary say so.
+        // The #817 repeated-thrash halt, the #800 repeated-exhaustion halt, the #815 repeated-silent-stall halt and the
+        // #767 runner-configuration halt (which settles on its FIRST attempt) are terminal halts like any other: in
+        // serial mode the halting attempt's out-of-scope write is reverted and its feedback (exactly once) and
+        // summary say so.
+        int haltAttempt = kind == "config" ? 1 : 2;
         using var repo = new TempGitRepo();
         repo.Commit(UpstreamTest, "original upstream test");
         string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("02-implement", ["src/Impl.cs"]));
@@ -151,7 +154,7 @@ public sealed partial class WriteScopeRunTests
             (_, call, invocation) =>
             {
                 WriteFile(invocation.WorkingDirectory, "src/Impl.cs", $"implementation {call}");
-                if (call == 2)
+                if (call == haltAttempt)
                 {
                     WriteFile(invocation.WorkingDirectory, UpstreamTest, "weakened upstream test");
                 }
@@ -160,6 +163,7 @@ public sealed partial class WriteScopeRunTests
             {
                 "thrash" => PromptFailureKind.MaxTurns,
                 "exhausted" => PromptFailureKind.ContextExhausted,
+                "config" => PromptFailureKind.RunnerConfiguration,
                 _ => PromptFailureKind.Stalled
             },
             compactions: (_, _) => kind == "thrash" ? new CompactionCounts(9, 0) : null);
@@ -172,7 +176,8 @@ public sealed partial class WriteScopeRunTests
         Assert.Contains(UpstreamTest, task.Summary);
         Assert.DoesNotContain(".;", task.Summary);
 
-        string feedback = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 2), "feedback.md"));
+        Assert.Equal(haltAttempt, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+        string feedback = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", haltAttempt), "feedback.md"));
         Assert.Contains(feedbackHeading, feedback);
         int section = feedback.IndexOf(RevertedHeading, StringComparison.Ordinal);
         Assert.True(section >= 0, feedback);

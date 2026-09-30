@@ -1614,13 +1614,13 @@ public sealed class TaskExecutor : ITaskExecutor
                 "under the same runner configuration. Change what the message above names (the runner block's " +
                 "approvalMode, its sandbox, a hook, or the account's policy), then resume.\n");
             configFeedback.Append(RetryPolicy.ForRunnerRefusals(action.RefusedToolCalls));
-            configFeedback.Append(ScopeSection());
             if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } configSalvage)
             {
                 RetryPolicy.AppendSalvageSection(configFeedback, configSalvage, SalvageFraming.Escalation);
             }
 
-            return _journaler.FailedAttempt(
+            // #816/#817: wrapped like every serial halt — the wrap appends the reverted section once and names the paths.
+            return WithSerialScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, configFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1632,7 +1632,7 @@ public sealed class TaskExecutor : ITaskExecutor
                               "fault no retry can clear"
                 },
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
-                segments: AttemptJournaler.SegmentsFor(action));
+                segments: AttemptJournaler.SegmentsFor(action)));
         }
 
         // #815 review W4: a SECOND consecutive stall in which the session produced nothing at all. The runner or its
