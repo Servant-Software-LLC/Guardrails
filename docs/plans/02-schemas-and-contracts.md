@@ -1270,7 +1270,8 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
   writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
   **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
-  permission-wall halts, the pre-guardrail wall halts and the #800/#817 repeated-context-pressure halts also run the end-of-attempt revert — BEFORE the halt is
+  permission-wall halts, the pre-guardrail wall halts, the #800/#817 repeated-context-pressure halts and the #815
+  repeated-silent-stall halt also run the end-of-attempt revert — BEFORE the halt is
   journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths
   to their summary. Every attempt record built after an end-of-attempt revert carries it as
   `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),

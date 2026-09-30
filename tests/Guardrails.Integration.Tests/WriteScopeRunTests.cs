@@ -635,6 +635,10 @@ public sealed partial class WriteScopeRunTests
                     FailureKind = failure,
                     Summary = $"scripted agent stopped: {failure}",
                     Compactions = _compactions?.Invoke(taskId, call),
+                    // #815: a stall here is one in which the session produced nothing at all.
+                    Stall = failure == PromptFailureKind.Stalled
+                        ? new StallReport(TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(31), SuspendsObserved: 0)
+                        : null,
                     BlockedWritePaths = _refusedPaths
                 });
             }

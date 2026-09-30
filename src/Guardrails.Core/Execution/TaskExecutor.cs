@@ -1651,7 +1651,6 @@ public sealed class TaskExecutor : ITaskExecutor
             thrashFeedback.Append(
                 "Two attempts in a row filled the model's context faster than Claude Code could compact it. A third try " +
                 "under the same window is unlikely to converge. " + RetryPolicy.ContextLevers(thrashBlock) + "\n");
-            thrashFeedback.Append(ScopeSection());
             if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } thrashSalvage)
             {
                 RetryPolicy.AppendSalvageSection(thrashFeedback, thrashSalvage, SalvageFraming.Escalation);
@@ -1687,9 +1686,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 "call. That is the runner or its backend, not the task. Check that the gateway or model server is up and " +
                 "answering (and, for a local model, that it is loaded and not swapping), then resume.\n");
             silentFeedback.Append(RetryPolicy.ForContextManagement(action.ContextManagement));
-            silentFeedback.Append(ScopeSection());
 
-            return _journaler.FailedAttempt(
+            // #816/#817: wrapped like every serial halt, so its out-of-scope reverts are named.
+            return WithSerialScopeReport(() => _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, silentFeedback.ToString(), isFinal: true,
                 AttemptOutcome.ActionFailed,
                 new TaskResult
@@ -1701,7 +1700,7 @@ public sealed class TaskExecutor : ITaskExecutor
                               "runner produced no output at all: check the gateway or backend, then resume"
                 },
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
-                segments: AttemptJournaler.SegmentsFor(action)) with { SilentStall = true };
+                segments: AttemptJournaler.SegmentsFor(action)) with { SilentStall = true });
         }
 
         if (!action.Succeeded)

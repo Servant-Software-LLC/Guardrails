@@ -134,11 +134,16 @@ public sealed partial class WriteScopeRunTests
         Assert.Equal("original upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
     }
 
-    [Fact]
-    public async Task Serial_TheRepeatedContextThrashHalt_AlsoReportsTheOutOfScopeWritesItReverted_Issue817()
+    [Theory]
+    [InlineData("thrash", "CONTEXT THRASH (9 compactions)", "halted: its context ran out twice in a row")]
+    [InlineData("exhausted", "second consecutive attempt that ran out of context", "halted: its context ran out twice in a row")]
+    [InlineData("silent", "runner produced no output at all", "halted: the runner produced nothing, twice")]
+    public async Task Serial_TheRepeatHalts_AlsoReportTheOutOfScopeWritesTheyReverted_Issue817(
+        string kind, string summaryNames, string feedbackHeading)
     {
-        // #817's needs-human halt (a second consecutive context-thrash attempt) is a terminal halt like any other: in
-        // serial mode the attempt's out-of-scope write is reverted and the halt's feedback and summary say so.
+        // The #817 repeated-thrash halt, the #800 repeated-exhaustion halt and the #815 repeated-silent-stall halt are
+        // terminal halts like any other: in serial mode the attempt's out-of-scope write is reverted and the halt's
+        // feedback (exactly once) and summary say so.
         using var repo = new TempGitRepo();
         repo.Commit(UpstreamTest, "original upstream test");
         string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("02-implement", ["src/Impl.cs"]));
@@ -151,22 +156,28 @@ public sealed partial class WriteScopeRunTests
                     WriteFile(invocation.WorkingDirectory, UpstreamTest, "weakened upstream test");
                 }
             },
-            outcome: (_, _) => PromptFailureKind.MaxTurns,
-            compactions: (_, _) => new CompactionCounts(9, 0));
+            outcome: (_, _) => kind switch
+            {
+                "thrash" => PromptFailureKind.MaxTurns,
+                "exhausted" => PromptFailureKind.ContextExhausted,
+                _ => PromptFailureKind.Stalled
+            },
+            compactions: (_, _) => kind == "thrash" ? new CompactionCounts(9, 0) : null);
 
         RunReport report = await RunSerialAsync(planDir, agent);
 
         TaskResult task = Assert.Single(report.Tasks);
         Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
-        Assert.Contains("CONTEXT THRASH (9 compactions)", task.Summary);
-        Assert.Contains("second consecutive attempt that ran out of context", task.Summary);
+        Assert.Contains(summaryNames, task.Summary);
         Assert.Contains(UpstreamTest, task.Summary);
         Assert.DoesNotContain(".;", task.Summary);
 
         string feedback = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 2), "feedback.md"));
-        Assert.Contains("halted: its context ran out twice in a row", feedback);
-        Assert.Contains(RevertedHeading, feedback);
-        Assert.Contains($"`{UpstreamTest}`", feedback[feedback.IndexOf(RevertedHeading, StringComparison.Ordinal)..]);
+        Assert.Contains(feedbackHeading, feedback);
+        int section = feedback.IndexOf(RevertedHeading, StringComparison.Ordinal);
+        Assert.True(section >= 0, feedback);
+        Assert.Equal(section, feedback.LastIndexOf(RevertedHeading, StringComparison.Ordinal)); // named once, not twice
+        Assert.Contains($"`{UpstreamTest}`", feedback[section..]);
         Assert.Equal("original upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
     }
 
