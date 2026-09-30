@@ -385,6 +385,19 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   onto. Reproduce by running the suspect test INSIDE a large parallel batch (several hundred tests in
   one testhost); and prefer a dedicated `Thread` over `Task.Run` in any test that BLOCKS its worker,
   so the outcome cannot depend on the scheduler.
+- **Three shapes for ORDERING a fake against a bound without a sleep (#828).** Each replaced a race that
+  went red only under full-suite load:
+  - *A fake that must stay stuck* parks on a test-owned `TaskCompletionSource`, released only after the
+    teardown under test returns (`WebhookEventSinkTests.ParkedTransport`), with the teardown awaited under a
+    minutes-long hung-test guard. A fixed `Task.Delay(10s)` "park" is a race: a busy runner outlasts it.
+  - *A line that must be written before a timeout starts*: print it BEFORE reading stdin and send a prompt far
+    larger than any pipe buffer. `ProcessRunner` arms the timeout only after its stdin write completes, which
+    cannot happen until the fake has printed (`AutocompactThrashSessionTests`). A competing session bound is
+    removed through a dialect seam (`StreamJsonCliDialect.ThrashGrace`), not out-waited.
+  - *A drain bound that must not beat the reader*: inject a `DrainPolicy.Clock` that holds still until the
+    `stdoutLineSink` has seen the line (`ProcessRunnerDrainBoundTests.ClockHeldUntilLine`). A 1 s idle grace
+    on a free clock lost already-written output whenever the reader went unscheduled for a second;
+    thread-pool starvation (queue `ProcessorCount * 8` blocking work items) reproduces it every time.
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.

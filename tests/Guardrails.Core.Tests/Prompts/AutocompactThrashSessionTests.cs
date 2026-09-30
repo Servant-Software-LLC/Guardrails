@@ -5,7 +5,9 @@ namespace Guardrails.Core.Tests.Prompts;
 
 /// <summary>
 /// #800 through the REAL Claude runner and session, with a fake <c>claude</c> process (the
-/// <c>PromptDenialFailFastTests</c> pattern, OS-picked). Each test asserts the decision — the failure kind, whether the
+/// <c>PromptDenialFailFastTests</c> pattern, OS-picked). The coincide-with-the-timeout test (#828) instead drives
+/// <see cref="StreamJsonCliSession"/> directly with the runner's own dialect, arguments, environment and permission
+/// scanner, so it can switch off the grace timer. Each test asserts the decision — the failure kind, whether the
 /// harness had to end the session, what was kept — never a duration.
 /// </summary>
 public sealed class AutocompactThrashSessionTests : IDisposable
@@ -53,14 +55,46 @@ public sealed class AutocompactThrashSessionTests : IDisposable
     [Fact]
     public async Task AGiveUpThatCoincidesWithTheTimeout_IsContextExhausted_NotATimeout()
     {
+        // #828: the session must be ended by the TIMEOUT after the give-up was written, and neither half of that may
+        // hang on how busy the runner is. It used to be a race: a 3 s timeout, counted from the spawn, against a
+        // PowerShell fake that had to start and print within it, so a slow start turned the verdict into a Timeout.
+        // Both halves are now fixed by construction:
+        //
+        //  - The give-up is in the stdout pipe BEFORE the timeout's clock starts. The fake prints it first and only
+        //    then reads stdin, and the prompt is far larger than any OS pipe buffer, so ProcessRunner's stdin write
+        //    (after which, and only after which, the timeout is armed) cannot complete until the fake has printed.
+        //    A line already in the pipe survives the kill: the drain reads it after the tree is gone.
+        //  - The #800 grace can never be the bound that ends the session: this test's dialect sets it to infinite.
+        //    (The grace's own behaviour is TheGiveUpFollowedByAHang_IsEndedAfterTheGracePeriod's business.)
+        //
+        // So the process ALWAYS times out with the give-up parsed, and the verdict is purely the session's decision
+        // of which signal wins. A session that let the timeout win would classify this run as Timeout.
         string[] real = Real();
-        var runner = new ClaudePromptRunner("claude", WriteFakeCli("times-out", [real[0]], sleepSeconds: 600), new ProcessRunner());
+        string cli = WriteFakeCli("times-out", [real[0]], sleepSeconds: 600, printBeforeReadingStdin: true);
+        PromptInvocation invocation = Invocation(TimeSpan.FromSeconds(3)) with
+        {
+            ComposedPrompt = new string('x', PromptLargerThanAnyPipeBuffer) + "\n"
+        };
 
-        // The 3 s timeout fires before the 10 s grace period can.
-        PromptResult result = await runner.RunAsync(Invocation(TimeSpan.FromSeconds(3)), TestContext.Current.CancellationToken);
+        PromptResult result = await StreamJsonCliSession.RunAsync(
+            new ProcessRunner(),
+            new ResolvedCommand { Executable = cli, Arguments = ClaudePromptRunner.BuildArguments(invocation) },
+            ClaudePromptRunner.BuildEnvironment(invocation),
+            invocation.ComposedPrompt,
+            invocation,
+            ClaudePromptRunner.Dialect with { ThrashGrace = Timeout.InfiniteTimeSpan },
+            new ClaudePermissionScanner.Scanner(),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(PromptFailureKind.ContextExhausted, result.FailureKind);
+        Assert.DoesNotContain("grace period", result.Summary, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 4 MiB: a pipe buffer is 4 KiB to 64 KiB by default on the CI OSes (1 MiB at Linux's configurable ceiling), so a
+    /// stdin write of this size cannot finish before the child has read most of it.
+    /// </summary>
+    private const int PromptLargerThanAnyPipeBuffer = 4 * 1024 * 1024;
 
     [Fact]
     public async Task ASuccessThatMerelyMentionsThePhrase_IsASuccess()
@@ -102,14 +136,20 @@ public sealed class AutocompactThrashSessionTests : IDisposable
         StreamLogPath = Path.Combine(_root, "logs", "claude-stream.jsonl")
     };
 
-    private string WriteFakeCli(string name, IReadOnlyList<string> lines, int sleepSeconds)
+    private string WriteFakeCli(string name, IReadOnlyList<string> lines, int sleepSeconds, bool printBeforeReadingStdin = false)
     {
         if (OperatingSystem.IsWindows())
         {
-            var ps1 = new System.Text.StringBuilder("$null = [Console]::In.ReadToEnd()\r\n");
+            const string readStdin = "$null = [Console]::In.ReadToEnd()\r\n";
+            var ps1 = new System.Text.StringBuilder(printBeforeReadingStdin ? string.Empty : readStdin);
             foreach (string line in lines)
             {
                 ps1.Append($"[Console]::Out.WriteLine('{line.Replace("'", "''", StringComparison.Ordinal)}')\r\n[Console]::Out.Flush()\r\n");
+            }
+
+            if (printBeforeReadingStdin)
+            {
+                ps1.Append(readStdin);
             }
 
             if (sleepSeconds > 0)
@@ -124,10 +164,21 @@ public sealed class AutocompactThrashSessionTests : IDisposable
             return cmdPath;
         }
 
-        var sh = new System.Text.StringBuilder("#!/usr/bin/env bash\ncat > /dev/null\n");
+        const string drainStdin = "cat > /dev/null\n";
+        var sh = new System.Text.StringBuilder("#!/usr/bin/env bash\n");
+        if (!printBeforeReadingStdin)
+        {
+            sh.Append(drainStdin);
+        }
+
         foreach (string line in lines)
         {
             sh.Append($"printf '%s\\n' '{line.Replace("'", "'\\''", StringComparison.Ordinal)}'\n");
+        }
+
+        if (printBeforeReadingStdin)
+        {
+            sh.Append(drainStdin);
         }
 
         if (sleepSeconds > 0)
