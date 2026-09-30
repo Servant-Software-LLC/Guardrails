@@ -218,7 +218,7 @@ public static class StagingMover
         {
             if (Directory.Exists(path))
             {
-                Directory.Delete(path, recursive: true);
+                Io.SafeDelete.DeleteDirectory(path);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

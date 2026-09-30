@@ -415,6 +415,13 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     "absent from the remote" is byte-identical to "work lost". Ask `git log origin/master --oneline
     --grep '#<issue>'` or `git branch --merged master` first — the question is whether the COMMITS are on
     master, never whether the branch still exists.
+- **Never write `Directory.Delete(x, recursive: true)` or a bare `git worktree remove` (#826).** Use
+  `SafeDelete.DeleteDirectory` (link-safe + #109 read-only) and `GitWorktreeProvider.RemoveWorktreeLinkSafe`;
+  `LinkSafeDeleteTests.Source_EveryRecursiveDelete_GoesThroughTheLinkSafePrimitive` fails the build otherwise.
+  Measured: git follows a Windows junction on `worktree remove`, and `Directory.EnumerateFiles(…, AllDirectories)`
+  walks into one — any tree walk that may meet a link uses `LinkSafeTree` (no-follow). Link fixtures for tests:
+  `tests/Guardrails.Core.Tests/TestSupport/TestLinks.cs` (junction on Windows, symlink on Unix; linked into the
+  integration project).
 - **A mutation proof must REBUILD — `--no-build` INVERTS its result.** `dotnet test --no-build` on
   `Guardrails.Integration.Tests` runs against the `Guardrails.Core.dll` already sitting in that
   project's output, so a mutation just made to Core is not in it: the test exercises UNMUTATED code

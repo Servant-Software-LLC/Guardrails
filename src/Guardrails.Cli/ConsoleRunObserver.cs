@@ -1,6 +1,7 @@
 using Guardrails.Cli.Commands;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Cli;
@@ -195,6 +196,29 @@ public sealed class ConsoleRunObserver : IRunObserver
     /// <summary>The #816 "not checked" notice, shared by the plain and the live console.</summary>
     internal static string WriteScopeNotCheckedNotice(TaskNode task, int attempt, string reason) =>
         $"[write-scope] {task.Id}: attempt {attempt} — write scope NOT checked: {reason}";
+
+    public void CleanupFailed(string owner, Exception error)
+    {
+        if (CleanupRefusedNotice(owner, error) is not { } notice)
+        {
+            return; // other cleanup hiccups stay quiet here (plan 08 §D / #126); the event log still records them
+        }
+
+        lock (_gate)
+        {
+            _output.WriteLine("  " + notice);
+        }
+    }
+
+    /// <summary>
+    /// Issue #826: a worktree teardown REFUSED because a link inside it could not be removed is said where the
+    /// operator is looking — the tree is still on disk and they must remove the link entry by hand. Null for
+    /// every other cleanup failure.
+    /// </summary>
+    internal static string? CleanupRefusedNotice(string owner, Exception error) =>
+        error is LinkRemovalException refusal
+            ? $"[worktree] {owner}: worktree LEFT IN PLACE — {refusal.Message}"
+            : null;
 
     public void DecisionRecorded(DecisionEntry entry)
     {

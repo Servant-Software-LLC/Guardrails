@@ -103,7 +103,7 @@ public static class PromptOutputStaging
         {
             if (Directory.Exists(attemptDir))
             {
-                Directory.Delete(attemptDir, recursive: true);
+                Io.SafeDelete.DeleteDirectory(attemptDir);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

@@ -189,7 +189,7 @@ public sealed class TelemetryCorpusStore
     {
         if (Directory.Exists(CorpusRoot))
         {
-            Directory.Delete(CorpusRoot, recursive: true);
+            Io.SafeDelete.DeleteDirectory(CorpusRoot);
         }
     }
 

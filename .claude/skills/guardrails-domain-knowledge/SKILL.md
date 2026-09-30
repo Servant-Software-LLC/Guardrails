@@ -406,6 +406,13 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
   boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **Teardown never deletes through a link (#826, SSOT 3.2).** `git worktree remove --force` follows a Windows
+  junction and deletes its whole target (measured), so EVERY worktree teardown (segment Discard, trial/revalidate
+  trees, stale-run/segment prune, `--fresh` plan-branch teardown, completion reclaim + startup GC) first walks the
+  tree WITHOUT following links (`LinkSafeTree.RemoveLinks`, `.git` skipped) and removes each link ENTRY (symlink,
+  junction, dangling), then runs git, then the link-safe `SafeDelete` -- the harness's ONE recursive delete. A link
+  that cannot be removed REFUSES the teardown (`LinkRemovalException`): tree + registration + branch left in place,
+  reported loudly (console `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`), never risked.
 - **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
   never reaches the phase-1 check (failed action, timeout, max-turns, stall, staging/fragment/harness-write
   rejection, a serial cancel, a transient pause's re-run) gets the SAME check + #705 `out-of-scope.patch` +

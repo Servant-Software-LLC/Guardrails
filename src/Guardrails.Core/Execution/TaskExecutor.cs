@@ -3961,7 +3961,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             if (Directory.Exists(stagingDir))
             {
-                Directory.Delete(stagingDir, recursive: true);
+                Io.SafeDelete.DeleteDirectory(stagingDir);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

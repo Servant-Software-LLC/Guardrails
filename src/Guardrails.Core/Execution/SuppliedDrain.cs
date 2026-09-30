@@ -46,7 +46,7 @@ public static class SuppliedDrain
         SuppliedDrainResult result = CommitPaths(workspace, runId, by, committedPaths);
 
         string suppliedRoot = Path.Combine(planDirectory, "logs", runId, SuppliedStagingTree.SuppliedFolder);
-        Directory.Delete(suppliedRoot, recursive: true);
+        Io.SafeDelete.DeleteDirectory(suppliedRoot);
 
         return result;
     }

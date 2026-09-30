@@ -192,7 +192,7 @@ internal sealed class AiMergeResolver
         }
         finally
         {
-            try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort teardown */ }
+            try { Io.SafeDelete.DeleteDirectory(tmpDir); } catch { /* best-effort teardown */ }
         }
     }
 

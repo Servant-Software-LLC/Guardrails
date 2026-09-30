@@ -920,6 +920,20 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void CleanupFailed(string owner, Exception error)
+    {
+        if (ConsoleRunObserver.CleanupRefusedNotice(owner, error) is not { } notice)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            // #826: a teardown refused over a link that could not be removed — the tree is still on disk.
+            AppendNarrative($"[bold yellow]{Markup.Escape(notice)}[/]");
+        }
+    }
+
     public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
     {
         lock (_gate)

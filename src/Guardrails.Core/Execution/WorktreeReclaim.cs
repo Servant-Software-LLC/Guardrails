@@ -183,6 +183,12 @@ public static class WorktreeReclaim
                 + (string.IsNullOrWhiteSpace(junctionRoot) ? "" : $" and junction '{junctionRoot}'")
                 + " (issue #407 A).");
         }
+        catch (LinkRemovalException refusal)
+        {
+            // #826: never silent — the tree was left standing because deleting it could have deleted
+            // through a link into files outside it. The operator must remove the link by hand.
+            log.WriteLine($"[guardrails] WARNING: worktree root NOT reclaimed on completion — {refusal.Message}");
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Best-effort — a lingering leak is harmless and the startup GC (B) is the backstop.
@@ -431,6 +437,11 @@ public static class WorktreeReclaim
                             $"[guardrails] GC: reclaimed leaked worktree root '{root}' "
                             + $"(idle > {StalenessThreshold.TotalHours:0}h, no live run) (issue #407 B).");
                     }
+                }
+                catch (LinkRemovalException refusal)
+                {
+                    // #826: never silent, never fatal — the root stays until its link is removed by hand.
+                    log.WriteLine($"[guardrails] WARNING: GC left leaked worktree root '{root}' in place — {refusal.Message}");
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {

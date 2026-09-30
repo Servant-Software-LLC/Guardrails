@@ -968,6 +968,32 @@ might still be offered), bounds that growth: writing attempt `N`'s ref deletes t
 refs for `M <= N - SalvageRefRetentionPerTask`. Refs are throwaway bookkeeping; the per-attempt
 `prior-attempt.patch` files in the log dirs are unaffected and remain the durable record.
 
+**Teardown never follows a link (issue #826).** A harness teardown deletes nothing outside the tree it tears
+down. Measured on Windows (git 2.53): `git worktree remove --force` on a worktree holding a directory
+**junction** deletes every file in the junction's TARGET (a 21-file outside fixture went to 0), while `git
+clean -fd[x]` and .NET's recursive delete remove only the link entry — but .NET's `AllDirectories` enumeration
+DOES walk into a junction. A link can sit anywhere a task, build or package manager put it — under an ignored
+`node_modules/` (`npm link` / pnpm point at the developer's own package source), or created without changing a
+tracked path — where no write-scope diff (§3.4, #816) ever sees it. So every worktree teardown — segment
+`Discard` (the end-of-run green sweep), the trial-delivery and revalidate worktrees, the stale-run and stale-
+segment prunes, the `--fresh` plan-branch teardown, and the completion reclaim / startup GC (#407) — runs, in
+order: (1) a walk of the worktree that NEVER follows a link (lstat semantics — `LinkTarget` on the entry
+itself, the reparse-point attribute gating it on Windows; never enumerating into a link target; `.git`
+internals skipped) removing every link ENTRY — directory symlink, file symlink, junction, dangling link —
+non-recursively; (2) only when no link remains, `git worktree remove --force`; (3) the link-safe `SafeDelete`
+over whatever git left. `SafeDelete` is the harness's ONE recursive delete (every other `Directory.Delete(…,
+recursive: true)` site routes through it): it disarms links in the same single walk that clears read-only
+attributes (#109), removes only the link when handed a link, and never touches anything reached through one.
+The orphaned-`_integration` sweep uses the same no-follow walk. **A link that cannot be removed REFUSES the
+teardown** (`LinkRemovalException`, naming each link and telling the operator to remove the ENTRY by hand —
+`rmdir <link>` / `rm <link>`, never recursively): the worktree, its registration and its branch are left in
+place, and the refusal is reported, never swallowed — the live and plain consoles print `[worktree] <task>:
+worktree LEFT IN PLACE — …` (via `IRunObserver.CleanupFailed`), the reclaim/GC log prints `WARNING:`, `reset` /
+`run --fresh` print `WARNING:` on stderr and say a worktree was left in place instead of "all worktrees torn
+down", and a run-start stale-run prune that cannot finish stops the run (a stale segment must not be mistaken
+for integrated work). Cost: one directory listing per real directory in the tree — the listings the delete
+makes anyway — and nothing inside any link target.
+
 ### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
 The terminal whole-repo integration gate is the final soundness boundary, run once on the fully merged

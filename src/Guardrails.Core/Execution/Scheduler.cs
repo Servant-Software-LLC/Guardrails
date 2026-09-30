@@ -2656,7 +2656,7 @@ public sealed class Scheduler
             {
                 if (Directory.Exists(rejectedTasks))
                 {
-                    Directory.Delete(rejectedTasks, recursive: true);
+                    Io.SafeDelete.DeleteDirectory(rejectedTasks);
                 }
 
                 Directory.Move(tasksDir, rejectedTasks);
@@ -2672,7 +2672,7 @@ public sealed class Scheduler
             {
                 if (Directory.Exists(tasksDir))
                 {
-                    Directory.Delete(tasksDir, recursive: true);
+                    Io.SafeDelete.DeleteDirectory(tasksDir);
                 }
 
                 Directory.CreateDirectory(tasksDir);

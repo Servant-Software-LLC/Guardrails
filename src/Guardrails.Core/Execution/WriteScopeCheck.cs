@@ -546,34 +546,10 @@ public static class WriteScopeCheck
     /// <summary>
     /// #816 final review: remove the link at <paramref name="linkPath"/> — the ENTRY only, never what it points at (a
     /// junction or directory symlink is deleted non-recursively, a dangling or file link as a file). Returns false,
-    /// deleting nothing, when the path is not a link or the removal fails.
+    /// deleting nothing, when the path is not a link or the removal fails. #826: the shared
+    /// <see cref="Io.LinkSafeTree.TryRemoveLink"/> primitive every teardown uses too.
     /// </summary>
-    internal static bool TryRemoveLink(string linkPath)
-    {
-        try
-        {
-            var directory = new DirectoryInfo(linkPath);
-            if (directory.LinkTarget is null)
-            {
-                return false; // not a link: never delete a real directory here
-            }
-
-            if (directory.Exists)
-            {
-                directory.Delete(recursive: false); // a junction / directory symlink: removes the link entry only
-            }
-            else
-            {
-                new FileInfo(linkPath).Delete(); // a dangling or file-typed link
-            }
-
-            return new DirectoryInfo(linkPath).LinkTarget is null && !Directory.Exists(linkPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
+    internal static bool TryRemoveLink(string linkPath) => Io.LinkSafeTree.TryRemoveLink(linkPath);
 
     private static string? LinkedAncestorCore(string root, string relativePath)
     {
