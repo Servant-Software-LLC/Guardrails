@@ -134,6 +134,79 @@ public sealed partial class WriteScopeRunTests
         Assert.Equal("original upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
     }
 
+    [Theory]
+    [InlineData("thrash", false)]
+    [InlineData("exhausted", false)]
+    [InlineData("silent", false)]
+    [InlineData("config", false)]
+    [InlineData("thrash", true)]
+    [InlineData("exhausted", true)]
+    [InlineData("silent", true)]
+    [InlineData("config", true)]
+    public async Task TheUnfinishedActionHalts_ReportTheOutOfScopeWritesTheyReverted_InBothModes_Issue817(
+        string kind, bool worktreeMode)
+    {
+        // The #817 repeated-thrash halt, the #800 repeated-exhaustion halt, the #815 repeated-silent-stall halt and the
+        // #767 runner-configuration halt (which settles on its FIRST attempt) settle an action that never finished, so
+        // it never reaches the phase-1 write-scope check. In BOTH modes they run the end-of-attempt check themselves:
+        // the halting attempt's out-of-scope write is kept in out-of-scope.patch, recorded as scopeRevertedPaths, named
+        // once in its feedback and in its summary.
+        (string summaryNames, string feedbackHeading) = kind switch
+        {
+            "thrash" => ("CONTEXT THRASH (9 compactions in 76 turns)", "halted: its context ran out twice in a row"),
+            "exhausted" => ("second consecutive attempt that ran out of context", "halted: its context ran out twice in a row"),
+            "silent" => ("runner produced no output at all", "halted: the runner produced nothing, twice"),
+            _ => ("a runner-configuration fault no retry can clear", "halted: the prompt runner's configuration cannot do this work")
+        };
+        int haltAttempt = kind == "config" ? 1 : 2;
+        using var repo = new TempGitRepo();
+        repo.Commit(UpstreamTest, "original upstream test");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("02-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent(
+            (_, call, invocation) =>
+            {
+                WriteFile(invocation.WorkingDirectory, "src/Impl.cs", $"implementation {call}");
+                if (call == haltAttempt)
+                {
+                    WriteFile(invocation.WorkingDirectory, UpstreamTest, "weakened upstream test");
+                }
+            },
+            outcome: (_, _) => kind switch
+            {
+                "thrash" => PromptFailureKind.MaxTurns,
+                "exhausted" => PromptFailureKind.ContextExhausted,
+                "config" => PromptFailureKind.RunnerConfiguration,
+                _ => PromptFailureKind.Stalled
+            },
+            // A runner-REPORTED turn count: a thrash verdict on an estimate would be advisory and never halt.
+            compactions: (_, _) => kind == "thrash" ? new CompactionCounts(9, 0) : null,
+            turns: (_, _) => kind == "thrash" ? 76 : null);
+
+        RunReport report = worktreeMode
+            ? (await RunWorktreeAsync(planDir, repo, agent)).Report
+            : await RunSerialAsync(planDir, agent);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains(summaryNames, task.Summary);
+        Assert.Contains(UpstreamTest, task.Summary);
+        Assert.DoesNotContain(".;", task.Summary);
+
+        var attempts = JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts;
+        Assert.Equal(haltAttempt, attempts.Count);
+        Assert.Contains(UpstreamTest, attempts[^1].ScopeRevertedPaths ?? []);
+
+        string attemptDir = AttemptDir(planDir, "02-implement", haltAttempt);
+        string feedback = File.ReadAllText(Path.Combine(attemptDir, "feedback.md"));
+        Assert.Contains(feedbackHeading, feedback);
+        int section = feedback.IndexOf(RevertedHeading, StringComparison.Ordinal);
+        Assert.True(section >= 0, feedback);
+        Assert.Equal(section, feedback.LastIndexOf(RevertedHeading, StringComparison.Ordinal)); // named once, not twice
+        Assert.Contains($"`{UpstreamTest}`", feedback[section..]);
+        Assert.Contains("weakened upstream test", File.ReadAllText(Path.Combine(attemptDir, "out-of-scope.patch")));
+        Assert.Equal("original upstream test", File.ReadAllText(Path.Combine(repo.RepoPath, "tests", "UpstreamTests.cs")));
+    }
+
     [Fact]
     public async Task Serial_ASucceededActionThatWroteOutOfScope_FailsTheWriteScopeCheck_AndIsReverted_Issue816()
     {

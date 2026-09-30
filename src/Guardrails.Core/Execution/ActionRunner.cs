@@ -592,6 +592,12 @@ internal sealed record ActionRun
     /// </summary>
     public ContextManagementFailure? ContextManagement { get; init; }
 
+    /// <summary>
+    /// How often the session's context was compacted (#817), a straight carry of <see cref="PromptResult.Compactions"/>.
+    /// Folded onto the attempt's provenance on every outcome; read by <see cref="ContextThrash"/> on a failed one.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
+
     /// <summary>The stall watchdog's verdict (#811), a straight carry of <see cref="PromptResult.Stall"/>; null unless stalled.</summary>
     public StallReport? Stall { get; init; }
 
@@ -697,6 +703,7 @@ internal sealed record ActionRun
             AllShellRefused = result.AllShellRefused,
             RunnerConfigurationRemedy = result.RunnerConfigurationRemedy,
             ContextManagement = result.ContextManagement,
+            Compactions = result.Compactions,
             Stall = succeeded ? null : result.Stall,
             FailureSummary = result.Summary
         };

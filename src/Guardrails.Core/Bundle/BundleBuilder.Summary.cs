@@ -330,7 +330,8 @@ public sealed partial class BundleBuilder
             }
 
             AttemptProvenance? provenance = record?.Provenance ?? ProvenanceOf(taskId, attempt);
-            string outcome = record is null ? "unknown (no journal)" : JournalJson.OutcomeToken(record.Outcome);
+            string outcome = (record is null ? "unknown (no journal)" : JournalJson.OutcomeToken(record.Outcome))
+                             + CompactionText(provenance, record?.Turns);
             string duration = record is null ? "-" : Duration(record.EndedAt - record.StartedAt);
             string exit = record?.ActionExitCode?.ToString(CultureInfo.InvariantCulture) ?? ExitCodeFromDisk(taskId, attempt) ?? "-";
             s.Append("| ").Append(attempt.ToString(CultureInfo.InvariantCulture))
@@ -349,6 +350,31 @@ public sealed partial class BundleBuilder
             s.Append(InFlightForLine(entry)).Append('\n');
             inFlightLines.Add($"{taskId}: {inFlight}");
         }
+    }
+
+    /// <summary>
+    /// #817: the attempt's compactions, folded into its Outcome cell (<c>max-turns (9 compactions in 76 turns, 1 failed)</c>),
+    /// or empty when it recorded none. From the journal/provenance only, so it is deterministic and never masked.
+    /// </summary>
+    private static string CompactionText(AttemptProvenance? provenance, int? turns)
+    {
+        if (provenance?.Compactions is not { } compactions)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder(" (").Append(compactions.ToString(CultureInfo.InvariantCulture)).Append(" compactions");
+        if (turns is { } t)
+        {
+            text.Append(" in ").Append(t.ToString(CultureInfo.InvariantCulture)).Append(" turns");
+        }
+
+        if (provenance.CompactionFailures is { } failures)
+        {
+            text.Append(", ").Append(failures.ToString(CultureInfo.InvariantCulture)).Append(" failed");
+        }
+
+        return text.Append(')').ToString();
     }
 
     // ------------------------------------------------------------------ stuck-run blocks (#805 S1; masked, §17.10)

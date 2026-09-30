@@ -1272,6 +1272,22 @@ public sealed record AttemptProvenance
     public string? BackendModel { get; init; }
 
     /// <summary>
+    /// How many times the attempt's session compacted its context (#817), counted in EPISODES from the runner's stream
+    /// (Claude Code repeats its <c>compacting</c> status line while one compaction runs; see
+    /// <see cref="Prompts.CompactionCounts"/>). Absent when the session compacted nothing, when its runner reports no
+    /// compactions, and in every journal written before #817, so an old run loads unchanged. Rides the provenance on
+    /// the same D32 terms as <see cref="ModelDigest"/>: a fact learned after launch that must reach both settle paths.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Compactions { get; init; }
+
+    /// <summary>
+    /// How many of <see cref="Compactions"/> reported <c>"compact_result":"failed"</c> (#817). Absent when none did.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompactionFailures { get; init; }
+
+    /// <summary>
     /// Whether the attempt's resolved route was already WARM (plan 30 §3.4) when it launched. <c>bool?</c>
     /// rather than <c>bool</c> for the same class of reason <see cref="TierSource"/> is nullable: "not
     /// known" is not "cold", and a script action resolved no route at all, so there is nothing to report.

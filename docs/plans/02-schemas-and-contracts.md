@@ -1271,8 +1271,13 @@ attempts that each ended in a timeout or a turn cap, and ended up grading itself
   writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
   **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
   permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert — BEFORE the halt is
-  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths
-  to their summary. Every attempt record built after an end-of-attempt revert carries it as
+  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths to
+  their summary. **The halts that settle an UNFINISHED action do it in BOTH modes (#817):** the #767/#773
+  runner-configuration halt, the #800/#817 repeated-context-pressure halts and the #815 repeated-silent-stall halt run
+  the end-of-attempt check in worktree mode as well as serial (an unfinished attempt never reaches the phase-1 check,
+  so nothing else would), BEFORE any escalation stash so the stash never carries an out-of-scope write; the offending
+  bytes go to `out-of-scope.patch`, the record carries `scopeRevertedPaths`, `feedback.md` gets the section exactly
+  once, and the summary names the paths. Every attempt record built after an end-of-attempt revert carries it as
   `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),
   so run.json and the live `AttemptFinished` row see them, not only text written afterwards.
   **Interrupted attempts (second review):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7)
@@ -2990,6 +2995,12 @@ fails the write, loudly, with a message naming the likely cause.
                                      //   the preflight's resolved identity "<backend base> <loaded model>"
                                      //   (§9.10.3), or "unverified" — the ONLY field that claims what served it.
                                      //   The same two fields ride `judge` below for a judge on a gateway block
+            // OPTIONAL context-compaction counts (#817, §9 "Context thrash"). Both ABSENT when the session
+            // compacted nothing, when its runner reports no compactions, and in every pre-#817 journal.
+            "compactions": 9,       // compaction EPISODES from the runner's stream — Claude Code repeats its
+                                     //   `compacting` status line while one compaction runs, so this is not a
+                                     //   line count
+            "compactionFailures": 1, // how many of them reported `compact_result: failed`; ABSENT when none did
             // OPTIONAL verifier route that graded this attempt (#201/#229, DoR §12.4 + §6.5) — the
             // `AttemptJudge` record. It hangs HERE, on `provenance`, and never on the attempt record —
             // see "The verifier route" below (D32). ABSENT ENTIRELY when no judge resolved through routing
@@ -5161,7 +5172,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `attempt-started` | `AttemptStarting` | `attempt` (the JOURNAL number — the same value as this attempt's `attempt-finished` row and its `attempt-N` log dir; before #798 it was the per-run index, so the two rows of one resumed attempt disagreed), `runAttempt` (#798: this attempt's 1-based position within this run's budget, which restarts at 1 on a resume), `budget`. **A row WITHOUT `runAttempt` predates #798, and its `attempt` is the per-run index, not the journal number** — and because a resume appends a new bracket to the same file, one `runId` can hold both shapes after a cross-version resume, so a consumer keys the meaning of `attempt` on the presence of `runAttempt`, per row |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-stalled` | `AttemptStalled` | `attempt`, `boundSeconds`, `silentSeconds`, `suspends` (host suspends the watchdog discounted, #517), and when the session's context management failed `contextManagement` (`compaction-failed`) with the runner's error text in `detail` (#811, §9). Written before the same attempt's `attempt-finished` row |
-| `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
+| `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `compactions` and `compactionFailures` (#817: copied from the attempt's provenance, absent when the session compacted nothing, §9), `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
 | `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit`, `by` (`operator` \| `overwatcher` \| `task:<folder>`, the same value as the `supplied[]` record) — no `taskId`: a supply commit (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
@@ -6184,8 +6195,69 @@ mentions it never counts, and a give-up never overrides a result already parsed 
   than an error, and filter build and test output. It is rollback-aware, carries the salvage section like a timeout,
   and names any tool call still running (#778).
 - **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174 short-circuit
-  shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
+  shape; since #817 a CONTEXT THRASH attempt counts too, below); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
   session reports it as `context-exhausted`.
+
+**Compactions are counted, and heavy compaction is diagnosed as CONTEXT THRASH (issue #817).** Claude Code can keep
+going long after its context is too small for the task: it compacts, drops the files the agent read, the agent
+re-reads them ("Wasted call — file unchanged" replies), and the context fills again. Nothing fails until the turn cap
+or the clock does, and before #817 the harness then blamed the budget and raised it.
+
+- **Counted in episodes.** The Claude stream parser counts compaction EPISODES (`CompactionCounts`): one opens on the
+  first `{"type":"system","subtype":"status","status":"compacting"}` line, which Claude Code repeats as a keep-alive
+  while the compaction runs, and closes on its `compact_result` status line (success or failure) or its
+  `system/compact_boundary`, whichever comes first; the other one, arriving straight after, is the same compaction. A
+  close with no open episode still counts one; an episode still open when the stream ends counts. The #817 dogfood
+  attempt with 114 `compacting` lines compacted 7 times. Failures are the `compact_result: failed` lines.
+- **Recorded on every attempt.** The counts ride `PromptResult.Compactions` → `ActionRun.Compactions` and are folded
+  onto the attempt's provenance (`provenance.compactions`, `provenance.compactionFailures`, §7) whatever the outcome,
+  on the same D32 terms as `modelDigest`; `attempt-finished` copies them (§8.1) and the bundle SUMMARY shows them
+  (§17.4). Both keys are absent when the session compacted nothing, so a non-compacting or pre-#817 attempt is
+  unchanged.
+- **The diagnosis (`ContextThrash`).** A FAILED prompt action whose kind is max-turns, timeout, stalled or a generic
+  action error is context thrash when it compacted **at least 3 times** AND **at least once per 12 turns**
+  (`compactions × 12 ≥ turns`). The turns are the runner's `num_turns`; when a stream ends without a result line (a
+  timeout or a stall) they are an ESTIMATE, the distinct top-level assistant `message.id`s in the stream (a subagent's
+  excluded). The estimate is a LOWER bound: on the #817 dogfood streams it ran 0.35–1.0× the reported count (within
+  one on 2 of 5, about half on the other 3), and undercounting pushes toward thrash. It is never journalled and is
+  always shown as one (`in about 30 turns (estimated)`), and **a verdict on estimated turns is ADVISORY**: it changes
+  the feedback and summary text, but it does not stop the turn-budget raise or the clock extension, and it does not
+  count toward the two-in-a-row halt below. Only when neither count exists does the floor of 3 decide alone (also
+  advisory, for the same reason). An
+  output cap, a context overflow, #800's context exhaustion, a transient pause and a runner-configuration fault each keep
+  their own, more specific diagnosis.
+  **The calibration rests on few samples from ONE plan on a 64K window** (the #817 dogfood, counted in episodes): the
+  attempt that ran out of turns after 9 compactions in 76 turns must be diagnosed, and one that compacted twice in 36
+  turns and succeeded must not. The other nearby points do not calibrate it: 8 in 81 was a #800 give-up (context
+  exhaustion, excluded above), and 3 in 51 ended at the turn cap, so it is not an example of normal work either. Revisit
+  both constants when more runs have been measured.
+- **What changes when it fires.** For a max-turns, timeout or stall stop, `feedback.md` gets `## CONTEXT THRASH: the
+  attempt spent its budget re-reading what compaction dropped` IN PLACE of the text that kind would otherwise get (which
+  blames the budget): the counts, why more budget would not help, #800's bounded-read advice, an instruction to write
+  `needsHuman` if the working set cannot fit, and the operator's levers; it is rollback-aware and carries the salvage
+  section. For a generic action ERROR the runner's own feedback (its result text, refused tool calls) is KEPT and the
+  thrash section is APPENDED to it, because the error may have a cause of its own. The `## Context management failed`
+  section is not appended either way (the thrash text names the failures). The attempt summary, which is the needs-human
+  / final reason, reads `… — CONTEXT THRASH (9 compactions in 76 turns, 1 failed): the context window is too small for
+  this task's working set; raising maxTurns will not help, so it was not raised further.` followed by the #800 levers
+  (the block's `contextTokens` with its value on a local block, splitting the task, narrowing the Bash grant). It names
+  only the budget that kind of stop hit: the clock for a timeout (`extending the timeout will not help, so it was not
+  extended further`), neither for a stall or an error. "Further", because an earlier non-thrash attempt may already
+  have raised it. The failed-compaction count appears once, in the thrash clause, not again as `— context compaction
+  failed (…)`. The journal outcome is unchanged (`max-turns`, `timeout`, `action-failed`): it records how the attempt
+  ended; the diagnosis records why.
+- **No budget raise.** A thrash verdict on a RUNNER-REPORTED turn count does not count toward the #129 turn-budget
+  raise or the #119 timeout extension (an advisory, estimated verdict does, and its text says the budget was still
+  raised), so the retry runs on the same `maxTurns` and clock. Raising either lets the same working set
+  compact more times (each compaction on a local backend re-reads the whole window, minutes at a time), which is the
+  #817 evidence: the retry "thrashed the same way with more turns". #800 made the same call for context exhaustion.
+- **Two consecutive context-pressure attempts settle `needs-human`.** #800's give-up and #817's thrash share ONE count
+  of consecutive attempts that ran out of context (a thrash verdict counts only on a runner-reported turn count), so
+  any two in a row (thrash then thrash, thrash then #800, #800 then thrash) settle the task `needs-human` with the
+  levers, and neither kind resets the other's count; any other outcome
+  does. The second attempt keeps its own journal outcome, and a thrash halt names the counts (an error-kind thrash
+  halt also keeps the runner's own feedback). Without it a frozen budget
+  would repeat the same thrash until the retries ran out.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
 returns, before its attempt settles, which writes the §8.1 `attempt-stalled` row (and an `AttemptStalled` line in
@@ -10765,7 +10837,9 @@ Then six numbered blocks, always in this order:
 3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6; the loaded task's
    definition hash against the journal's `definitionHash`); then one row per
    **journaled** attempt: number, outcome, duration, exit code, provenance `summary`, and model requested vs
-   served. Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
+   served. When the attempt's provenance records compactions (§9, #817) the outcome cell carries them:
+   `max-turns (9 compactions in 76 turns, 1 failed)` (the turns part only when the journal has a turn count, the
+   failed part only when one failed). They come from the journal, so the determinism check does not mask them. Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
    (attempt number, `startedAt`, phase) when present; otherwise **inferred** from disk vs journal:
    *"attempt-4/ exists on disk and is not in the journal: in flight, or the run died during it (liveness:
    …)"*. Both paths are contract: the bundle must not require #798.

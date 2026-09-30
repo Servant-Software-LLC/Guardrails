@@ -67,6 +67,12 @@ public sealed record ClaudeResult
     /// <see cref="CompactionFailure"/> wherever one context-management failure is reported: it is the terminal one.
     /// </summary>
     public ContextManagementFailure? Thrashing { get; init; }
+
+    /// <summary>
+    /// How often the session's context was compacted, and how many of those compactions failed (#817), or null
+    /// when it compacted nothing. Counted in episodes, not status lines: see <see cref="CompactionCounts"/>.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
 }
 
 /// <summary>
@@ -119,6 +125,16 @@ public sealed class ClaudeStreamParser
     // #811: failed compactions, counted, with the last one's error text.
     private int _compactionFailures;
     private string? _compactionError;
+
+    // #817: compaction EPISODES (see CompactionCounts). `_compactionOpen` is true between an episode's first
+    // `compacting` status line and its close; `_compactionJustClosed` is true only on the line straight after a close,
+    // so the close's twin (a compact_boundary after its compact_result, or the reverse) is not counted again.
+    private int _compactions;
+    private bool _compactionOpen;
+    private bool _compactionJustClosed;
+
+    // #817 review W1: distinct top-level assistant message ids, the turn ESTIMATE for a stream with no result line.
+    private readonly HashSet<string> _assistantMessageIds = new(StringComparer.Ordinal);
 
     // #800: Claude Code's "Autocompact is thrashing" give-up, recognised only for the claude dialect (a Cursor session's
     // final text can never trigger it). Volatile because the session's tee reads them on the reader thread right after
@@ -178,6 +194,13 @@ public sealed class ClaudeStreamParser
 
             string? type = typeElement.GetString();
 
+            // #817: any line other than a compaction's own close ends the "just closed" window.
+            bool closesCompaction = type == "system" && IsCompactionClose(root);
+            if (!closesCompaction)
+            {
+                _compactionJustClosed = false;
+            }
+
             // The stream's opening echo (#349): {"type":"system","subtype":"init", … "model": …}. Its
             // model is the ONLY thing read off a non-result line — everything else about the event is
             // still ignored, and any other system event still falls through untouched.
@@ -188,12 +211,26 @@ public sealed class ClaudeStreamParser
                 {
                     _initModel = TryGetNonEmptyString(root, "model") ?? _initModel;
                 }
-                else if (systemSubtype == "status" && TryGetNonEmptyString(root, "compact_result") == "failed")
+                else if (systemSubtype == "status" && TryGetNonEmptyString(root, "status") == "compacting")
                 {
-                    // #811: a compaction that failed. The session may carry on (and later succeed), so this is a
-                    // FACT recorded for the summary, not an outcome decided here.
-                    _compactionFailures++;
-                    _compactionError = TryGetNonEmptyString(root, "compact_error") ?? _compactionError;
+                    // #817: a compaction is running. Claude Code repeats this line as a keep-alive, so only the first
+                    // of a run opens (and counts) an episode.
+                    if (!_compactionOpen)
+                    {
+                        _compactions++;
+                        _compactionOpen = true;
+                    }
+                }
+                else if (closesCompaction)
+                {
+                    CloseCompaction();
+                    if (systemSubtype == "status" && TryGetNonEmptyString(root, "compact_result") == "failed")
+                    {
+                        // #811: a compaction that failed. The session may carry on (and later succeed), so this is a
+                        // FACT recorded for the summary, not an outcome decided here.
+                        _compactionFailures++;
+                        _compactionError = TryGetNonEmptyString(root, "compact_error") ?? _compactionError;
+                    }
                 }
 
                 return;
@@ -204,6 +241,14 @@ public sealed class ClaudeStreamParser
             // in ClaudeSignalClassifier, the claude quarantine.
             if (type == "assistant")
             {
+                if (TryGetNonEmptyString(root, "parent_tool_use_id") is null
+                    && root.TryGetProperty("message", out JsonElement assistantMessage)
+                    && assistantMessage.ValueKind == JsonValueKind.Object
+                    && TryGetNonEmptyString(assistantMessage, "id") is { } messageId)
+                {
+                    _assistantMessageIds.Add(messageId);
+                }
+
                 if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactGiveUp(root))
                 {
                     MarkThrashing(AssistantText(root));
@@ -263,8 +308,41 @@ public sealed class ClaudeStreamParser
 
         CompactionFailure = _compactionFailures > 0
             ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
+            : null,
+
+        // A failure is always a compaction too (its close counts one when no `compacting` line opened it), so the
+        // failure count never exceeds the compaction count.
+        Compactions = _compactions > 0
+            ? new CompactionCounts(
+                _compactions, _compactionFailures, _assistantMessageIds.Count > 0 ? _assistantMessageIds.Count : null)
             : null
     };
+
+    /// <summary>
+    /// #817: whether a system line CLOSES a compaction: a status line carrying <c>compact_result</c> (success or
+    /// failure), or a <c>compact_boundary</c>.
+    /// </summary>
+    private static bool IsCompactionClose(JsonElement root)
+    {
+        string? subtype = TryGetNonEmptyString(root, "subtype");
+        return subtype == "compact_boundary"
+               || (subtype == "status" && TryGetNonEmptyString(root, "compact_result") is not null);
+    }
+
+    /// <summary>
+    /// #817: close the running compaction episode. A close with no open episode counts one (a compaction seen only by
+    /// its result or its boundary), unless it is the twin of the close on the line before.
+    /// </summary>
+    private void CloseCompaction()
+    {
+        if (!_compactionOpen && !_compactionJustClosed)
+        {
+            _compactions++;
+        }
+
+        _compactionOpen = false;
+        _compactionJustClosed = true;
+    }
 
     /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>
     public static ClaudeResult ParseAll(string streamText, bool recognizeThrash = false)
