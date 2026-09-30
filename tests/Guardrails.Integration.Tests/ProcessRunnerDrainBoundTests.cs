@@ -41,11 +41,17 @@ public sealed class ProcessRunnerDrainBoundTests : IDisposable
     [Fact]
     public async Task ChildThatExitsWhileAGrandchildHoldsItsPipes_ReportsItsRealExitCode_NotATimeout()
     {
-        ProcessResult result = await new ProcessRunner(GiveUpQuickly).RunAsync(
+        // The drain's clock is held until the child's line has been collected (#828): with the 1 s idle grace on a
+        // free-running clock, a runner too busy to schedule the stdout reader for a second let the drain give up
+        // FIRST, and the sealed capture reported "" for a line the child had written before it exited.
+        var clock = new ClockHeldUntilLine("child-output");
+        ProcessResult result = await new ProcessRunner(GiveUpQuickly with { Clock = clock.Now }).RunAsync(
             ExitsLeavingGrandchildCommand(exitCode: 3),
             _dir,
             new Dictionary<string, string>(),
             timeout: TimeSpan.FromMinutes(5),
+            standardInput: null,
+            stdoutLineSink: clock.Observe,
             TestContext.Current.CancellationToken);
 
         Assert.False(result.TimedOut, "the child exited on its own; that is not a timeout");
@@ -62,11 +68,14 @@ public sealed class ProcessRunnerDrainBoundTests : IDisposable
         // reach it and it holds the pipes past the kill. Before #723 the drain waited on it with no bound:
         // returning at all is the decision under test, and the flags say which one. The timeout is generous
         // because the child spends part of it waiting for the grandchild to be established.
-        ProcessResult result = await new ProcessRunner(GiveUpQuickly).RunAsync(
+        var clock = new ClockHeldUntilLine("child-output"); // see the test above (#828)
+        ProcessResult result = await new ProcessRunner(GiveUpQuickly with { Clock = clock.Now }).RunAsync(
             OutlivesItsDeadlineWithEscapedGrandchildCommand(),
             _dir,
             new Dictionary<string, string>(),
             timeout: TimeSpan.FromSeconds(15),
+            standardInput: null,
+            stdoutLineSink: clock.Observe,
             TestContext.Current.CancellationToken);
 
         Assert.True(result.TimedOut);
@@ -116,6 +125,43 @@ public sealed class ProcessRunnerDrainBoundTests : IDisposable
         Assert.False(result.OutputDrainIncomplete);
         Assert.Contains("child-output", result.StandardOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("output truncated", result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A drain clock that stands still until the runner has COLLECTED a given stdout line, then runs in real time
+    /// from that instant (#828). The drain's idle grace is then measured from a point after the line is captured,
+    /// so "the drain gave up before the reader was scheduled" cannot happen however busy the machine is, while the
+    /// give-up itself stays real: once the line is in, the held pipe still costs the full idle grace. A lost line
+    /// cannot hang the test: the hold also ends after <see cref="HoldGuard"/>, a hung-test guard, and the capture
+    /// assertion then fails.
+    /// </summary>
+    private sealed class ClockHeldUntilLine(string line)
+    {
+        private static readonly TimeSpan HoldGuard = TimeSpan.FromMinutes(2);
+
+        private readonly TimeSpan _created = DrainPolicy.MonotonicClock();
+        private long _releasedAtTicks = -1;
+
+        public TimeSpan Now()
+        {
+            TimeSpan real = DrainPolicy.MonotonicClock();
+            long released = Interlocked.Read(ref _releasedAtTicks);
+            if (released < 0 && real - _created >= HoldGuard)
+            {
+                Interlocked.CompareExchange(ref _releasedAtTicks, real.Ticks, -1);
+                released = Interlocked.Read(ref _releasedAtTicks);
+            }
+
+            return released < 0 ? _created : _created + (real - TimeSpan.FromTicks(released));
+        }
+
+        public void Observe(string data)
+        {
+            if (data.Contains(line, StringComparison.Ordinal))
+            {
+                Interlocked.CompareExchange(ref _releasedAtTicks, DrainPolicy.MonotonicClock().Ticks, -1);
+            }
+        }
     }
 
     /// <summary>Child writes a line, starts a pipe-holding grandchild, and exits with <paramref name="exitCode"/>.</summary>

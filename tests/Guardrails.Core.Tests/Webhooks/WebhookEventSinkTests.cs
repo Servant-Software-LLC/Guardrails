@@ -68,6 +68,34 @@ public sealed class WebhookEventSinkTests
         }
     }
 
+    /// <summary>
+    /// A transport stuck inside SendAsync until the TEST releases it (#828): it ignores its cancellation token,
+    /// like .NET's DNS resolution, and waits on a gate rather than a fixed delay, so "the pump was still parked
+    /// when teardown gave up on it" holds by construction on any runner. Disposing releases it, so no task
+    /// outlives the test.
+    /// </summary>
+    private sealed class ParkedTransport : IDisposable
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Released => _release.Task.IsCompleted;
+
+        public async Task<HttpResponseMessage> Park(HttpRequestMessage request, int attempt, CancellationToken cancellationToken)
+        {
+            await _release.Task.ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+
+        public void Dispose() => _release.TrySetResult();
+    }
+
+    /// <summary>
+    /// Awaits a teardown under a hung-test guard orders of magnitude above any budget in play: a regression that
+    /// waits on a <see cref="ParkedTransport"/> with no bound fails here instead of hanging the suite.
+    /// </summary>
+    private static Task HangGuarded(ValueTask teardown) =>
+        teardown.AsTask().WaitAsync(TimeSpan.FromMinutes(2), TestContext.Current.CancellationToken);
+
     /// <summary>A transport that fails on every send AND on its own disposal (behaviour 8).</summary>
     private sealed class ThrowingDisposeHandler : HttpMessageHandler
     {
@@ -1054,14 +1082,14 @@ public sealed class WebhookEventSinkTests
             $"the cancelled teardown budget is {cancelledTeardownBudget}, which does not fit inside the ~2s the process gets after SIGINT (#603)");
 
         var notices = new List<string>();
-        var handler = new RecordingHandler
-        {
-            OnRequest = async (_, _, _) =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10)); // ignores its token, exactly like DNS resolution
-                return new HttpResponseMessage(HttpStatusCode.OK);
-            }
-        };
+
+        // Parked on a TEST-OWNED gate, released only after DisposeAsync has returned (#828). It ignores its
+        // own token, exactly like DNS resolution. It used to sleep a FIXED 10s instead, which made "the pump
+        // was still stuck when the grace ran out" a race: on a contended windows runner the 10s elapsed
+        // before teardown reached step 4, the pump returned normally, and the "stopped early" control below
+        // saw "Webhook: 2 delivered, 1 dropped". With the gate, the pump is stuck by construction.
+        using var parked = new ParkedTransport();
+        var handler = new RecordingHandler { OnRequest = parked.Park };
 
         // timeScale 1.0, deliberately: this test is ABOUT the real wall-clock cost of a Ctrl-C teardown,
         // so scaling the budgets down would scale away the thing being measured.
@@ -1079,8 +1107,11 @@ public sealed class WebhookEventSinkTests
         cts.Cancel();
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await sink.DisposeAsync();
+        await HangGuarded(sink.DisposeAsync());
         stopwatch.Stop();
+
+        // Nothing was released before this line, so every assertion below sees a pump that was still parked.
+        Assert.False(parked.Released, "the gate must stay closed until teardown has returned");
 
         // WHICH BUDGET was selected, not how long the machine took to run it. The wall-clock form of this
         // assertion (elapsed < 2s) FAILED on a contended windows CI runner at 2.374s while passing locally
@@ -1115,6 +1146,9 @@ public sealed class WebhookEventSinkTests
         // Positive control: the terminal attempt was actually SPENT, not skipped. Without this the
         // assertion above could be satisfied by a teardown that gave up on the guarantee the whole
         // feature exists for.
+        // The attempt count is the decision (it was made); the elapsed lower bound shows its budget was waited
+        // out. Load can only lengthen elapsed, so this bound cannot be flipped by a busy runner.
+        Assert.Equal(1, handler.CountFor("terminal-row"));
         Assert.True(
             stopwatch.Elapsed >= WebhookEventSink.TerminalDeliveryTimeoutCancelled,
             $"the terminal attempt was never spent: teardown took only {stopwatch.Elapsed}");
@@ -1130,19 +1164,14 @@ public sealed class WebhookEventSinkTests
     public async Task AFaultedPumpIsReportedNotSummarizedAsZero()
     {
         var notices = new List<string>();
-        var handler = new RecordingHandler
-        {
-            // Ignores its own cancellation token entirely — Task.WhenAny(pump, delay) does not throw
-            // on a faulted/hung pump, so a summary reading "0 dropped" while rows sit in a dead
-            // channel would be the silent disappearance §2.2 mocks the shell shim for. A finite delay
-            // comfortably longer than the scaled teardown budget — never Timeout.Infinite, which would
-            // leave a task hanging for the life of the test host.
-            OnRequest = async (_, _, _) =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(5));
-                return new HttpResponseMessage(HttpStatusCode.OK);
-            }
-        };
+        // Ignores its own cancellation token entirely — Task.WhenAny(pump, delay) does not throw
+        // on a faulted/hung pump, so a summary reading "0 dropped" while rows sit in a dead
+        // channel would be the silent disappearance §2.2 mocks the shell shim for. Parked on a
+        // test-owned gate released only after teardown returns (#828) — not a fixed delay, which a
+        // contended runner can outlast before teardown reaches the grace, and not an unreleased
+        // Timeout.Infinite, which would leave a task hanging for the life of the test host.
+        using var parked = new ParkedTransport();
+        var handler = new RecordingHandler { OnRequest = parked.Park };
 
         const double scale = 0.05;
         using var cts = new CancellationTokenSource();
@@ -1152,8 +1181,9 @@ public sealed class WebhookEventSinkTests
             sink.Emit(Row($"row-{i}"));
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await sink.DisposeAsync();
+        await HangGuarded(sink.DisposeAsync());
         stopwatch.Stop();
+        Assert.False(parked.Released, "the gate must stay closed until teardown has returned");
 
         // WHICH BUDGET teardown selected, not how long the machine took to run it (#518) - the same move
         // the cancelled-teardown test above already makes, and for the same reason. The wall-clock form
@@ -1167,11 +1197,10 @@ public sealed class WebhookEventSinkTests
         // budget - or none - whatever the clock said.
         Assert.Equal(WebhookEventSink.PumpShutdownGrace * scale, sink.LastPumpGraceUsed);
 
-        // A deliberately LOOSE sanity bound, kept for catastrophic regressions only. Note what dominates
-        // it: the handler parks for 5s and ignores its token, so ELAPSED here is mostly that delay plus
-        // scheduling, not the 100ms of teardown budget under test. That is precisely why a 3s bound was
-        // measuring the machine rather than the code, and why this one is nowhere near the budget it
-        // sits above.
+        // A deliberately LOOSE sanity bound, kept for catastrophic regressions only, orders of magnitude
+        // above the ~1.1s of scaled budget it sits over: a 3s bound was measuring the machine rather than
+        // the code. (A teardown that awaited the parked pump with no bound at all never gets here; the
+        // hang guard on DisposeAsync above fails it instead.)
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(30),
             $"DisposeAsync took {stopwatch.Elapsed}, far beyond any plausible scheduling overhead on a "
