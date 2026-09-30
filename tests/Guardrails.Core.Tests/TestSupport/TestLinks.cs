@@ -111,7 +111,9 @@ internal static class TestLinks
     /// Hold the link at <paramref name="link"/> so it CANNOT be removed until disposed. Windows: an open handle
     /// on the link itself without <c>FILE_SHARE_DELETE</c> (RemoveDirectory then fails with a sharing
     /// violation). Unix: the link's parent directory made read-only (unlink then fails with EACCES) — which a
-    /// root user ignores, so the caller skips under root.
+    /// root user ignores, so the caller skips under root. The Unix pin holds only against a walk that does NOT
+    /// clear read-only (the git-rewrite disarm); <see cref="SafeDelete"/> clears read-only BY DESIGN (#109), which
+    /// hands the owner back write permission on the parent and defeats it — see <see cref="PinSurvivesSafeDelete"/>.
     /// </summary>
     internal static IDisposable Pin(string link)
     {
@@ -132,12 +134,31 @@ internal static class TestLinks
         File.SetUnixFileMode(parent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
         return new Restore(() =>
         {
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(parent, before);
+            // Tolerate the parent being gone: if the pin was defeated and the tree deleted, the test's own assertion
+            // must be what reports it, not a DirectoryNotFoundException from this cleanup.
+            if (!OperatingSystem.IsWindows() && Directory.Exists(parent))
+            {
+                try { File.SetUnixFileMode(parent, before); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort restore */ }
+            }
         });
     }
 
     /// <summary>True when the process runs as root, which ignores directory permissions.</summary>
     internal static bool IsUnixRoot => !OperatingSystem.IsWindows() && Environment.UserName == "root";
+
+    /// <summary>
+    /// True where <see cref="Pin"/> can make a link unremovable even for <see cref="SafeDelete"/> — Windows only. On
+    /// Unix an unlink needs write permission on the PARENT directory, which its (non-root) owner can always grant
+    /// themselves; SafeDelete's read-only clear (#109) does exactly that, so an "unremovable link" cannot be modelled
+    /// there without root-only tools (<c>chattr +i</c>) or a parent owned by another user, neither available on CI.
+    /// </summary>
+    internal static bool PinSurvivesSafeDelete => OperatingSystem.IsWindows();
+
+    internal const string PinDefeatedBySafeDeleteReason =
+        "an unremovable link cannot be modelled on Unix against SafeDelete: its read-only clear (#109) restores the owner's "
+        + "write permission on the parent directory, which is all unlink needs (only chattr +i / a foreign-owned parent, "
+        + "neither available on CI, would hold). The Windows handle pin covers the refusal path.";
 
     private sealed class Restore(Action undo) : IDisposable
     {

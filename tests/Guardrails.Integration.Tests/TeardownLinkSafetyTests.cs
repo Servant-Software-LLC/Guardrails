@@ -131,8 +131,19 @@ public sealed class TeardownLinkSafetyTests : IDisposable
         try { Git(_repo, "worktree", "remove", "--force", segment.WorktreePath); }
         catch (InvalidOperationException) { /* see above */ }
 
-        Assert.True(TestLinks.FileCount(outside.Linked) < OutsideFiles, "raw git must have deleted through (a)");
-        Assert.True(TestLinks.FileCount(outside.NodeModules) < OutsideFiles, "raw git must have deleted through (b)");
+        // A CHARACTERIZATION of the installed git, not of the harness: measured locally, Git for Windows 2.53 deletes
+        // through; the GitHub windows runner's git (#836 CI) left the targets intact. Where git does not reproduce the
+        // hazard, say so and skip — the teardown tests above still assert outside survival on every OS either way.
+        int linked = TestLinks.FileCount(outside.Linked);
+        int nodeModules = TestLinks.FileCount(outside.NodeModules);
+        if (linked == OutsideFiles && nodeModules == OutsideFiles)
+        {
+            Assert.Skip($"{Git(_repo, "--version").Trim()} does not delete through a junction on `worktree remove`; "
+                + "the teardown tests still assert outside survival");
+        }
+
+        Assert.True(linked < OutsideFiles, "raw git must have deleted through (a)");
+        Assert.True(nodeModules < OutsideFiles, "raw git must have deleted through (b)");
     }
 
     [Fact]
@@ -247,6 +258,8 @@ public sealed class TeardownLinkSafetyTests : IDisposable
     [Fact]
     public void ResetSegment_ALinkThatCannotBeRemoved_RunsNeitherResetNorClean_AndSaysSo()
     {
+        // Runs on Unix too: the git-rewrite disarm does NOT clear read-only (only SafeDelete does), so the read-only
+        // parent pin holds against it — unlike the SafeDelete-based refusal tests, which are Windows-only.
         Assert.SkipWhen(TestLinks.IsUnixRoot, "root ignores the read-only parent that pins the link on Unix");
         (_, _, WorktreeHandle segment) = Segment();
         string outside = TestLinks.OutsideFolder(_base, "outside-pinned-src");
@@ -254,15 +267,16 @@ public sealed class TeardownLinkSafetyTests : IDisposable
         Directory.Delete(src, recursive: true);
         TestLinks.DirectoryLink(src, outside);
 
-        LinkRemovalException refusal;
+        Exception? thrown;
         using (TestLinks.Pin(src))
         {
-            refusal = Assert.Throws<LinkRemovalException>(() => GitWorktreeProvider.ResetSegment(segment.WorktreePath, segment.TaskBase));
+            thrown = Record.Exception(() => GitWorktreeProvider.ResetSegment(segment.WorktreePath, segment.TaskBase));
         }
 
-        Assert.Contains("refused to reset", refusal.Message, StringComparison.Ordinal);
-        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside)); // the guarantee, asserted first
         Assert.False(File.Exists(Path.Combine(outside, "a.cs")));
+        LinkRemovalException refusal = Assert.IsType<LinkRemovalException>(thrown);
+        Assert.Contains("refused to reset", refusal.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -473,28 +487,29 @@ public sealed class TeardownLinkSafetyTests : IDisposable
     [Fact]
     public void Discard_ALinkThatCannotBeRemoved_RefusesLoudly_LeavingTheWorktreeRegisteredAndTheOutsideIntact()
     {
-        Assert.SkipWhen(TestLinks.IsUnixRoot, "root ignores the read-only parent that pins the link on Unix");
+        Assert.SkipUnless(TestLinks.PinSurvivesSafeDelete, TestLinks.PinDefeatedBySafeDeleteReason); // teardown = SafeDelete
         (GitWorktreeProvider provider, _, WorktreeHandle segment) = Segment();
         string outside = TestLinks.OutsideFolder(_base, "outside-pinned");
         string link = Path.Combine(segment.WorktreePath, "node_modules", "pinned");
         TestLinks.DirectoryLink(link, outside);
 
-        LinkRemovalException refusal;
+        Exception? thrown;
         using (TestLinks.Pin(link))
         {
-            refusal = Assert.Throws<LinkRemovalException>(() => provider.Discard(segment));
+            thrown = Record.Exception(() => provider.Discard(segment));
         }
 
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside)); // the guarantee, asserted first
+        LinkRemovalException refusal = Assert.IsType<LinkRemovalException>(thrown);
         Assert.Contains(link, refusal.Unremoved);
         Assert.True(File.Exists(Path.Combine(segment.WorktreePath, "README.md")), "a refused teardown deletes nothing");
         Assert.Contains(RegisteredWorktrees(), p => SamePath(p, segment.WorktreePath));
-        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
     }
 
     [Fact]
     public void CleanupCompletedRun_ALinkThatCannotBeRemoved_IsLoggedAsAWarning_NotSwallowed()
     {
-        Assert.SkipWhen(TestLinks.IsUnixRoot, "root ignores the read-only parent that pins the link on Unix");
+        Assert.SkipUnless(TestLinks.PinSurvivesSafeDelete, TestLinks.PinDefeatedBySafeDeleteReason); // reclaim = SafeDelete
         (_, _, WorktreeHandle segment) = Segment();
         string outside = TestLinks.OutsideFolder(_base, "outside-reclaim");
         string link = Path.Combine(segment.WorktreePath, "node_modules", "pinned");
@@ -506,9 +521,9 @@ public sealed class TeardownLinkSafetyTests : IDisposable
             WorktreeReclaim.CleanupCompletedRun(_repo, _root, junctionRoot: null, log);
         }
 
+        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside)); // the guarantee, asserted first
         Assert.Contains("WARNING", log.ToString(), StringComparison.Ordinal);
         Assert.Contains(link, log.ToString(), StringComparison.Ordinal);
-        Assert.Equal(OutsideFiles, TestLinks.FileCount(outside));
         Assert.True(Directory.Exists(segment.WorktreePath));
     }
 

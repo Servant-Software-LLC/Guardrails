@@ -98,23 +98,25 @@ public sealed class LinkSafeDeleteTests : IDisposable
     [Fact]
     public void SafeDelete_ALinkThatCannotBeRemoved_RefusesLoudly_AndDeletesNothing()
     {
-        Assert.SkipWhen(TestLinks.IsUnixRoot, "root ignores the read-only parent that pins the link on Unix");
+        Assert.SkipUnless(TestLinks.PinSurvivesSafeDelete, TestLinks.PinDefeatedBySafeDeleteReason);
         string outside = TestLinks.OutsideFolder(_base, "outside");
         string tree = Path.Combine(_base, "tree");
         File.WriteAllText(Path.Combine(Directory.CreateDirectory(tree).FullName, "own.txt"), "mine\n");
         string link = Path.Combine(tree, "pinned", "to-outside");
         TestLinks.DirectoryLink(link, outside);
 
-        LinkRemovalException refusal;
+        Exception? thrown;
         using (TestLinks.Pin(link))
         {
-            refusal = Assert.Throws<LinkRemovalException>(() => SafeDelete.DeleteDirectory(tree));
+            thrown = Record.Exception(() => SafeDelete.DeleteDirectory(tree));
         }
 
+        // The outside target first: whatever else went wrong, that is the guarantee.
+        Assert.Equal(21, TestLinks.FileCount(outside));
+        LinkRemovalException refusal = Assert.IsType<LinkRemovalException>(thrown);
         Assert.Contains(link, refusal.Unremoved);
         Assert.Contains("#826", refusal.Message, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(tree, "own.txt")), "a refused delete deletes NOTHING");
-        Assert.Equal(21, TestLinks.FileCount(outside));
     }
 
     [Fact]
