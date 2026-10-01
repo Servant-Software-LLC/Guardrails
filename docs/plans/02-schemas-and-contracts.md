@@ -5238,6 +5238,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
 | `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit`, `by` (`operator` \| `overwatcher` \| `task:<folder>`, the same value as the `supplied[]` record) — no `taskId`: a supply commit (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
+| `observer-fault` | an observer's exception, caught by its `FaultIsolatingObserver` (#803) — not an `IRunObserver` member | `observer` (its name: `live-table`, `console`, `event-stream`, `observer-projection`, `log-site`, `diagram`, or `run-observer` for one isolated by `SchedulerFactory`), `callback` (the member that threw), `faultKind` (the exception's type name only, never its message), `disabled` (true on the fault that disabled it) — no `taskId` |
 
 **`SuppliedResourcesCommitted` announces a base change the run did not itself author (design of record
 `40-in-flight-resource-supply.md`, issue #373).** A run whose base changed underneath it must say so — a
@@ -5246,6 +5247,17 @@ through every `IRunObserver` decorator like any other member (a decorator that d
 forwarding-sweep test every other member is caught by), it reaches `events.jsonl` as the row above and, for
 a human watching the run, a `[supplied] by <by>: N resource(s) committed <commit>: <paths>` line in both
 the live table and `--no-ui` console output.
+
+**An observer's exception never becomes a run outcome (#803).** Observers are display and telemetry, so each
+is isolated behind its own `FaultIsolatingObserver`: in the CLI every link of the chain (the live table or
+`--no-ui` console, this stream, §8.2's projection, the log site, the diagram) and the chain's head, and in
+`SchedulerFactory` whatever observer a caller passes in (a no-op when it is already isolated). A throw from a
+callback is caught there and the run continues. The first throw of each (observer, callback) pair is written in
+full — type, message, stack — to `logs/<runId>/observer-faults.log`, which a clean run never creates, and each
+throw adds an `observer-fault` row above. After **3** faults an observer is disabled for the rest of the run;
+a disabled chain link hands its calls straight to the link after it, so one broken surface never silences the
+others. The journal is outside this rule: it is written by the Scheduler and executor, never by an observer,
+and its writes still fail loudly.
 
 **`WaveDelivered` (§14.12, design of record `39-incremental-delivery.md`, issue #525) gets NO row here, on
 purpose.** Unlike a supply, a wave delivery already has a durable, richer record — `run.json`'s
