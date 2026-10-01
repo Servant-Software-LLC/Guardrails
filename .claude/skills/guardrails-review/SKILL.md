@@ -1297,10 +1297,26 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   In the measured plan the tell was in the test's own name and its own comment, both saying it was a
   tripwire on the exact page task 07 was rewriting.
 
+  **And a THIRD question, keyed on the CHANGED TEXT (#754).** Both searches above still need a COMPONENT
+  to key on, so both stay blind to the commonest case of all: a task told to reword **user-visible text**
+  — a banner, a halt message, a CLI option description, a diagnostic string — in ordinary command code
+  that is no renderer, serializer, formatter or schema. So ask:
+
+  > This task's prompt changes a user-visible string literal. Which tests assert that literal
+  > **verbatim**, and does any task own updating them?
+
+  Grep the repo for the LITERAL being changed, not for a component name, and check each hit against the
+  UNION of every task's `writeScope`. Measured (plan 41): `16-implement-halt-text-and-interlock-wording`
+  correctly reworded the undelivered-work banner, but `UndeliveredWorkWarningTests.cs` asserts that
+  banner verbatim in two places and sat in **no task's** `writeScope`. All 20 tasks went green, the whole
+  DAG was spent, and the run halted at the **terminal gate** on the merged HEAD — where nothing
+  downstream could repair it.
+
   Same severities as above: **BLOCKER** when the change certainly shifts the pinned output and no task
-  owns the golden; **WEAK** when plausible. And say which search you ran — "no orphan swept in by a
-  filter" and "no golden over this component anywhere" are different clearances, and reporting the first
-  as though it were the second is how this one was missed.
+  owns the golden; **WEAK** when plausible. And say WHICH search you ran — "no orphan swept in by a
+  filter", "no golden over this component anywhere" and "no test pins the text this task rewords" are
+  THREE different clearances, and reporting any one of them as though it were another is how both of
+  these were missed.
 <!-- END ADDED PROBE #193 -->
 <!-- BEGIN ADDED PROBE #248 — pattern-matching guardrail not verified against real output -->
 - **Pattern-matching guardrail not verified against real output (#248)**: any guardrail that
