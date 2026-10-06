@@ -91,6 +91,18 @@ public sealed class WriteScopeExtensionlessFileTests
     }
 
     [Fact]
+    public void Validate_DotSlashAndBackslashEntries_SuggestTheNormalizedWorkaround()
+    {
+        IReadOnlyList<Diagnostic> diags = Validate("[\"./Dockerfile\", \"docker\\\\Makefile\", \"Jenkinsfile\"]");
+
+        List<Diagnostic> hits = diags.Where(x => x.Code == DiagnosticCodes.WriteScopeExtensionlessFile).ToList();
+        Assert.Equal(3, hits.Count);
+        Assert.Contains(hits, h => h.Message.Contains("Write 'Dockerfile*'"));
+        Assert.Contains(hits, h => h.Message.Contains("Write 'docker/Makefile*'"));
+        Assert.Contains(hits, h => h.Message.Contains("Write 'Jenkinsfile*'"));
+    }
+
+    [Fact]
     public void Validate_DirectoryAndWorkaroundEntries_ReportNoGR2090()
     {
         IReadOnlyList<Diagnostic> diags = Validate("[\"src\", \"docs/\", \"Dockerfile*\", \"Makefile/\", \"docker-compose.yml\"]");

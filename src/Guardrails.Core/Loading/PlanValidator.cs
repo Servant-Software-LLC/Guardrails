@@ -2071,11 +2071,18 @@ public sealed class PlanValidator
                 // GR2090 (#838): a well-known extensionless FILE name is read as a directory prefix.
                 if (WriteScope.IsExtensionlessFileEntry(entry, out string fileName))
                 {
+                    // The matcher splits on '/' only and never strips './', so suggest the normalized form.
+                    string fixedEntry = entry.Trim().Replace('\\', '/');
+                    while (fixedEntry.StartsWith("./", StringComparison.Ordinal))
+                    {
+                        fixedEntry = fixedEntry[2..];
+                    }
+
                     diagnostics.Add(Warning(DiagnosticCodes.WriteScopeExtensionlessFile, task.Directory,
                         $"Task '{task.Id}' writeScope entry '{entry}' has no extension, so the harness treats it " +
                         $"as a DIRECTORY prefix ('{entry}/**') and a write to the file '{fileName}' itself is out " +
-                        $"of scope. Write '{entry}*' to claim the file (SSOT §3.4); if '{entry}' really is a " +
-                        $"directory, write '{entry}/' to say so."));
+                        $"of scope. Write '{fixedEntry}*' to claim the file (entries are repo-relative with '/' " +
+                        $"separators, SSOT §3.4); if '{fixedEntry}' really is a directory, write '{fixedEntry}/' to say so."));
                 }
 
                 // GR2020: vacuous entry that matches everything (e.g. "**" or "*").
