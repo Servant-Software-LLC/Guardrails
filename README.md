@@ -124,7 +124,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails breakdown <plan.md> [--out <dir>] [--runner-config <file>] [--force] [--no-validate]` | Author a plan folder from a plan `.md` — the same breakdown the JIT wave checkpoint runs, available as a verb so you do not have to be a Claude Code session to invoke `/plan-breakdown`. Writes beside the plan unless `--out`; refuses a `.charter.md` (flatten it with `charter handoff` first); **never marks the plan reviewed** — `/guardrails-review` still gates the run |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
 | `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness. On a **waved** plan this covers every diagram the plan owns — the plan-level one *and* each `wave-NN-<slug>/diagram.md` |
-| `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
+| `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>] [--allow-sleep]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running. On macOS the run keeps the Mac from idle-sleeping until it ends (`caffeinate -i`); `--allow-sleep` lets it sleep. Host sleep never counts against an attempt's timeout, and each sleep during the task DAG is reported (`host slept` in the live view, a `host-slept` row in `events.jsonl`) |
 | `guardrails status [folder]` | Whether the run is alive (`Run state:` line), then the journal table: per-task status, attempts, last failure |
 | `guardrails lock [folder] [--check] [--diff]` | Record or compare a plan folder's breakdown manifest (`guardrails.baseline`); `--check` reports drift via exit code, `--diff` prints the per-file classification |
 | `guardrails merge [folder] --remote <dir> [--apply]` | Merge a freshly regenerated breakdown into the current folder, preserving human guardrail edits; `--apply` materializes it (otherwise dry-run report) |
@@ -597,9 +597,14 @@ versions, and a computed `SUMMARY.md`.
   **If the code is private and the issue is public, pass `--lean`**: it withholds all of that and keeps
   only the harness-written evidence.
 - **It refuses when it can't see a token.** If a runner block in `guardrails.json` names an `authTokenEnv`
-  or `apiKeyEnv` that is unset in your shell, the scrub would be blind to that token, so `bundle` refuses
-  and writes nothing. Run it from the shell that exported the variable (`export LITELLM_MASTER_KEY=...`),
-  or pass `--without-agent-text` to ship the bundle with all agent-derived text removed, run-wide.
+  or `apiKeyEnv` that is unset or empty in your shell, the scrub would be blind to that token, so `bundle`
+  refuses and writes nothing. Run it from the shell that exported the variable with its real value
+  (`export LITELLM_MASTER_KEY=<value>`; in zsh a bare `export LITELLM_MASTER_KEY` exports it empty, and the
+  refusal says so; in bash it stays unset). Or pass `--without-agent-text` to ship the bundle with all
+  agent-derived text removed, run-wide. Or, only if the bundle stays private (say, moving a run between your
+  own machines), pass `--no-redact`: it skips ALL credential scrubbing and keeps all the evidence, and its
+  name always gets `-UNREDACTED` (an explicit `--out run.zip` becomes `run-UNREDACTED.zip`; a `--dir` folder
+  gets the suffix too). Never attach that one to a public issue.
 - **Where it goes.** `~/guardrails-bundles/<plan>-<runId>.zip` by default (`--out` or `--dir` to change
   it). Any destination inside a git working tree is refused, so a bundle can't be committed by accident.
   The absolute path is printed.
@@ -617,7 +622,7 @@ versions, and a computed `SUMMARY.md`.
   | `--task <id>` | Only this task's evidence (repeatable) |
   | `--include-worktree-diff` | Add the full git diff of the integration worktree and each selected task. Refused with `--lean` |
   | `--keep-paths` | Don't anonymize paths |
-  | `--no-redact` | Skip the credential passes. Never use it for a public issue |
+  | `--no-redact` | Skip ALL credential scrubbing (this also clears the token refusal above). The output's name always gets `-UNREDACTED`, `--out`/`--dir` included. Never use it for a public issue |
   | `--force-path` | Allow a destination inside a git working tree |
 - **Attaching it.** `gh` can't attach files to an issue. Drag the zip into the issue's comment box in the
   browser (or attach it to a gist or release and paste the link).

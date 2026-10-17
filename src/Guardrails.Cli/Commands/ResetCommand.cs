@@ -208,10 +208,12 @@ public static class ResetCommand
             return ExitCodes.Success;
         }
 
-        RunReset.Fresh(planDirectory);
-        io.Out.WriteLine(
-            "Full reset done: run.json, state.json, and logs deleted; the plan branch and all worktrees "
-            + "torn down; state re-seeded.");
+        bool tornDown = RunReset.Fresh(planDirectory, io.Error);
+        io.Out.WriteLine(tornDown
+            ? "Full reset done: run.json, state.json, and logs deleted; the plan branch and all worktrees "
+              + "torn down; state re-seeded."
+            : "Full reset done: run.json, state.json, and logs deleted; state re-seeded — but a worktree was "
+              + "LEFT IN PLACE because a link inside it could not be removed safely (see the warning above).");
         return ExitCodes.Success;
     }
 

@@ -107,6 +107,13 @@ public sealed record PromptResult
     /// </summary>
     public ContextManagementFailure? ContextManagement { get; init; }
 
+    /// <summary>
+    /// How often the session's context was compacted, and how many compactions failed (#817), or null when it compacted
+    /// nothing or the runner reports no compactions. Carried whatever the outcome: it is journalled on every attempt's
+    /// provenance, and the harness diagnoses context thrash from it on a failed one.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
+
     /// <summary>What the stall watchdog concluded, set only when <see cref="FailureKind"/> is <see cref="PromptFailureKind.Stalled"/> (#811).</summary>
     public StallReport? Stall { get; init; }
 

@@ -151,10 +151,14 @@ internal static class ClaudeSignalClassifier
         && (!assistantLine.TryGetProperty("parent_tool_use_id", out System.Text.Json.JsonElement parent)
             || parent.ValueKind == System.Text.Json.JsonValueKind.Null);
 
+    /// <summary>#800: Claude Code's own structured thrash result, <c>"terminal_reason":"rapid_refill_breaker"</c>.</summary>
+    internal static bool IsStructuredThrashResult(System.Text.Json.JsonElement resultLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(resultLine, "terminal_reason") == "rapid_refill_breaker";
+
     /// <summary>
-    /// #800: a result line that reports the thrash — <c>"terminal_reason":"rapid_refill_breaker"</c>, or, as the
-    /// fallback, an ERROR result (<c>is_error: true</c>) whose text opens with the give-up sentence. A successful result
-    /// that merely mentions the phrase (a model reporting that it wired up thrash detection) is never one.
+    /// #800: a result line that reports the thrash — <see cref="IsStructuredThrashResult"/>, or, as the fallback, an ERROR
+    /// result (<c>is_error: true</c>) whose text opens with the give-up sentence. A successful result that merely mentions
+    /// the phrase (a model reporting that it wired up thrash detection) is never one.
     /// </summary>
     internal static bool IsAutocompactThrashResult(System.Text.Json.JsonElement resultLine) =>
         ClaudeStreamParser.TryGetNonEmptyString(resultLine, "terminal_reason") == "rapid_refill_breaker"

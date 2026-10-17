@@ -198,9 +198,28 @@ public sealed class ObserverProjection : IRunObserver
             ["model"] = record.Provenance?.Model,
             ["runner"] = record.Provenance?.Runner,
             ["tier"] = record.Provenance?.Tier,
-            ["tierSource"] = record.Provenance?.TierSource?.ToString()
+            ["tierSource"] = record.Provenance?.TierSource?.ToString(),
+            // #816: the write-scope facts the record carries, so an attached client rebuilds the same record.
+            ["scopeRevertedPaths"] = record.ScopeRevertedPaths is { } reverted
+                ? new JsonArray(reverted.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray())
+                : null,
+            ["writeScopeNotChecked"] = record.WriteScopeNotChecked
         });
         _inner.AttemptFinished(task, record);
+    }
+
+    /// <summary>#810: a host sleep, recorded like every other call.</summary>
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "HostSlept",
+            ["from"] = JsonValue.Create(from),
+            ["to"] = JsonValue.Create(to),
+            ["sleptForSeconds"] = JsonValue.Create((long)Math.Round(sleptFor.TotalSeconds)),
+            ["inFlight"] = new JsonArray([.. inFlight.Select(x => (JsonNode?)JsonValue.Create(x))])
+        });
+        _inner.HostSlept(from, to, sleptFor, inFlight);
     }
 
     /// <summary>#811: the stall watchdog's verdict, recorded like every other call (seconds, not TimeSpan strings).</summary>
@@ -314,6 +333,36 @@ public sealed class ObserverProjection : IRunObserver
             ["strippedPaths"] = strippedPaths
         });
         _inner.OutOfScopeStripped(task, stripped);
+    }
+
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "WriteScopeNotChecked",
+            ["taskId"] = task.Id,
+            ["attempt"] = attempt,
+            ["reason"] = reason
+        });
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+    }
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        var changed = new JsonArray();
+        foreach (WriteScopeOffense offense in paths)
+        {
+            changed.Add(JsonValue.Create(offense.Path));
+        }
+
+        Append(new JsonObject
+        {
+            ["member"] = "InterruptedAttemptChangesFound",
+            ["taskId"] = task.Id,
+            ["paths"] = changed,
+            ["patchPath"] = patchPath
+        });
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
     }
 
     public void DecisionRecorded(DecisionEntry entry)

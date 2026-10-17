@@ -607,11 +607,11 @@ public static class RetryPolicy
         //
         // The reason the write-side verbs stay out is REACH, not enforcement: reading a blob and writing
         // it back with the editing tool is the only per-file route available to a plan whose allowedTools
-        // grant no git WRITE verbs. It is NOT more strongly enforced than a git write — neither route is
-        // checked against writeScope at write time. `WriteScope.IsInScope` is consulted in exactly three
-        // places: `HarnessWrite` (the harness's OWN write), `StagingMover` (a path match) and the
-        // RETROSPECTIVE `WriteScopeCheck`; `WorktreeContainmentHook` enforces worktree containment only.
-        // Whichever route the agent takes, the same retroactive check over the FINAL state catches it.
+        // grant no git WRITE verbs. Since #816 the editing-tool route IS checked against writeScope at write
+        // time (the `WriteScopeHook` PreToolUse hook, compiled from `WriteScope.ToAnchoredPatterns`), while a
+        // git or other Bash write is not; `WorktreeContainmentHook` still enforces worktree containment only.
+        // Whichever route the agent takes, the same retrospective `WriteScopeCheck` catches it — and since #816
+        // that check runs at the end of EVERY attempt, not only one whose action succeeded.
         if (patchPath is not null)
         {
             text.AppendLine($"- A few changed lines in a file that already existed — READ THE PATCH: `{patchPath}`.");
@@ -738,7 +738,8 @@ public static class RetryPolicy
     /// </param>
     public static string ForWriteScopeViolation(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck,
-        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null, string? outOfScopePatchPath = null)
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null, string? outOfScopePatchPath = null,
+        bool sharedWorkspace = false)
     {
         // #705: whether the attempt left ANY in-scope work is the check's own fact, not the snapshot's — a snapshot
         // taken after the revert can be non-empty with nothing of the agent's in it. With no in-scope change there
@@ -753,6 +754,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
         AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
 
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
@@ -797,6 +799,127 @@ public static class RetryPolicy
 
         AppendSalvageSection(text, offeredSalvage);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Issue #816: the section appended to the feedback of an attempt that ended WITHOUT reaching the write-scope
+    /// check's ordinary place (after a successful action) — a timeout, a turn cap, a failed action, a staging failure,
+    /// a rejected fragment or harness write — when that attempt had changed paths outside the scope. The harness
+    /// ran the same check at the attempt's end instead, kept a copy of the offending bytes (#705) and reverted them,
+    /// so whatever the next attempt continues from (the serial workspace, or a worktree salvage) no longer holds them.
+    /// Kept in its own section, appended after the failure-specific text, so that text is untouched: the partial
+    /// work it tells the agent to continue from is still there, minus these paths.
+    /// Returns "" when the check found nothing to revert.
+    /// </summary>
+    /// <param name="scopeCheck">The end-of-attempt check; its offending paths are the ones reverted.</param>
+    /// <param name="outOfScopePatchPath">The #705 kept copy, or null when none was written.</param>
+    /// <param name="reverted">
+    /// False only when the revert itself failed (a git error). The paths are then still on disk, and the text says
+    /// so rather than claiming a revert that did not happen.
+    /// </param>
+    /// <param name="actionKind">A prompt action is also shown the needsHuman door.</param>
+    public static string ForOutOfScopeWritesReverted(
+        WriteScopeCheckResult scopeCheck, string? outOfScopePatchPath, bool reverted, ActionKind actionKind,
+        bool sharedWorkspace = false)
+    {
+        if (scopeCheck.OffendingPaths.Count == 0)
+        {
+            return "";
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine("## Out-of-scope writes were reverted");
+        text.AppendLine();
+        text.AppendLine("The path(s) below changed during this attempt and fall OUTSIDE this task's writeScope. The harness");
+        text.AppendLine("checks the scope at the end of EVERY attempt, however the attempt ends, and a change outside it is");
+        text.AppendLine(reverted
+            ? "never carried forward: these were REVERTED to their pre-attempt content before this retry."
+            : "never carried forward — but reverting these failed, so they are still on disk. Restore each to its pre-attempt content first.");
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
+        text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
+        text.AppendLine("Do not write those paths again: a change outside the scope is reverted on every attempt, and it fails");
+        text.AppendLine("an attempt that otherwise finishes. Never edit a file another task authored — the tests that grade");
+        text.AppendLine("this task above all — to make it fit your implementation; make your implementation fit it.");
+
+        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
+        {
+            text.AppendLine();
+            text.AppendLine($"Before reverting, the harness kept a copy of those change(s) at `{keptCopy.Replace('\\', '/')}`.");
+            text.AppendLine("That copy is for a human deciding whether this task's writeScope should grow — not for you:");
+            text.AppendLine("re-applying it is reverted again.");
+        }
+
+        if (actionKind == ActionKind.Prompt)
+        {
+            text.AppendLine();
+            text.AppendLine("If this task cannot be done without changing a path outside that scope, do not write it again.");
+            text.AppendLine("Write `{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead, so a human can widen the writeScope in task.json.");
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Issue #816 second review: the previous-attempt feedback for a task's first attempt when run start found that
+    /// an attempt of it in an EARLIER process never ended, and that paths outside its writeScope now differ from the
+    /// snapshot that attempt started from. Deliberately NOT a revert report — nothing was reverted, because the
+    /// harness cannot tell that attempt's writes from a human's fix or a <c>git pull</c> since.
+    /// </summary>
+    public static string ForInterruptedAttemptChanges(TaskNode task, WriteScopeCheckResult check, string? patchPath)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# An earlier attempt of task '{task.Id}' was interrupted and never checked");
+        text.AppendLine();
+        text.AppendLine("That attempt never ended (the harness was stopped, crashed, or the machine slept), so its write-scope");
+        text.AppendLine("check never ran. At the start of this run, these paths OUTSIDE your writeScope differ from the tree that");
+        text.AppendLine("attempt started from:");
+        AppendOffenses(text, check.OffendingPaths, gap: null);
+        text.AppendLine();
+        text.AppendLine("They may be that attempt's out-of-scope edits, or changes a person made since — the harness cannot");
+        text.AppendLine("tell, so it left them in place. Do NOT build on them, and do not write them yourself: they are outside");
+        text.AppendLine("your scope, and a change you make to them is reverted when this attempt ends.");
+        text.AppendLine();
+        AppendAllowedScope(text, check.Scope);
+        if (patchPath is { Length: > 0 })
+        {
+            text.AppendLine();
+            text.AppendLine($"A copy of those differences is at `{patchPath.Replace('\\', '/')}` for a human.");
+        }
+
+        if (task.Action.Kind == ActionKind.Prompt)
+        {
+            text.AppendLine();
+            text.AppendLine("If they block you — for example a test that no longer matches what the plan intends — do not work");
+            text.AppendLine("around them. Write `{ \"needsHuman\": { \"question\": \"<which path, and why it blocks this task>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead.");
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #816 review Q1: in SERIAL mode the attempt ran in the operator's own checkout, where anything that changed while
+    /// it ran counts as changed "during the attempt" — including an edit a person or another process made. Editing that
+    /// checkout during a serial run is not supported, but the text must not blame the agent for what it may not have
+    /// done. Worktree mode appends nothing: a segment is the agent's alone.
+    /// </summary>
+    private static void AppendSharedWorkspaceCaveat(StringBuilder text, bool sharedWorkspace)
+    {
+        if (!sharedWorkspace)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine("This run is serial: the attempt ran in the operator's own checkout, so the list above is every path that");
+        text.AppendLine("changed while it ran, outside the writeScope — it may include edits made outside the agent (by a person or");
+        text.AppendLine("another process in this checkout). Editing this checkout during a serial run is not supported; such edits");
+        text.AppendLine("are reverted like the agent's, and their bytes are kept in the copy named below.");
     }
 
     /// <summary>
@@ -875,7 +998,7 @@ public static class RetryPolicy
     /// </param>
     public static string ForWriteScopeGapHalt(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null,
-        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null)
+        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null, bool sharedWorkspace = false)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
         IReadOnlyList<string> tests = RepeatedTests(gap);
@@ -921,6 +1044,8 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
         AppendOffenses(text, scopeCheck.OffendingPaths, gap);
+        // #816 review Q1: in serial mode the repeat may be an edit made outside the agent — say so before anyone acts.
+        AppendSharedWorkspaceCaveat(text, sharedWorkspace);
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
         text.AppendLine();
@@ -1682,6 +1807,17 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The previous attempt filled the model's context faster than it could be compacted, so it was");
         text.AppendLine("stopped. On this attempt, keep what you read small:");
+        AppendBoundedReadBullets(text);
+        text.AppendLine();
+        AppendPartialWorkLine(text, fileWritesRolledBack, salvageRef);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>#800 / #817: the bounded-read advice both context diagnoses give (the retry must carry less).</summary>
+    private static void AppendBoundedReadBullets(StringBuilder text)
+    {
         text.AppendLine();
         text.AppendLine("- Read files with the Read tool, and pass an offset and a limit for anything long. Do NOT print whole");
         text.AppendLine("  files through Bash (`cat`, `type`, `Get-Content`).");
@@ -1689,7 +1825,11 @@ public static class RetryPolicy
         text.AppendLine("  earlier result instead of reading the file again another way.");
         text.AppendLine("- Filter build and test output to the errors (for example with a filtered test run) instead of printing");
         text.AppendLine("  all of it, and do not re-read files you have already read.");
-        text.AppendLine();
+    }
+
+    /// <summary>#800 / #817: the rollback-aware line on where the previous attempt's partial work is.</summary>
+    private static void AppendPartialWorkLine(StringBuilder text, bool fileWritesRolledBack, SalvageRef? salvageRef)
+    {
         if (fileWritesRolledBack && salvageRef is not null)
         {
             text.AppendLine("Its partial work was reverted from your working tree, but it was NOT discarded — see");
@@ -1703,10 +1843,6 @@ public static class RetryPolicy
         {
             text.AppendLine("Its PARTIAL WORK is preserved in your workspace: continue from it rather than starting over.");
         }
-
-        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
-        AppendSalvageSection(text, salvageRef);
-        return text.ToString();
     }
 
     /// <summary>The heading <see cref="ForContextExhausted"/> uses (pinned by tests).</summary>
@@ -1732,6 +1868,67 @@ public static class RetryPolicy
             : "Set the runner block's contextTokens toward the backend's per-slot window";
         return $"{raise}, split the task into smaller ones, or {Narrow}.";
     }
+
+    /// <summary>
+    /// #817: what an attempt diagnosed as CONTEXT THRASH (<see cref="ContextThrash"/>) is told when it ran out of turns,
+    /// timed out or stalled, IN PLACE of the text those kinds would otherwise get: that text blames the budget ("the
+    /// harness has RAISED the turn budget"), where here the budget was spent re-reading what compaction dropped.
+    /// Rollback-aware, with the salvage section, like <see cref="ForContextExhausted"/>, whose bounded-read advice it
+    /// shares. A generic action error keeps its own feedback and gets <see cref="ForContextThrashSection"/> appended.
+    /// </summary>
+    public static string ForContextThrash(
+        TaskNode task, int attempt, ContextThrash thrash, PromptRunnerConfig? block,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        AppendContextThrashBody(text, thrash, block);
+        text.AppendLine();
+        AppendPartialWorkLine(text, fileWritesRolledBack, salvageRef);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #817 review W2: the CONTEXT THRASH section alone, APPENDED to a generic action error's own feedback (the runner's
+    /// result text, any refused tool calls) rather than replacing it: that error may have a cause of its own.
+    /// </summary>
+    public static string ForContextThrashSection(ContextThrash thrash, PromptRunnerConfig? block)
+    {
+        var text = new StringBuilder();
+        text.AppendLine();
+        AppendContextThrashBody(text, thrash, block);
+        return text.ToString();
+    }
+
+    private static void AppendContextThrashBody(StringBuilder text, ContextThrash thrash, PromptRunnerConfig? block)
+    {
+        string ended = thrash.Kind switch
+        {
+            Prompts.PromptFailureKind.MaxTurns => "ran out of turns",
+            Prompts.PromptFailureKind.Timeout => "timed out",
+            Prompts.PromptFailureKind.Stalled => "went silent and was stopped",
+            _ => "failed"
+        };
+
+        text.AppendLine(ContextThrashHeading);
+        text.AppendLine();
+        text.AppendLine($"The previous attempt {ended} after its context was compacted over and over ({thrash.Describe()}).");
+        text.AppendLine("Each compaction drops the files you had read, so the attempt kept re-reading them. That, not the turn");
+        text.AppendLine($"budget or the clock, is what used up the attempt: {thrash.BudgetSentence()}.");
+        text.AppendLine("On this attempt, keep what you read small:");
+        AppendBoundedReadBullets(text);
+        text.AppendLine();
+        text.AppendLine("If the task cannot be done without holding more than the context fits (it needs several large files");
+        text.AppendLine("open at once), STOP and write {\"needsHuman\": \"context thrash: <what does not fit>\"} to");
+        text.AppendLine("GUARDRAILS_STATE_OUT rather than burning another attempt. A second attempt in a row that runs out of");
+        text.AppendLine("context is not retried. The operator's levers, not yours to change:");
+        text.AppendLine(ContextLevers(block));
+    }
+
+    /// <summary>The heading <see cref="ForContextThrash"/> uses (pinned by tests).</summary>
+    internal const string ContextThrashHeading = "## CONTEXT THRASH: the attempt spent its budget re-reading what compaction dropped";
 
     /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
     internal const string StallHeading = "## The session went silent and was stopped";

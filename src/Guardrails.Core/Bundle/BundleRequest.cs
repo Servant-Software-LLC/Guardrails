@@ -90,6 +90,12 @@ public sealed record BundleProbes
     /// <summary>The owner process's descendants (#805 S1), asked only while the run is Running.</summary>
     public Func<int, BundleProcessTree> ProcessTree { get; init; } = SystemBundleProcessTree.Capture;
 
+    /// <summary>
+    /// The host's sleep/wake history for [from, to] (#810): <c>pmset -g log</c> on macOS. Null — the default, and every
+    /// OS but macOS in production — adds no file.
+    /// </summary>
+    public Func<DateTimeOffset, DateTimeOffset, BundleSleepWakeLog?>? SleepWake { get; init; }
+
     /// <summary>Notes for MANIFEST.md's Notes list (an unparsable <c>GIT_CONFIG_COUNT</c>).</summary>
     public IReadOnlyList<string> Notes { get; init; } = [];
 }

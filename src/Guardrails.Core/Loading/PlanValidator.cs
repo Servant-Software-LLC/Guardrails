@@ -2031,6 +2031,7 @@ public sealed class PlanValidator
     /// <c>[]</c> ("writes nothing to the repo") is VALID and falls through untouched.
     /// GR2019 ERROR: an entry is an absolute path or contains <c>..</c> (escapes the workspace).
     /// GR2020 WARNING: an entry is vacuous/over-broad (e.g. <c>**</c> or <c>*</c>).
+    /// GR2090 WARNING: an entry is a well-known extensionless FILE name (<c>Dockerfile</c>) the matcher reads as a directory (#838).
     /// Plan-level and wave-level gate FOLDERS have no <c>task.json</c>, so they are unaffected.
     /// </summary>
     private static void ValidateWriteScopes(PlanDefinition plan, List<Diagnostic> diagnostics)
@@ -2065,6 +2066,23 @@ public sealed class PlanValidator
                         $"Task '{task.Id}' writeScope entry '{entry}' is an absolute path or contains " +
                         "'..' segments, which could reference files outside the workspace root. " +
                         "Write-scope entries must be relative to the repository root (SSOT §3.4)."));
+                }
+
+                // GR2090 (#838): a well-known extensionless FILE name is read as a directory prefix.
+                if (WriteScope.IsExtensionlessFileEntry(entry, out string fileName))
+                {
+                    // The matcher splits on '/' only and never strips './', so suggest the normalized form.
+                    string fixedEntry = entry.Trim().Replace('\\', '/');
+                    while (fixedEntry.StartsWith("./", StringComparison.Ordinal))
+                    {
+                        fixedEntry = fixedEntry[2..];
+                    }
+
+                    diagnostics.Add(Warning(DiagnosticCodes.WriteScopeExtensionlessFile, task.Directory,
+                        $"Task '{task.Id}' writeScope entry '{entry}' has no extension, so the harness treats it " +
+                        $"as a DIRECTORY prefix ('{entry}/**') and a write to the file '{fileName}' itself is out " +
+                        $"of scope. Write '{fixedEntry}*' to claim the file (entries are repo-relative with '/' " +
+                        $"separators, SSOT §3.4); if '{fixedEntry}' really is a directory, write '{fixedEntry}/' to say so."));
                 }
 
                 // GR2020: vacuous entry that matches everything (e.g. "**" or "*").

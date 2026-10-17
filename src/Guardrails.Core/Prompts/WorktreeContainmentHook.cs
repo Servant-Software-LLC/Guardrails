@@ -64,7 +64,16 @@ public static class WorktreeContainmentHook
     /// name="logDir"/> (an action AND each of its guardrails all write into the same attempt log
     /// directory) — defaults to the action's plain file names.
     /// </summary>
-    public static string WriteHookFiles(string logDir, string worktreeRoot, string? filePrefix = null)
+    /// <param name="logDir">The attempt's harness-owned log directory.</param>
+    /// <param name="worktreeRoot">The segment worktree baked into the script.</param>
+    /// <param name="filePrefix">Disambiguates several invocations sharing one log dir.</param>
+    /// <param name="writeScope">
+    /// Issue #816: when non-null, the write-scope hook (<see cref="WriteScopeHook"/>) is written beside this one and
+    /// composed into the SAME settings file as a second <c>PreToolUse</c> group, because a runner is handed exactly
+    /// one <c>--settings</c> file. Null writes the containment hook alone, as before.
+    /// </param>
+    public static string WriteHookFiles(
+        string logDir, string worktreeRoot, string? filePrefix = null, WriteScopeHook.Spec? writeScope = null)
     {
         Directory.CreateDirectory(logDir);
 
@@ -82,8 +91,14 @@ public static class WorktreeContainmentHook
                 UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         }
 
+        var hooks = new List<(string Matcher, string ScriptPath)> { (Matcher, scriptPath) };
+        if (writeScope is not null)
+        {
+            hooks.Add((WriteScopeHook.Matcher, WriteScopeHook.WriteScript(logDir, writeScope, filePrefix)));
+        }
+
         string settingsPath = Path.Combine(logDir, prefix + SettingsFileName);
-        AtomicFile.WriteAllText(settingsPath, SettingsJson(scriptPath, windows));
+        AtomicFile.WriteAllText(settingsPath, HookSettingsJson(hooks, windows));
         return settingsPath;
     }
 
@@ -93,25 +108,39 @@ public static class WorktreeContainmentHook
     /// the OS-appropriate script — <c>pwsh -File</c> on Windows (matches the interpreter convention
     /// used elsewhere in the harness), the executable <c>.sh</c> directly on Unix.
     /// </summary>
-    internal static string SettingsJson(string scriptPath, bool windows)
+    internal static string SettingsJson(string scriptPath, bool windows) =>
+        HookSettingsJson([(Matcher, scriptPath)], windows);
+
+    /// <summary>
+    /// The settings JSON for one or more <c>PreToolUse</c> hook scripts, one matcher group each (issue #816 composes
+    /// the write-scope hook beside the containment hook this way). With a single entry the output carries exactly the
+    /// pre-#816 containment settings (one group, same matcher, same command).
+    /// </summary>
+    internal static string HookSettingsJson(IReadOnlyList<(string Matcher, string ScriptPath)> hooks, bool windows)
     {
-        string command = windows
-            ? $"pwsh -NoProfile -ExecutionPolicy Bypass -File {ShellQuoteForJson(scriptPath)}"
-            : ShellQuoteForJson(scriptPath).Trim('"');
+        IEnumerable<string> groups = hooks.Select(hook =>
+        {
+            string command = windows
+                ? $"pwsh -NoProfile -ExecutionPolicy Bypass -File {ShellQuoteForJson(hook.ScriptPath)}"
+                : ShellQuoteForJson(hook.ScriptPath).Trim('"');
+            return $$"""
+                  {
+                    "matcher": "{{hook.Matcher}}",
+                    "hooks": [
+                      {
+                        "type": "command",
+                        "command": {{JsonQuote(command)}}
+                      }
+                    ]
+                  }
+            """;
+        });
 
         return $$"""
         {
           "hooks": {
             "PreToolUse": [
-              {
-                "matcher": "{{Matcher}}",
-                "hooks": [
-                  {
-                    "type": "command",
-                    "command": {{JsonQuote(command)}}
-                  }
-                ]
-              }
+        {{string.Join(",\n", groups)}}
             ]
           }
         }

@@ -909,6 +909,60 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        lock (_gate)
+        {
+            // #810, the live twin of ConsoleRunObserver's line. NON-coalescing: each sleep is its own event, and the one
+            // fact that separates an asleep machine from a hung run.
+            AppendNarrative($"[bold]host slept:[/] {Markup.Escape(HostSleepText.Line(from, to, sleptFor, inFlight))}");
+        }
+    }
+
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        lock (_gate)
+        {
+            // #816 second review (WEAK A): a scope check that could not run is said on the surface the operator
+            // is watching, not only in a log file. Same words as the plain console; the whole line is escaped, so
+            // its "[write-scope]" prefix is text, not a Spectre style tag.
+            AppendNarrative($"[bold yellow]{Markup.Escape(ConsoleRunObserver.WriteScopeNotCheckedNotice(task, attempt, reason))}[/]");
+        }
+    }
+
+    public void CleanupFailed(string owner, Exception error)
+    {
+        if (ConsoleRunObserver.CleanupRefusedNotice(owner, error) is not { } notice)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            // #826: a teardown refused over a link that could not be removed — the tree is still on disk.
+            AppendNarrative($"[bold yellow]{Markup.Escape(notice)}[/]");
+        }
+    }
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        lock (_gate)
+        {
+            AppendNarrative($"[bold yellow]{Markup.Escape(ConsoleRunObserver.InterruptedAttemptNotice(task, paths, patchPath))}[/]");
+        }
+    }
+
+    public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped)
+    {
+        lock (_gate)
+        {
+            // Not a failure (#280) — but a stripped path must never be a silent surprise on the live surface either.
+            string paths = string.Join(", ", stripped.Select(o => $"{o.Status} {o.Path}"));
+            AppendNarrative(
+                $"[grey]{Markup.Escape($"scope-clean {task.Id}: stripped {stripped.Count} out-of-scope path(s) left by a passing guardrail (not a failure): {paths}")}[/]");
+        }
+    }
+
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         lock (_gate)

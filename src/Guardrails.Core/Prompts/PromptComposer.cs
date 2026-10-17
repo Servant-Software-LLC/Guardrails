@@ -15,7 +15,8 @@ namespace Guardrails.Core.Prompts;
 /// <item>(actions) <c>## Context from completed dependency tasks</c> — transcript/fragment pointers
 ///   for the transitive <c>dependsOn</c> closure (issue #26 Gap 4); present on every attempt.</item>
 /// <item>(actions) <c>## Output contract</c> — write a JSON fragment to STATE_OUT; the needsHuman escape.</item>
-/// <item>(actions, worktree mode only) <c>## Write scope (harness-enforced)</c> — the ENFORCED write scope
+/// <item>(actions, whenever the retrospective check can run — worktree mode, or serial mode in a git top level,
+///   #816) <c>## Write scope (harness-enforced)</c> — the ENFORCED write scope
 ///   (declared <c>writeScope</c> + implicit staging destinations), rendered from the array the write-scope
 ///   check gates on, never from author prose (issue #706).</item>
 /// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
@@ -253,8 +254,9 @@ public static class PromptComposer
             text.Append("so `src/**/Foo.cs` does not cover `src/Foo.cs`.\n\n");
         }
 
-        text.Append("When you finish, the harness diffs every file you changed against this task's base commit.\n");
-        text.Append("A change to any path this scope does not cover FAILS the attempt, and that path is reverted.\n");
+        text.Append("When the attempt ends, the harness diffs every file you changed against the tree this attempt started\n");
+        text.Append("from. A change to any path this scope does not cover FAILS the attempt, and that path is reverted —\n");
+        text.Append("also when the attempt ends early (a timeout, a turn cap), so it is never carried into a retry.\n");
         text.Append("If the task cannot be done without changing a path it does not cover, do not write it. Write\n");
         text.Append("`{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`\n");
         text.Append("to the state-out path instead, so a human can widen the scope in `task.json`.\n");

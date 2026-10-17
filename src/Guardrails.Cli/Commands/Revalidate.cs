@@ -1,5 +1,6 @@
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
@@ -192,7 +193,16 @@ public static class Revalidate
         {
             if (worktreeTarget is { Ephemeral: true } ephemeral)
             {
-                GitWorktreeProvider.RemoveDetachedWorktree(plan.Workspace, ephemeral.Path);
+                try
+                {
+                    GitWorktreeProvider.RemoveDetachedWorktree(plan.Workspace, ephemeral.Path);
+                }
+                catch (LinkRemovalException refusal)
+                {
+                    // #826: the ephemeral tree is left standing rather than deleted through a link — say so,
+                    // without masking the revalidation verdict above.
+                    output.WriteLine($"\nWARNING: the temporary revalidation worktree was left in place — {refusal.Message}");
+                }
             }
         }
     }

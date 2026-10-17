@@ -65,7 +65,8 @@ public static class SchedulerFactory
         ProcessRunner processRunner,
         IExecutableProbe probe,
         IRunObserver observer,
-        Overwatch? overwatch)
+        Overwatch? overwatch,
+        HostSleepMonitor? hostSleep = null)
     {
         var stateManager = new StateManager(plan.PlanDirectory);
         stateManager.Initialize();
@@ -81,7 +82,8 @@ public static class SchedulerFactory
         var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
-        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch);
+        var executor = new TaskExecutor(
+            plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch, hostSleep: hostSleep);
         return (executor, journal, observer);
     }
 
@@ -141,6 +143,10 @@ public static class SchedulerFactory
     /// workspace. Null (an embedded caller with no run of its own) ⇒ resolved here via
     /// <see cref="ResolveWorktreeMode"/>.
     /// </param>
+    /// <param name="hostSleep">
+    /// The run's host-sleep monitor (#810), whose detections the executor records on in-flight attempts and reports to
+    /// the observer; null (an embedded caller, a test) records nothing. The caller owns its heartbeat.
+    /// </param>
     public static Scheduler Create(
         PlanDefinition plan,
         ProcessRunner processRunner,
@@ -151,13 +157,14 @@ public static class SchedulerFactory
         IOverwatchInteraction? overwatchInteraction = null,
         IReadOnlyDictionary<string, bool>? breakdownConfirmations = null,
         string? junctionRoot = null,
-        WorktreeModeResolution? worktreeMode = null)
+        WorktreeModeResolution? worktreeMode = null,
+        HostSleepMonitor? hostSleep = null)
     {
         // Design 41 §4/§7: build the ONE Overwatch here and hand it to both CreateExecutor (which wires it
         // into the TaskExecutor, unchanged) and the Scheduler (below) — never a second instance.
         Overwatch? overwatch = BuildOverwatch(plan, processRunner, overwatchInteraction);
         (TaskExecutor executor, RunJournal journal, IRunObserver isolatedObserver) =
-            CreateExecutor(plan, processRunner, probe, observer, overwatch);
+            CreateExecutor(plan, processRunner, probe, observer, overwatch, hostSleep);
         observer = isolatedObserver;
 
         // The re-verifier (attempt-decoupled guardrail runner) is wired UNCONDITIONALLY — non-null in

@@ -259,7 +259,10 @@ out-of-scope paths (eventual `needs-human`). The check **never reverts**. **Rena
 **D + A** (both paths must be in scope); **deletions** — the deleted path must be in scope. **Absent
 ⇒ no check** (the off-switch): a task you cannot confidently scope omits the field and is reported as
 a broad surface — **never** give it a vacuous `**`. A scope that escapes the workspace ⇒ **GR2019**
-(error); a vacuous/over-broad scope ⇒ **GR2020** (warning). **TDD test-protection:** the test-author
+(error); a vacuous/over-broad scope ⇒ **GR2020** (warning). **An extensionless bare entry is a
+DIRECTORY prefix (#838):** `"Dockerfile"` means `Dockerfile/**` and never claims the file `Dockerfile` — write
+**`"Dockerfile*"`** (likewise `"Makefile*"`, `"LICENSE*"`, `"Jenkinsfile*"`); `validate` warns **GR2090** on these
+well-known names (dotfiles like `.dockerignore` are matched literally and are fine). **TDD test-protection:** the test-author
 task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES them, so
 the check deterministically enforces "the implementation may not write the tests" — the replacement
 for the removed `captureHashes`/`tests-untouched`/`restoreOnRetry` triad. See SKILL.md Step 5.
