@@ -50,6 +50,18 @@ internal static class ScopeGit
     }
 
     /// <summary>
+    /// #827: run git and return its EXIT CODE and stdout without treating a non-zero exit as a failure — for a caller
+    /// that must tell one specific exit code (<c>rev-parse --verify --quiet HEAD</c> exits 1 for "no such ref") from
+    /// every other. A timeout, a cancel or a spawn failure still throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    internal static (int ExitCode, string StandardOutput) RunForExitCode(
+        string workingDir, string? indexFile, IReadOnlyList<string> args, CancellationToken cancellationToken = default)
+    {
+        (int exit, byte[] stdout, _) = RunCore(workingDir, indexFile, args, cancellationToken, null, null);
+        return (exit, ChildProcessEncoding.Utf8NoBom.GetString(stdout));
+    }
+
+    /// <summary>
     /// <see cref="Run"/>, returning stdout as BYTES — for <c>cat-file blob</c>, whose output is file content and
     /// must reach the disk unchanged.
     /// </summary>

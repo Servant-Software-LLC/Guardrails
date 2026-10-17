@@ -221,7 +221,7 @@ public sealed class NestedRepoStagingTests
     }
 
     [Fact]
-    public void SerialSnapshot_WhenTheAttemptCreatesTheFreshNestedRepo_ItIsNotAnOffense()
+    public void SerialSnapshot_WhenTheAttemptCreatesAFreshNestedRepoInScope_ItIsAllowed_AndReported()
     {
         using var repo = new TempGitRepo();
         using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
@@ -230,10 +230,44 @@ public sealed class NestedRepoStagingTests
 
         repo.NestedRepo("vendor/new", withCommit: false); // created DURING the attempt
 
+        WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["vendor/**"], Ct);
+
+        Assert.True(check.Passed, string.Join(", ", check.OffendingPaths.Select(o => o.Path)));
+        Assert.Equal(["vendor/new"], check.InScopePaths);
+        Assert.Equal(["vendor/new"], check.SkippedNestedRepos);
+    }
+
+    [Fact]
+    public void SerialSnapshot_WhenTheAttemptCreatesAFreshNestedRepoOutOfScope_ItIsAnOffense_NotABypass()
+    {
+        using var repo = new TempGitRepo();
+        using ScopeDiffBase snapshot = ScopeDiffBase.TryCaptureSerial(repo.RepoPath, repo.RepoPath, out string? why, Ct)
+            ?? throw new InvalidOperationException($"snapshot failed: {why}");
+
+        repo.NestedRepo("vendor/new", withCommit: false); // created DURING the attempt, outside src/**
+
         WriteScopeCheckResult check = WriteScopeCheck.Check(snapshot, ["src/**"], Ct);
 
-        Assert.True(check.Passed);
-        Assert.Equal(["vendor/new"], check.SkippedNestedRepos);
+        Assert.False(check.Passed);
+        WriteScopeOffense offense = Assert.Single(check.OffendingPaths);
+        Assert.Equal("vendor/new", offense.Path);
+        Assert.Equal(WriteScopeOffense.EmbeddedRepoStatus, offense.Status);
+
+        // It is not in the index, so the revert must neither throw nor delete the directory.
+        WriteScopeCheck.ScopedRevert(snapshot, check.OffendingPaths, Ct);
+        Assert.True(File.Exists(repo.Dir("vendor/new/inner.txt")));
+    }
+
+    [Fact]
+    public void WorktreeBase_AFreshNestedRepoOutOfScope_IsAnOffense()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
+        repo.NestedRepo("vendor/new", withCommit: false);
+
+        WriteScopeCheckResult check = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.Equal(["vendor/new"], check.OffendingPaths.Select(o => o.Path).ToArray());
     }
 
     [Fact]
@@ -304,6 +338,65 @@ public sealed class NestedRepoStagingTests
             repo.RepoPath, "ls-tree", "-r", "--name-only", "refs/guardrails/salvage/test-827/attempt-1").Replace('\\', '/');
         Assert.Contains("src/wip.cs", tree);
         Assert.DoesNotContain("vendor/new", tree);
+    }
+
+    [Fact]
+    public void FindCommitlessNestedRepos_FailsClosed_OnlyAnExitOfExactlyOneExcludes()
+    {
+        using var repo = new TempGitRepo();
+        repo.NestedRepo("vendor/new", withCommit: false);
+
+        Assert.Equal(["vendor/new"], SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, null, _ => 1, Ct));
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, null, _ => 128, Ct)); // unsafe owner / corrupt
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, null, _ => 0, Ct));   // has a HEAD
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(
+            repo.RepoPath, null, _ => throw new InvalidOperationException("timed out"), Ct));      // timeout / spawn failure
+    }
+
+    [Fact]
+    public void FindCommitlessNestedRepos_NeverTreatsAnOrdinaryUntrackedDirectoryAsARepo()
+    {
+        using var repo = new TempGitRepo();
+        repo.Write("plain/a.txt", "a");
+        repo.Write("plain/deep/b.txt", "b");
+
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, cancellationToken: Ct));
+    }
+
+    [Fact]
+    public void FindCommitlessNestedRepos_FindsARepoUnderATrackedDirectory()
+    {
+        using var repo = new TempGitRepo();
+        repo.Write("tracked/keep.txt", "k");
+        TempGitRepo.Git(repo.RepoPath, "add", ".");
+        TempGitRepo.Git(repo.RepoPath, "commit", "-m", "tracked dir");
+        repo.NestedRepo("tracked/inner repo", withCommit: false);
+
+        Assert.Equal(["tracked/inner repo"], SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, cancellationToken: Ct));
+        Assert.Equal(["tracked/inner repo"], SegmentStaging.StageAll(repo.RepoPath, cancellationToken: Ct));
+    }
+
+    [Fact]
+    public void FindCommitlessNestedRepos_NeverListsAnIgnoredRepo_AndStageAllLeavesItAlone()
+    {
+        using var repo = new TempGitRepo();
+        repo.Write(".gitignore", "ignored-repo/\n");
+        TempGitRepo.Git(repo.RepoPath, "add", ".gitignore");
+        TempGitRepo.Git(repo.RepoPath, "commit", "-m", "ignore");
+        repo.NestedRepo("ignored-repo", withCommit: false);
+
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, cancellationToken: Ct));
+        Assert.Empty(SegmentStaging.StageAll(repo.RepoPath, cancellationToken: Ct));
+    }
+
+    [Fact]
+    public void FindCommitlessNestedRepos_DoesNotWalkReconstructableDirs()
+    {
+        using var repo = new TempGitRepo();
+        repo.NestedRepo("node_modules/pkg", withCommit: false); // inside the staging exclusion set
+
+        Assert.Empty(SegmentStaging.FindCommitlessNestedRepos(repo.RepoPath, cancellationToken: Ct));
+        Assert.Empty(SegmentStaging.StageAll(repo.RepoPath, cancellationToken: Ct)); // and the add still succeeds
     }
 
     [Fact]

@@ -280,7 +280,11 @@ public sealed class ScopeDiffBase : IDisposable
         try
         {
             ScopeGit.Run(workspace, indexFile, ["cat-file", "-e", tree + "^{tree}"]);
-            return new ScopeDiffBase(workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory));
+            // #827: the journaled snapshot did not record which commit-less nested repos it skipped; the ones standing now
+            // are taken as pre-existing, so a resume's report is not flooded with repos that were always there.
+            return new ScopeDiffBase(
+                workspace, tree, indexFile, PlanOwnedPrefixes(workspace, planDirectory),
+                skippedNestedRepos: SegmentStaging.FindCommitlessNestedRepos(workspace));
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException)
         {

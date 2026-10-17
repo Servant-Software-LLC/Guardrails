@@ -2783,19 +2783,34 @@ WHOLE add ("does not have a commit checked out"), which took down the serial wri
 (the check was reported "not run" every attempt) and worktree-mode staging. Every harness staging
 site (`SegmentStaging.StageAll` — serial snapshot, `WriteScopeCheck.Check`/`HasFileChanges`/
 `ChangedPaths`, `GitWorktreeProvider.Integrate` — and the `PreserveAttemptToRef` salvage snapshot,
-which now takes the same exclusions) therefore detects such repos
-(`SegmentStaging.FindCommitlessNestedRepos`: `git ls-files --others --exclude-standard -z` entries
-ending in `/`, then `git rev-parse --verify HEAD` inside each) and adds a
-`:(exclude,literal)<path>` pathspec per repo. A nested repo **with** a commit is unchanged: it is
-staged as a gitlink (mode 160000). Detection **fails to the old behavior**: if the listing itself
-errors, nothing is excluded and git reports its own error, so files are never silently dropped. The
-exclusion is applied identically at the snapshot and at every later check, so a skipped repo's files
-are never an out-of-scope write and never part of the plan's changes (if the attempt later makes a
-commit inside it, it becomes an ordinary gitlink change and is judged like any other path). The skip
-is never silent: it is returned by `StageAll`, carried on `ScopeDiffBase.SkippedNestedRepos`,
-`WriteScopeCheckResult.SkippedNestedRepos` and `WorktreeHandle.SkippedNestedRepos`, appended to the
-attempt's `write-scope-check.log` (and the task's `integration-staging.log` for the segment commit),
-and stated in the attempt's summary. Runtime outcome, not a validation: no GR code.
+which takes the same exclusions) therefore detects such repos
+(`SegmentStaging.FindCommitlessNestedRepos`: `git ls-files --others --exclude-standard -z` over the
+same exclusion pathspecs, whose entries ending in `/` are nested repos — an ordinary untracked
+directory is listed file by file, an ignored repo not at all — then `git rev-parse --verify --quiet
+HEAD` inside each) and adds a `:(exclude,literal)<path>` pathspec per repo. A nested repo **with** a
+commit is unchanged: it is staged as a gitlink (mode 160000). Detection **fails closed**: a repo is
+excluded ONLY when the HEAD probe exits exactly 1; exit 128 (unsafe owner, corrupt repo), a timeout
+or a spawn failure leaves the repo in the add so git fails loudly as before, and a failing listing
+excludes nothing.
+
+*Write scope.* The exclusion is applied identically at the snapshot and at every later check. A repo
+present at the snapshot (listed in `ScopeDiffBase.SkippedNestedRepos`) stays skipped and reported. A
+repo that APPEARS after the snapshot (in the check's list but not the snapshot's; in worktree mode
+the base commit can hold none) has its directory path tested against the task's `writeScope` with the
+ordinary matcher: in scope is an in-scope path, out of scope is an offense with status `E`
+(`WriteScopeOffense.EmbeddedRepoStatus`). An `E` offense fails the attempt like any other, but it is
+not in the index, so it is never handed to git for a revert and is left on disk (the summary says so).
+
+*Reporting — what is and is not surfaced.* The skipped list is returned by `StageAll` and carried on
+`ScopeDiffBase`, `WriteScopeCheckResult` and `WorktreeHandle`. It is written to the attempt's
+`write-scope-check.log` and, for the segment commit, the task's `integration-staging.log`. In
+worktree mode a task that creates such a repo has that work left OUT of its segment commit, so it is
+not delivered even though the run can finish green; the executor therefore asks the same detection at
+the end of every worktree attempt — independent of whether a `writeScope` was enforced or a check ran —
+and appends a `WARNING: ... will NOT be committed or delivered` clause to the attempt summary, which
+reaches the console `[status] task — summary` line and `run.json`. In serial mode the clause says
+the repo was left out of write-scope staging. There is no dedicated `IRunObserver` event for the skip.
+Runtime outcome, not a validation: no GR code.
 
 Any new capability that needs the harness to write outside the integration worktree or the opt-in
 end-of-run delivery to the user's branch must be added to this section with its own containment

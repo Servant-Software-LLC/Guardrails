@@ -101,6 +101,25 @@ public static class WriteScopeCheck
             }
         }
 
+        // #827 scope-bypass guard: a commit-less nested repo is invisible to the staged diff, so one that APPEARED
+        // after the snapshot (absent from the snapshot's own skipped list; in worktree mode the base commit can hold
+        // none) would otherwise be an out-of-scope write the check never sees. Its directory path is judged by the
+        // same matcher as any other path. It is NOT revertable through git (it is not in the index), so it is
+        // reported and left on disk.
+        foreach (string repo in skippedNestedRepos.Where(r => !diffBase.SkippedNestedRepos.Contains(r, StringComparer.Ordinal)))
+        {
+            if (diffBase.IsHarnessOwned(repo)) continue;
+
+            if (WriteScope.IsInScope(repo, scope))
+            {
+                inScope.Add(repo);
+            }
+            else
+            {
+                offending.Add(new WriteScopeOffense { Path = repo, Status = WriteScopeOffense.EmbeddedRepoStatus });
+            }
+        }
+
         return new WriteScopeCheckResult
         {
             Passed = offending.Count == 0,
@@ -180,7 +199,7 @@ public static class WriteScopeCheck
 
         // Only revert REAL offending paths — the WS_2 git-error sentinel (status '?') is a synthetic
         // marker, not a path. Phase 2 does not fail the attempt, so a git error simply strips nothing.
-        var realOffenses = result.OffendingPaths.Where(o => o.Status != '?').ToList();
+        var realOffenses = result.OffendingPaths.Where(o => o.IsStageable).ToList();
         if (realOffenses.Count == 0)
         {
             return [];
@@ -338,7 +357,7 @@ public static class WriteScopeCheck
     /// </summary>
     public static string CaptureOffendingPatch(ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
-        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
+        List<string> paths = offendingPaths.Where(o => o.IsStageable).Select(o => o.Path).ToList();
         var batches = new List<string>();
         try
         {
@@ -418,7 +437,7 @@ public static class WriteScopeCheck
         ScopeDiffBase diffBase, IReadOnlyList<WriteScopeOffense> offendingPaths, CancellationToken cancellationToken = default,
         List<string>? removedLinks = null)
     {
-        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
+        List<string> paths = offendingPaths.Where(o => o.IsStageable).Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
         if (paths.Count == 0) return;
 
         HashSet<string> existing = ExistingAtBase(diffBase, paths, cancellationToken);
@@ -712,6 +731,17 @@ public sealed record WriteScopeOffense
     /// <summary>True for a brand-new/untracked addition (<c>Status == 'A'</c>) — the class of write
     /// this issue's diagnostic improvement targets.</summary>
     public bool IsNewFile => Status == 'A';
+
+    /// <summary>
+    /// #827: the status of an untracked nested git repository with no commit that APPEARED during the attempt and lies
+    /// outside the write scope. git cannot stage it, so it has no diff line; it is reported as an offense but is not in
+    /// the index and is never handed to git for a revert.
+    /// </summary>
+    public const char EmbeddedRepoStatus = 'E';
+
+    /// <summary>True when the path is a real staged change git can revert — not the <c>?</c> git-error sentinel and
+    /// not an <see cref="EmbeddedRepoStatus"/> nested repo.</summary>
+    public bool IsStageable => Status != '?' && Status != EmbeddedRepoStatus;
 
     /// <summary>
     /// For an <see cref="IsNewFile"/> offense only: a best-effort forensic snapshot captured while the
