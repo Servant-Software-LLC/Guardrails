@@ -59,7 +59,7 @@ public static class SegmentStaging
     /// (the <c>-A</c> semantics apply to everything the excludes do not remove) — pinned by
     /// <c>SegmentStagingTests</c>.
     /// </summary>
-    public static IReadOnlyList<string> StageAllArguments()
+    public static IReadOnlyList<string> StageAllArguments(IReadOnlyList<string>? skippedNestedRepos = null)
     {
         var args = new List<string> { "add", "-A", "--", "." };
         foreach (string name in ReconstructableExclusions)
@@ -67,7 +67,85 @@ public static class SegmentStaging
             args.Add($":(exclude,glob)**/{name}/**");
         }
 
+        // #827: each commit-less nested repo is excluded by its exact (literal) path, so a name holding glob
+        // characters or spaces still names only that directory. ArgumentList carries it unquoted.
+        foreach (string repo in skippedNestedRepos ?? [])
+        {
+            args.Add($":(exclude,literal){repo}");
+        }
+
         return args;
+    }
+
+    /// <summary>
+    /// #827: the untracked nested git repositories under <paramref name="repoPath"/> that have NO commit checked
+    /// out (a fresh <c>git init</c>), as repo-relative forward-slash directory paths without a trailing slash.
+    /// <c>git add -A</c> cannot index such a directory as a gitlink and fails the whole add ("does not have a
+    /// commit checked out"), which took down the serial write-scope snapshot and worktree staging. A nested repo
+    /// WITH a commit is not returned: git stages it as a gitlink exactly as before.
+    /// <para>
+    /// Detection is <c>ls-files --others --exclude-standard -z</c> over the same exclusion pathspecs the add uses
+    /// (so a reconstructable <c>node_modules</c> is not walked twice). Without <c>--directory</c> git lists every
+    /// untracked FILE individually and lists only a nested repository as a single entry ending in <c>/</c>, so an
+    /// ordinary untracked directory is never mistaken for one; an ignored repo is not listed at all. <c>-z</c> keeps a
+    /// space or non-ASCII name literal. Each candidate is then asked <c>rev-parse --verify --quiet HEAD</c>.
+    /// </para>
+    /// <para>
+    /// FAILS CLOSED, to the old behavior: a repo is excluded ONLY when that command exits exactly 1 (the ref does not
+    /// exist). Any other outcome — exit 128 (unsafe owner, corrupt repository), a timeout, a spawn failure — leaves
+    /// the repo IN the add, so git fails loudly as it always did rather than files being silently dropped. If the
+    /// listing itself errors, nothing is excluded either.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> FindCommitlessNestedRepos(
+        string repoPath, string? indexFile = null, CancellationToken cancellationToken = default) =>
+        FindCommitlessNestedRepos(repoPath, indexFile, headExitCode: null, cancellationToken);
+
+    /// <summary>Test seam: <paramref name="headExitCode"/> replaces the per-repo HEAD probe (path to exit code).</summary>
+    internal static IReadOnlyList<string> FindCommitlessNestedRepos(
+        string repoPath, string? indexFile, Func<string, int>? headExitCode, CancellationToken cancellationToken)
+    {
+        string listing;
+        try
+        {
+            var listArgs = new List<string> { "ls-files", "--others", "--exclude-standard", "-z", "--", "." };
+            listArgs.AddRange(StageAllArguments().Skip(4)); // the reconstructable-set excludes the add also carries
+            listing = ScopeGit.Run(repoPath, indexFile, listArgs, cancellationToken);
+        }
+        catch (InvalidOperationException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return [];
+        }
+
+        var found = new List<string>();
+        foreach (string entry in listing.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!entry.EndsWith('/'))
+            {
+                continue;
+            }
+
+            string relative = entry.TrimEnd('/');
+            string full = Path.Combine(repoPath, relative.Replace('/', Path.DirectorySeparatorChar));
+            int exit;
+            try
+            {
+                exit = headExitCode is not null
+                    ? headExitCode(full)
+                    : ScopeGit.RunForExitCode(full, null, ["rev-parse", "--verify", "--quiet", "HEAD"], cancellationToken).ExitCode;
+            }
+            catch (InvalidOperationException) when (!cancellationToken.IsCancellationRequested)
+            {
+                continue; // timeout / spawn failure: not proven commit-less, so it stays in the add
+            }
+
+            if (exit == 1)
+            {
+                found.Add(relative);
+            }
+        }
+
+        return found;
     }
 
     /// <summary>
@@ -85,8 +163,17 @@ public static class SegmentStaging
     /// <param name="cancellationToken">
     /// #816 review: bounds the call (with <see cref="ScopeGit"/>'s timeout) so a hung git can never wedge a run.
     /// </param>
-    public static void StageAll(string repoPath, string? indexFile = null, CancellationToken cancellationToken = default) =>
+    /// <returns>
+    /// #827: the commit-less nested repositories left OUT of the add (<see cref="FindCommitlessNestedRepos"/>),
+    /// so every caller can REPORT them — the skip is never silent. Empty in the ordinary case.
+    /// </returns>
+    public static IReadOnlyList<string> StageAll(
+        string repoPath, string? indexFile = null, CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<string> skipped = FindCommitlessNestedRepos(repoPath, indexFile, cancellationToken);
         // #816 review: through ScopeGit, which drains stderr concurrently. Reading stdout to its end first deadlocked
         // once git's per-file line-ending warnings filled the stderr pipe (~35 files under core.autocrlf=true).
-        ScopeGit.Run(repoPath, indexFile, StageAllArguments(), cancellationToken);
+        ScopeGit.Run(repoPath, indexFile, StageAllArguments(skipped), cancellationToken);
+        return skipped;
+    }
 }

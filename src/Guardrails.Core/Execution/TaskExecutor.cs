@@ -888,6 +888,11 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         var scopeNotes = new AttemptScopeAnnotation { NotChecked = snapshotFailure };
+        if (scopeBase is not null)
+        {
+            scopeNotes.AddNestedReposSkipped(scopeBase.SkippedNestedRepos);
+        }
+
         // #816 second review (WEAK A): the journaler reads these facts when it builds this attempt's record, so
         // run.json and AttemptFinished carry them — they are all settled before any journaler call.
         _journaler.BeginScopeAnnotation(task.Id, scopeNotes);
@@ -923,6 +928,40 @@ public sealed class TaskExecutor : ITaskExecutor
                     Result = attempt.Result with
                     {
                         Summary = AppendClause(attempt.Result.Summary, $"write scope NOT checked this attempt: {notChecked}")
+                    }
+                };
+            }
+
+            // #827: commit-less nested repos every harness add left out are named, never a silent skip.
+            // Worktree mode: the segment commit (Integrate) runs AFTER this attempt and leaves such a repo out, i.e. the
+            // work inside it is NOT delivered. That must be named even when no writeScope was enforced and no check ran,
+            // so the same detection is asked here, independent of the scope check.
+            bool segmentMode = IsRealGitSegment(worktree);
+            if (segmentMode && attempt.Result.Outcome != TaskOutcome.TransientPause)
+            {
+                try
+                {
+                    scopeNotes.AddNestedReposSkipped(SegmentStaging.FindCommitlessNestedRepos(worktree.WorktreePath));
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+                {
+                    // Diagnostics only: the staging itself fails loudly if git cannot cope.
+                }
+            }
+
+            if (scopeNotes.NestedReposSkipped.Count > 0 && attempt.Result.Outcome != TaskOutcome.TransientPause)
+            {
+                AttemptArtifacts.WriteNestedReposSkippedNote(AttemptLogDir(task.Id, attemptNumber), scopeNotes.NestedReposSkipped);
+                string repos = string.Join(", ", scopeNotes.NestedReposSkipped);
+                attempt = attempt with
+                {
+                    Result = attempt.Result with
+                    {
+                        Summary = AppendClause(
+                            attempt.Result.Summary,
+                            segmentMode
+                                ? $"WARNING: untracked nested git repo(s) with no commit will NOT be committed or delivered with this task's work (git cannot stage one; commit inside to include): {repos}"
+                                : $"left out of write-scope staging (untracked nested git repo with no commit; git cannot stage one): {repos}")
                     }
                 };
             }
@@ -2234,6 +2273,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(phaseOneBase, enforcedScope, cancellationToken);
             attemptScopeCheck = scopeCheck;
+            scopeNotes.AddNestedReposSkipped(scopeCheck.SkippedNestedRepos);
 
             if (!scopeCheck.Passed)
             {
@@ -2254,7 +2294,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 try
                 {
                     WriteScopeCheck.ScopedRevert(
-                        phaseOneBase, scopeCheck.OffendingPaths.Where(o => o.Status != '?').ToList(),
+                        phaseOneBase, scopeCheck.OffendingPaths.Where(o => o.IsStageable).ToList(),
                         removedLinks: scopeNotes.RemovedLinks);
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
@@ -2935,6 +2975,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // No cancellation token, deliberately: this is cleanup, and it runs on the cancel path too, where the
         // attempt's token is already cancelled. ScopeGit's timeout still bounds every call.
         WriteScopeCheckResult check = WriteScopeCheck.Check(scopeBase, scope);
+        notes?.AddNestedReposSkipped(check.SkippedNestedRepos);
         if (check.OffendingPaths.FirstOrDefault(o => o.Status == '?') is { } gitError)
         {
             // #816 review WEAK 6: never silent — an undiffable tree means the scope was NOT enforced this attempt.
@@ -2979,11 +3020,22 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static string RevertedClause(EndOfAttemptScope reverted, bool sharedWorkspace)
     {
-        string paths = string.Join(", ", reverted.Check.OffendingPaths.Select(o => o.Path));
+        string paths = string.Join(", ", reverted.Check.OffendingPaths.Where(o => o.IsStageable || o.Status == '?').Select(o => o.Path));
         string verb = reverted.Reverted ? "reverted" : "NOT reverted (git failed)";
-        return sharedWorkspace
+        // #827: a commit-less nested repo created outside the scope is reported but git cannot revert it.
+        string embedded = string.Join(", ", reverted.Check.OffendingPaths
+            .Where(o => o.Status == WriteScopeOffense.EmbeddedRepoStatus).Select(o => o.Path));
+        string embeddedClause = embedded.Length == 0
+            ? ""
+            : $"; created outside writeScope and LEFT ON DISK (a nested git repo with no commit cannot be reverted by git): {embedded}";
+        if (paths.Length == 0)
+        {
+            return embeddedClause.TrimStart(';', ' ');
+        }
+
+        return (sharedWorkspace
             ? $"changed during the attempt outside writeScope, {verb}: {paths}"
-            : $"out-of-scope write(s) {verb}: {paths}";
+            : $"out-of-scope write(s) {verb}: {paths}") + embeddedClause;
     }
 
     /// <summary>

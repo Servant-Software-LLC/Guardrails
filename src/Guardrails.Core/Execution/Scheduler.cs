@@ -5045,6 +5045,7 @@ public sealed class Scheduler
                 // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
                 handle.DefinitionHash = task.DefinitionHashAtLoad;
                 provider.Integrate(handle, integ, CancellationToken.None);
+                ReportIntegrationStagingSkips(task, handle);
             }
 
             // #195 retry-salvage pruning (deliverable 6): once a task's FINAL settle (after the
@@ -5885,6 +5886,24 @@ public sealed class Scheduler
     }
 
     /// <summary>
+    /// #827: the segment-commit staging in <see cref="IWorktreeProvider.Integrate"/> left out untracked nested git
+    /// repositories with no commit (git cannot stage one). Never silent: named in the task's
+    /// <c>integration-staging.log</c>. Best-effort diagnostics — a write failure never fails the settle.
+    /// </summary>
+    private void ReportIntegrationStagingSkips(TaskNode task, WorktreeHandle handle)
+    {
+        // The JOURNAL's run id roots logs/ (IntegrationHandle.RunId only scopes branch names); empty for run-id-less fakes.
+        if (_journal.RunId.Length == 0)
+        {
+            return;
+        }
+
+        AttemptArtifacts.WriteNestedReposSkippedNote(
+            Path.Combine(_plan.PlanDirectory, "logs", _journal.RunId, task.Id), handle.SkippedNestedRepos,
+            "integration-staging.log");
+    }
+
+    /// <summary>
     /// B1 fixed-order settle under <see cref="_integrationLock"/>:
     /// (1) deep-merge fragment into state.json,
     /// (2) git integration commit (FF or non-FF merge),
@@ -5918,6 +5937,7 @@ public sealed class Scheduler
 
         // B1 step 2: git integration commit (FF or non-FF union).
         IntegrationResult integResult = provider.Integrate(handle, integ, ct);
+        ReportIntegrationStagingSkips(task, handle);
 
         if (integResult == IntegrationResult.FastForward)
         {

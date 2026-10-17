@@ -19,4 +19,23 @@ internal sealed class AttemptScopeAnnotation
     /// path lay under them. Named in the attempt summary and log; never populated in serial mode, which refuses.
     /// </summary>
     public List<string> RemovedLinks { get; } = [];
+
+    /// <summary>
+    /// #827: untracked nested git repositories with no commit that every harness <c>git add</c> this attempt LEFT OUT
+    /// (git cannot stage one — it fails the whole add). Named in the attempt summary and <c>write-scope-check.log</c>,
+    /// and invisible to the write-scope check, so they are neither offenses nor part of the plan's changes.
+    /// </summary>
+    public List<string> NestedReposSkipped { get; } = [];
+
+    /// <summary>Fold in the repositories one staging pass skipped (deduplicated, order kept).</summary>
+    public void AddNestedReposSkipped(IEnumerable<string> repos)
+    {
+        foreach (string repo in repos)
+        {
+            if (!NestedReposSkipped.Contains(repo, StringComparer.Ordinal))
+            {
+                NestedReposSkipped.Add(repo);
+            }
+        }
+    }
 }

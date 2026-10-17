@@ -175,7 +175,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // worktree — machine bookkeeping, never the user's deliverable. A global user git hook
         // (e.g. GitGuardian's pre-commit, which fired offline and crashed the run in the incident)
         // must NOT gate it. User hooks run only on the user-facing merge (MergePlanBranchIntoUserBranch).
-        SegmentStaging.StageAll(segment.WorktreePath);
+        // #827: a commit-less nested repo is left out (git cannot stage it); recorded on the handle for the Scheduler to report.
+        segment.SkippedNestedRepos = SegmentStaging.StageAll(segment.WorktreePath);
         string commitMsg = TrailerMessage(taskId, integ.RunId, segment.DefinitionHash);
         GitIn(segment.WorktreePath, "commit", "--no-verify", "--allow-empty", "-m", commitMsg);
 
@@ -1601,7 +1602,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             // segment commit (#280) — but into the THROWAWAY index (GIT_INDEX_FILE), so node_modules and
             // the harness's own .guardrails-* scaffolding never bloat the agent-applyable salvage patch,
             // while the segment's real staged/unstaged state stays untouched.
-            GitInWithEnv(worktreePath, env, SegmentStaging.StageAllArguments().ToArray());
+            // #827: commit-less nested repos are left out here too (the salvage patch never carried them).
+            GitInWithEnv(
+                worktreePath, env,
+                SegmentStaging.StageAllArguments(SegmentStaging.FindCommitlessNestedRepos(worktreePath)).ToArray());
             if (restrictToScope is not null)
             {
                 RestrictStagedSetToScope(worktreePath, env, restrictToScope);
