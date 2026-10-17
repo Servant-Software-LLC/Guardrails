@@ -2777,6 +2777,26 @@ snapshot) deliberately stays on plain `git add -A` — it is never merged, only 
 so it should capture everything. The set is extensible in code; a `guardrails.json`-driven set is
 deferred.
 
+**Commit-less nested repositories (issue #827).** An untracked, non-ignored nested git repository
+with **no commit checked out** (a fresh `git init`) cannot be staged: a plain `git add -A` fails the
+WHOLE add ("does not have a commit checked out"), which took down the serial write-scope snapshot
+(the check was reported "not run" every attempt) and worktree-mode staging. Every harness staging
+site (`SegmentStaging.StageAll` — serial snapshot, `WriteScopeCheck.Check`/`HasFileChanges`/
+`ChangedPaths`, `GitWorktreeProvider.Integrate` — and the `PreserveAttemptToRef` salvage snapshot,
+which now takes the same exclusions) therefore detects such repos
+(`SegmentStaging.FindCommitlessNestedRepos`: `git ls-files --others --exclude-standard -z` entries
+ending in `/`, then `git rev-parse --verify HEAD` inside each) and adds a
+`:(exclude,literal)<path>` pathspec per repo. A nested repo **with** a commit is unchanged: it is
+staged as a gitlink (mode 160000). Detection **fails to the old behavior**: if the listing itself
+errors, nothing is excluded and git reports its own error, so files are never silently dropped. The
+exclusion is applied identically at the snapshot and at every later check, so a skipped repo's files
+are never an out-of-scope write and never part of the plan's changes (if the attempt later makes a
+commit inside it, it becomes an ordinary gitlink change and is judged like any other path). The skip
+is never silent: it is returned by `StageAll`, carried on `ScopeDiffBase.SkippedNestedRepos`,
+`WriteScopeCheckResult.SkippedNestedRepos` and `WorktreeHandle.SkippedNestedRepos`, appended to the
+attempt's `write-scope-check.log` (and the task's `integration-staging.log` for the segment commit),
+and stated in the attempt's summary. Runtime outcome, not a validation: no GR code.
+
 Any new capability that needs the harness to write outside the integration worktree or the opt-in
 end-of-run delivery to the user's branch must be added to this section with its own containment
 analysis — the default remains that the harness does not mutate the user's checkout.

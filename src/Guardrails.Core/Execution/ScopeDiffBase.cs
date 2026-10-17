@@ -35,8 +35,10 @@ public sealed class ScopeDiffBase : IDisposable
 {
     private ScopeDiffBase(
         string repoPath, string baseTreeish, string? indexFile, IReadOnlyList<string> harnessOwnedPrefixes,
-        IReadOnlyDictionary<string, RawBlob>? untrackedRawBlobs = null, IReadOnlyList<string>? rawCaptureSkipped = null)
+        IReadOnlyDictionary<string, RawBlob>? untrackedRawBlobs = null, IReadOnlyList<string>? rawCaptureSkipped = null,
+        IReadOnlyList<string>? skippedNestedRepos = null)
     {
+        SkippedNestedRepos = skippedNestedRepos ?? [];
         RepoPath = repoPath;
         Base = baseTreeish;
         IndexFile = indexFile;
@@ -71,6 +73,13 @@ public sealed class ScopeDiffBase : IDisposable
     /// never the snapshot. Reported in the attempt's <c>write-scope-check.log</c>.
     /// </summary>
     public IReadOnlyList<string> RawCaptureSkipped { get; }
+
+    /// <summary>
+    /// #827: untracked nested git repositories with no commit that the serial snapshot left out of its add (git cannot
+    /// stage one). Staged-around by every later pass too, so they never read as an out-of-scope write. Reported in
+    /// the attempt's <c>write-scope-check.log</c>.
+    /// </summary>
+    public IReadOnlyList<string> SkippedNestedRepos { get; }
 
     /// <summary>The repository working tree the check stages and reverts in.</summary>
     public string RepoPath { get; }
@@ -136,13 +145,13 @@ public sealed class ScopeDiffBase : IDisposable
 
         try
         {
-            SegmentStaging.StageAll(workspace, indexFile, cancellationToken);
+            IReadOnlyList<string> skippedRepos = SegmentStaging.StageAll(workspace, indexFile, cancellationToken);
             string tree = ScopeGit.Run(workspace, indexFile, ["write-tree"], cancellationToken).Trim();
             IReadOnlyList<string> prefixes = PlanOwnedPrefixes(workspace, planDirectory);
             BeforeRawCaptureForTest.Value?.Invoke();
             (IReadOnlyDictionary<string, RawBlob> blobs, IReadOnlyList<string> skipped) =
                 CaptureUntrackedRawBlobs(workspace, indexFile, prefixes, cancellationToken);
-            return new ScopeDiffBase(workspace, tree, indexFile, prefixes, blobs, skipped);
+            return new ScopeDiffBase(workspace, tree, indexFile, prefixes, blobs, skipped, skippedRepos);
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {

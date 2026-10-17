@@ -59,7 +59,7 @@ public static class SegmentStaging
     /// (the <c>-A</c> semantics apply to everything the excludes do not remove) — pinned by
     /// <c>SegmentStagingTests</c>.
     /// </summary>
-    public static IReadOnlyList<string> StageAllArguments()
+    public static IReadOnlyList<string> StageAllArguments(IReadOnlyList<string>? skippedNestedRepos = null)
     {
         var args = new List<string> { "add", "-A", "--", "." };
         foreach (string name in ReconstructableExclusions)
@@ -67,7 +67,66 @@ public static class SegmentStaging
             args.Add($":(exclude,glob)**/{name}/**");
         }
 
+        // #827: each commit-less nested repo is excluded by its exact (literal) path, so a name holding glob
+        // characters or spaces still names only that directory. ArgumentList carries it unquoted.
+        foreach (string repo in skippedNestedRepos ?? [])
+        {
+            args.Add($":(exclude,literal){repo}");
+        }
+
         return args;
+    }
+
+    /// <summary>
+    /// #827: the untracked nested git repositories under <paramref name="repoPath"/> that have NO commit checked
+    /// out (a fresh <c>git init</c>), as repo-relative forward-slash directory paths without a trailing slash.
+    /// <c>git add -A</c> cannot index such a directory as a gitlink and fails the whole add ("does not have a
+    /// commit checked out"), which took down the serial write-scope snapshot and worktree staging. A nested repo
+    /// WITH a commit is not returned: git stages it as a gitlink exactly as before.
+    /// <para>
+    /// Detection is <c>ls-files --others --exclude-standard -z</c> (a nested repository is listed as a single
+    /// entry ending in <c>/</c>; <c>-z</c> keeps a space or non-ASCII name literal) then
+    /// <c>rev-parse --verify HEAD</c> inside each. FAILS TO THE OLD BEHAVIOR: if the listing itself errors, nothing
+    /// is excluded and git reports its own error rather than files being silently dropped. A directory whose HEAD
+    /// check errors for any reason is excluded only when git says it has no HEAD, i.e. exits non-zero — the same
+    /// condition under which <c>add</c> would have failed on it.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> FindCommitlessNestedRepos(
+        string repoPath, string? indexFile = null, CancellationToken cancellationToken = default)
+    {
+        string listing;
+        try
+        {
+            listing = ScopeGit.Run(
+                repoPath, indexFile, ["ls-files", "--others", "--exclude-standard", "-z"], cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            return [];
+        }
+
+        var found = new List<string>();
+        foreach (string entry in listing.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!entry.EndsWith('/'))
+            {
+                continue;
+            }
+
+            string relative = entry.TrimEnd('/');
+            string full = Path.Combine(repoPath, relative.Replace('/', Path.DirectorySeparatorChar));
+            try
+            {
+                ScopeGit.Run(full, indexFile: null, ["rev-parse", "--verify", "--quiet", "HEAD"], cancellationToken);
+            }
+            catch (InvalidOperationException) when (!cancellationToken.IsCancellationRequested)
+            {
+                found.Add(relative);
+            }
+        }
+
+        return found;
     }
 
     /// <summary>
@@ -85,8 +144,17 @@ public static class SegmentStaging
     /// <param name="cancellationToken">
     /// #816 review: bounds the call (with <see cref="ScopeGit"/>'s timeout) so a hung git can never wedge a run.
     /// </param>
-    public static void StageAll(string repoPath, string? indexFile = null, CancellationToken cancellationToken = default) =>
+    /// <returns>
+    /// #827: the commit-less nested repositories left OUT of the add (<see cref="FindCommitlessNestedRepos"/>),
+    /// so every caller can REPORT them — the skip is never silent. Empty in the ordinary case.
+    /// </returns>
+    public static IReadOnlyList<string> StageAll(
+        string repoPath, string? indexFile = null, CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<string> skipped = FindCommitlessNestedRepos(repoPath, indexFile, cancellationToken);
         // #816 review: through ScopeGit, which drains stderr concurrently. Reading stdout to its end first deadlocked
         // once git's per-file line-ending warnings filled the stderr pipe (~35 files under core.autocrlf=true).
-        ScopeGit.Run(repoPath, indexFile, StageAllArguments(), cancellationToken);
+        ScopeGit.Run(repoPath, indexFile, StageAllArguments(skipped), cancellationToken);
+        return skipped;
+    }
 }

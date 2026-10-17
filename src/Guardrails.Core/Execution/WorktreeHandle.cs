@@ -44,4 +44,10 @@ public sealed class WorktreeHandle
     /// unavailable — the trailer line is then omitted (backward-compatible).
     /// </summary>
     public string? DefinitionHash { get; set; }
+
+    /// <summary>
+    /// #827: untracked nested git repositories with no commit that <see cref="IWorktreeProvider.Integrate"/>'s
+    /// segment-commit staging LEFT OUT (git cannot stage one), so the Scheduler can report them. Empty otherwise.
+    /// </summary>
+    public IReadOnlyList<string> SkippedNestedRepos { get; set; } = [];
 }

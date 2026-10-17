@@ -51,6 +51,7 @@ public static class WriteScopeCheck
         scope ??= [];
 
         IReadOnlyList<(char Status, string Path)> changes;
+        IReadOnlyList<string> skippedNestedRepos;
         try
         {
             // Stage the action's writes so new/untracked files surface in the staged diff, then diff
@@ -60,7 +61,8 @@ public static class WriteScopeCheck
             // guardrail's `npm ci` node_modules is uniformly invisible to harness git, so it can never
             // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
             // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
-            SegmentStaging.StageAll(repoPath, diffBase.IndexFile, cancellationToken);
+            // #827: a commit-less nested repo is left out of the add (git cannot stage it) and reported on the result.
+            skippedNestedRepos = SegmentStaging.StageAll(repoPath, diffBase.IndexFile, cancellationToken);
             changes = StagedChanges(diffBase, cancellationToken);
         }
         catch (InvalidOperationException ex)
@@ -104,7 +106,8 @@ public static class WriteScopeCheck
             Passed = offending.Count == 0,
             Scope = scope,
             OffendingPaths = offending,
-            InScopePaths = inScope
+            InScopePaths = inScope,
+            SkippedNestedRepos = skippedNestedRepos
         };
     }
 
@@ -664,6 +667,12 @@ public sealed record WriteScopeCheckResult
     /// diff that found the offenses. Empty on the git-error sentinel.
     /// </summary>
     public required IReadOnlyList<string> InScopePaths { get; init; }
+
+    /// <summary>
+    /// #827: untracked nested git repositories with no commit that this check's staging LEFT OUT (git cannot stage
+    /// one), so their files are neither offenses nor part of the diff. Empty in the ordinary case.
+    /// </summary>
+    public IReadOnlyList<string> SkippedNestedRepos { get; init; } = [];
 }
 
 /// <summary>

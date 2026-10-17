@@ -134,6 +134,37 @@ internal static class AttemptArtifacts
     }
 
     /// <summary>
+    /// #827: name the untracked nested git repositories with no commit that harness staging LEFT OUT (git cannot stage
+    /// one). Appended to <paramref name="fileName"/> (<c>write-scope-check.log</c> for an attempt). No-op when none.
+    /// </summary>
+    public static void WriteNestedReposSkippedNote(
+        string logDir, IReadOnlyList<string> repos, string fileName = "write-scope-check.log")
+    {
+        if (repos.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            File.AppendAllText(
+                Path.Combine(logDir, fileName),
+                NestedReposSkippedNotice(repos) + "\n" + string.Concat(repos.Select(r => r + "\n")));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics only.
+        }
+    }
+
+    /// <summary>The one-line statement of a nested-repo skip (#827), shared by the log, the summary and the console.</summary>
+    public static string NestedReposSkippedNotice(IReadOnlyList<string> repos) =>
+        "# staging (issue #827): left out of every harness git add " +
+        $"{repos.Count} untracked nested git repositor{(repos.Count == 1 ? "y" : "ies")} with no commit " +
+        "(git cannot stage one); neither written-scope offenses nor part of the plan's changes. Commit inside to include:";
+
+    /// <summary>
     /// Write <c>scope-clean.log</c> naming the out-of-scope paths a phase-2 scope-clean stripped from
     /// the segment after the guardrails PASSED (SSOT §3.4, issue #280). A durable, UI-independent trace
     /// (the #253 "don't silently vanish files" posture): the paths were a passing guardrail's side

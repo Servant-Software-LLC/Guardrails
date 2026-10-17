@@ -888,6 +888,11 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         var scopeNotes = new AttemptScopeAnnotation { NotChecked = snapshotFailure };
+        if (scopeBase is not null)
+        {
+            scopeNotes.AddNestedReposSkipped(scopeBase.SkippedNestedRepos);
+        }
+
         // #816 second review (WEAK A): the journaler reads these facts when it builds this attempt's record, so
         // run.json and AttemptFinished carry them — they are all settled before any journaler call.
         _journaler.BeginScopeAnnotation(task.Id, scopeNotes);
@@ -923,6 +928,22 @@ public sealed class TaskExecutor : ITaskExecutor
                     Result = attempt.Result with
                     {
                         Summary = AppendClause(attempt.Result.Summary, $"write scope NOT checked this attempt: {notChecked}")
+                    }
+                };
+            }
+
+            // #827: commit-less nested repos every harness add left out are named, never a silent skip.
+            if (scopeNotes.NestedReposSkipped.Count > 0 && attempt.Result.Outcome != TaskOutcome.TransientPause)
+            {
+                AttemptArtifacts.WriteNestedReposSkippedNote(AttemptLogDir(task.Id, attemptNumber), scopeNotes.NestedReposSkipped);
+                attempt = attempt with
+                {
+                    Result = attempt.Result with
+                    {
+                        Summary = AppendClause(
+                            attempt.Result.Summary,
+                            "left out of staging (untracked nested git repo with no commit): " +
+                            string.Join(", ", scopeNotes.NestedReposSkipped))
                     }
                 };
             }
@@ -2234,6 +2255,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(phaseOneBase, enforcedScope, cancellationToken);
             attemptScopeCheck = scopeCheck;
+            scopeNotes.AddNestedReposSkipped(scopeCheck.SkippedNestedRepos);
 
             if (!scopeCheck.Passed)
             {
@@ -2935,6 +2957,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // No cancellation token, deliberately: this is cleanup, and it runs on the cancel path too, where the
         // attempt's token is already cancelled. ScopeGit's timeout still bounds every call.
         WriteScopeCheckResult check = WriteScopeCheck.Check(scopeBase, scope);
+        notes?.AddNestedReposSkipped(check.SkippedNestedRepos);
         if (check.OffendingPaths.FirstOrDefault(o => o.Status == '?') is { } gitError)
         {
             // #816 review WEAK 6: never silent — an undiffable tree means the scope was NOT enforced this attempt.
