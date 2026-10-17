@@ -166,6 +166,18 @@ public sealed class FaultIsolatingObserver : IRunObserver
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         Guard(nameof(OutOfScopeStripped), o => o.OutOfScopeStripped(task, stripped));
 
+    /// <inheritdoc />
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        Guard(nameof(WriteScopeNotChecked), o => o.WriteScopeNotChecked(task, attempt, reason));
+
+    /// <inheritdoc />
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        Guard(nameof(InterruptedAttemptChangesFound), o => o.InterruptedAttemptChangesFound(task, paths, patchPath));
+
+    /// <inheritdoc />
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) =>
+        Guard(nameof(HostSlept), o => o.HostSlept(from, to, sleptFor, inFlight));
+
     /// <inheritdoc/>
     public void DecisionRecorded(DecisionEntry entry) => Guard(nameof(DecisionRecorded), o => o.DecisionRecorded(entry));
 
