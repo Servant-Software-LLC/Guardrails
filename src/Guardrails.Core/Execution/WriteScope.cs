@@ -298,6 +298,44 @@ public static class WriteScope
         return HasFileExtension(lastSeg) ? glob : glob + "/**";
     }
 
+    /// <summary>
+    /// Well-known file names that carry NO extension (#838). <see cref="Normalize"/> reads a bare entry with no
+    /// extension as a DIRECTORY (<c>Dockerfile</c> becomes <c>Dockerfile/**</c>), which never matches the file itself.
+    /// Deliberately a CLOSED list: a general "no extension" rule would also flag legitimate directory entries such as
+    /// <c>src</c>, and a warning that is wrong for the common case teaches authors to ignore it.
+    /// </summary>
+    private static readonly HashSet<string> KnownExtensionlessFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Dockerfile", "Containerfile", "Makefile", "GNUmakefile", "LICENSE", "LICENCE", "COPYING",
+        "Jenkinsfile", "Procfile", "Vagrantfile", "Gemfile", "Rakefile", "Brewfile", "Justfile", "Pipfile",
+        "Tiltfile", "Caddyfile", "Podfile", "CODEOWNERS",
+    };
+
+    /// <summary>
+    /// True when <paramref name="entry"/> is a bare entry (no <c>*</c>, no trailing <c>/</c>) whose final segment is a
+    /// well-known extensionless FILE name (<see cref="KnownExtensionlessFileNames"/>), so the matcher treats it as a
+    /// directory prefix and the file itself falls out of scope (#838). The workaround is <c>Name*</c>. Entries that
+    /// are legitimately directories (<c>src</c>, <c>docs/</c>) or unknown extensionless names are NOT reported.
+    /// </summary>
+    public static bool IsExtensionlessFileEntry(string entry, out string fileName)
+    {
+        fileName = string.Empty;
+        string trimmed = entry.Trim();
+        if (trimmed.Length == 0 || trimmed.Contains('*') || trimmed.EndsWith('/') || trimmed.EndsWith('\\'))
+        {
+            return false;
+        }
+
+        string last = trimmed.Split('/', '\\')[^1];
+        if (!KnownExtensionlessFileNames.Contains(last))
+        {
+            return false;
+        }
+
+        fileName = last;
+        return true;
+    }
+
     // A segment carries a file extension when it has a '.' that is neither the first nor the
     // last character (so 'Thing.cs' is a file, but '.github' and 'name.' are directories).
     private static bool HasFileExtension(string segment)

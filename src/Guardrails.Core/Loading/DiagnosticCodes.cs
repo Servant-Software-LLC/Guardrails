@@ -1399,7 +1399,16 @@ public static class DiagnosticCodes
     /// </summary>
     public const string StallTimeoutInGuardrailOverrides = "GR2089";
 
-    // CURRENT next-free code: GR2090. GR2089 (StallTimeoutInGuardrailOverrides) is the last taken code
+    /// <summary>
+    /// GR2090 (WARNING) — a <c>writeScope</c> entry is a well-known extensionless FILE name (<c>Dockerfile</c>,
+    /// <c>Makefile</c>, <c>LICENSE</c>, <c>Jenkinsfile</c>, ...) with no <c>*</c> and no trailing <c>/</c> (#838). The matcher
+    /// reads an extensionless bare entry as a DIRECTORY prefix, so a write to the file itself is out of scope and the
+    /// attempt fails. The fix is <c>Name*</c>. Only a closed list of known names is reported: <c>src</c> is a legitimate
+    /// directory entry, and an unknown extensionless name cannot be told from one, so it is not flagged.
+    /// </summary>
+    public const string WriteScopeExtensionlessFile = "GR2090";
+
+    // CURRENT next-free code: GR2091. GR2090 (WriteScopeExtensionlessFile) is the last taken code
     // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
     // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the

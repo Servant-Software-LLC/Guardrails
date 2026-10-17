@@ -863,8 +863,15 @@ $out | ForEach-Object { Write-Output $_ }
 # start, wrong project path, malformed --filter which exits 0 SILENTLY). Diagnose THAT. Falling through
 # would print "every behaviour unbound", a confident wrong message aimed at the one artifact the retry
 # agent is allowed to edit - the #455 misdiagnosis trap, one level down.
-$trx = Get-ChildItem $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
-       Sort-Object LastWriteTime | Select-Object -Last 1
+# GUARD with Test-Path FIRST (#825/#838): when $resultsDir does not exist - exactly the "test host never
+# ran" case this precondition diagnoses - Get-ChildItem <missing> -Filter -Recurse can fall back to walking
+# the PARENT (all of %TEMP%) and HANG on PowerShell 7.6 instead of returning empty. -LiteralPath on the
+# guarded call keeps it to the one directory.
+$trx = $null
+if (Test-Path -LiteralPath $resultsDir) {
+    $trx = Get-ChildItem -LiteralPath $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
+           Sort-Object LastWriteTime | Select-Object -Last 1
+}
 if (-not $trx) {
     Write-Output "no .trx under $resultsDir - the test run did not happen (test host failed to start, wrong project path, or a malformed --filter, which exits 0 with no results). This is NOT a finding about the tests: do NOT rewrite them."
     exit 1
