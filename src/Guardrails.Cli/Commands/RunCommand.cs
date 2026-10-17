@@ -30,8 +30,17 @@ public static class RunCommand
     /// the ambient process environment. See <see cref="TelemetryOverrides"/> for why this exists;
     /// <see cref="TelemetryOverrides.None"/> keeps the shipped behaviour exactly.
     /// </summary>
-    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry)
+    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry) => Create(io, telemetry, RunHostServices.Production);
+
+    /// <summary>
+    /// As <see cref="Create(IConsoleIo, TelemetryOverrides)"/>, with the #810 host services injected: the macOS keep-awake
+    /// assertion and the host-sleep monitor with its heartbeat. Public because the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>; the composition-root tests drive this seam.
+    /// </summary>
+    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry, RunHostServices hostServices)
     {
+        ArgumentNullException.ThrowIfNull(hostServices);
+
         var folderArgument = FolderArgument.Create();
 
         var freshOption = new Option<bool>("--fresh")
@@ -136,6 +145,13 @@ public static class RunCommand
             Description = "Include the free-text 'detail' field in webhook deliveries (design doc 36 §6.3). Withheld by default, carrying the fixed marker '(detail withheld; pass --on-event-detail)'."
         };
 
+        // #810: on macOS the run holds an idle-sleep assertion (caffeinate -i -w <pid>) for its whole life; this lets the
+        // Mac idle-sleep instead. A lid-close on battery sleeps either way, and the host-sleep monitor reports it.
+        var allowSleepOption = new Option<bool>("--allow-sleep")
+        {
+            Description = "macOS: let the Mac idle-sleep during the run. By default the run keeps it awake (caffeinate -i) until it ends. Sleep never counts against an attempt's timeout, and every sleep is reported."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -161,6 +177,7 @@ public static class RunCommand
         // checks, and the WebhookEventSink construction.
         command.Add(onEventOption);
         command.Add(onEventDetailOption);
+        command.Add(allowSleepOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -182,6 +199,7 @@ public static class RunCommand
             decimal? maxCostUsd = parseResult.GetValue(maxCostUsdOption);
             string[]? onEventValues = parseResult.GetValue(onEventOption);
             bool onEventDetail = parseResult.GetValue(onEventDetailOption);
+            bool allowSleep = parseResult.GetValue(allowSleepOption);
 
             // #340 delivery tri-state: --merge-on-success forces ON, --no-merge-on-success forces OFF,
             // neither leaves it to guardrails.json (which itself now defaults ON). Passing BOTH is a
@@ -226,14 +244,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, telemetry, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, telemetry, cancellationToken, allowSleep, hostServices).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, TelemetryOverrides telemetry, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, TelemetryOverrides telemetry, CancellationToken cancellationToken, bool allowSleep = false, RunHostServices? hostServices = null)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -420,10 +438,12 @@ public static class RunCommand
 
         if (fresh)
         {
-            RunReset.Fresh(probe.Plan.PlanDirectory);
-            io.Out.WriteLine(
-                "Fresh run: runtime state cleared, the plan branch and all worktrees were torn down, "
-                + "and state was re-seeded from your current HEAD.\n");
+            bool tornDown = RunReset.Fresh(probe.Plan.PlanDirectory, io.Error);
+            io.Out.WriteLine(tornDown
+                ? "Fresh run: runtime state cleared, the plan branch and all worktrees were torn down, "
+                  + "and state was re-seeded from your current HEAD.\n"
+                : "Fresh run: runtime state cleared and re-seeded from your current HEAD, but a worktree was "
+                  + "LEFT IN PLACE because a link inside it could not be removed safely (see the warning above).\n");
         }
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
@@ -454,6 +474,11 @@ public static class RunCommand
         // RUNNING, a gone one with no recorded end EXITED WITHOUT FINISHING.
         using var ownership = new RunOwnership(journal, owner, io.Out);
 
+        // #810: hold the macOS idle-sleep assertion for the life of the run, taken only once this process owns the run
+        // (a refused second run never starts one). Disposed on every way out of this method.
+        RunHostServices host = hostServices ?? RunHostServices.Production;
+        using IDisposable? keepAwake = host.KeepAwake(allowSleep, io.Out);
+
         // #383/#407/#419 worktree-mode run-start setup: the startup GC (a crash BACKSTOP now, #419), the
         // liveness lock, and — on Windows — a FRESH short junction for this run. The junction is a
         // PROCESS-SCOPED cwd alias (issue #419): threaded IN-MEMORY (no longer journaled), released on every
@@ -474,6 +499,22 @@ public static class RunCommand
         // the mode the plan asked for (see ResolveWorktreeMode for why that is the honest choice) — but an
         // operator must never learn from a post-mortem that the probe silently decided their isolation model.
         RenderGitProbeFailureWarning(worktreeResolution, probe.Plan, io.Out);
+
+        // #764: an advisory feature (overwatch, ai-triage, the criticality judge) that resolved to a block whose
+        // kind cannot serve advisory prompts (a cursor block runs with --force) is OFF for the run. Say so at
+        // the start, rather than letting the feature be absent without a word.
+        foreach (string withheld in SchedulerFactory.WithheldAdvisoryProfiles(probe.Plan.Config))
+        {
+            io.Out.WriteLine($"Note: {withheld}");
+        }
+
+        // #816: a serial run checks every attempt's writeScope against a git snapshot of the workspace. Where there is
+        // no git work tree rooted at the workspace that check cannot run; say so at the start rather than let the
+        // scope go unenforced without a word (each attempt's log dir repeats it in write-scope-check.log).
+        if (!worktreeMode)
+        {
+            io.Out.WriteLine(SerialWriteScopeNote(ScopeDiffBase.SerialUnavailableReason(probe.Plan.Workspace)));
+        }
 
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
@@ -552,9 +593,41 @@ public static class RunCommand
             io.Out.WriteLine("Full Flight Checks: running...");
         }
 
+        // #782: the claude-gateway preflight runs inside this phase; what it resolves (each backend's identity)
+        // is handed to every gateway runner instance below through the run config's GatewayRun context.
+        // The integration worktree (the plan-branch tip on a resume or after a delivering wave) is checked for project
+        // settings too, since the segment worktrees are built from it (#782 review, sec W1).
+        var gatewayOptions = new ClaudeGatewayPreflightOptions
+        {
+            WorktreeMode = worktreeResolution.Enabled,
+            ProjectSettingsRoots = [runStartDrainWorkspace]
+        };
         bool preflightsPassed = await PlanPreflightPhase
-            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution)
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution,
+                gatewayOptions)
             .ConfigureAwait(false);
+
+        if (preflightsPassed && probe.Plan.Config.PromptRunners.Values.Any(b => b.IsClaudeGateway))
+        {
+            // §1.2 (a): one scratch CLAUDE_CONFIG_DIR per run, created empty, beside the run's other logs — never the
+            // operator's ~/.claude. A plan with no gateway block leaves GatewayRun null and launches exactly as before.
+            string gatewayConfigDir = Path.Combine(probe.Plan.PlanDirectory, "logs", runId, "claude-config");
+            Directory.CreateDirectory(gatewayConfigDir);
+            probe = probe with
+            {
+                Plan = probe.Plan with
+                {
+                    Config = probe.Plan.Config with
+                    {
+                        GatewayRun = new Core.Prompts.ClaudeGatewayRunContext
+                        {
+                            ConfigDirectory = gatewayConfigDir,
+                            BackendIdentities = gatewayOptions.ResolvedIdentities
+                        }
+                    }
+                }
+            };
+        }
 
         if (hasPlanPreflights && preflightsPassed)
         {
@@ -572,9 +645,19 @@ public static class RunCommand
             WriteDurableFinalSite(
                 Path.Combine(probe.Plan.PlanDirectory, "logs", runId), probe.Plan, probe.Plan.PlanDirectory);
 
-            io.Out.WriteLine();
-            io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
-            io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planPreflights\") for the failed check(s).");
+            // #762: print what the halt record already holds — its full headline, each failed check's name
+            // and reason, and the captured-output directory — with the run.json pointer LAST. A sample-pair or
+            // endpoint halt has already printed every finding itself, so it gets only the pointers. The generic
+            // two-line fallback remains only for a halt record that cannot be read back.
+            string preflightJournalPath = RunJournal.PathFor(probe.Plan.PlanDirectory);
+            if (!GateHaltReport.TryWriteFromJournal(
+                    probe.Plan.PlanDirectory, io.Out, checksAlreadyPrinted: PlanPreflightPhase.HaltHasOwnConsoleReport))
+            {
+                io.Out.WriteLine();
+                io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
+                io.Out.WriteLine($"  See {preflightJournalPath} (\"planPreflights\") for the failed check(s).");
+            }
+
             return ExitCodes.TaskFailed;
         }
 
@@ -718,6 +801,10 @@ public static class RunCommand
             // finally can report on them regardless of which path was taken, including a throw before the
             // chain even exists (diagramObserver stays null, so `?.` below correctly raises nothing).
             OnTheFlyDiagramObserver? diagramObserver = null;
+
+            // #803: the same chain behind its fault-isolated head. Every IRunObserver event the run reports goes
+            // through THIS, so an observer's exception is logged and never becomes the run's outcome.
+            IRunObserver? runObserver = null;
             int? resolvedExitCode = null;
             string? faultKind = null;
             try
@@ -730,9 +817,10 @@ public static class RunCommand
                     live, logsRoot, runId, probe.Plan, diagramSeed, logServer, onRow, onEventDetail, allTasks, io)
                     .ConfigureAwait(false);
                 diagramObserver = surfaces.Chain;
+                runObserver = surfaces.Observer;
                 await using (surfaces.LiveTable)
                 {
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, runObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken, host).ConfigureAwait(false);
                 }
 
                 // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -784,7 +872,7 @@ public static class RunCommand
                               // just the diagram, which already had its own spinner signal (#219). Without it
                               // the site's last write is the final task going green, and the page sits on
                               // all-green for the whole gate window looking exactly like a finished run.
-                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution, diagramObserver)
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution, runObserver)
                               .ConfigureAwait(false);
 
                     if (willEvaluateTerminalGate)
@@ -954,9 +1042,9 @@ public static class RunCommand
             }
             finally
             {
-                // diagramObserver is null only if the throw happened before the chain was built (BuildObserverChain
+                // runObserver is null only if the throw happened before the chain was built (BuildObserverChain
                 // never ran) — `?.` makes that correctly raise nothing rather than a NullReferenceException.
-                diagramObserver?.RunFinished(resolvedExitCode, faultKind);
+                runObserver?.RunFinished(resolvedExitCode, faultKind);
 
                 // Issue #704 — the run's end, recorded the moment its verdict is settled rather than at method exit.
                 // Nothing after this point writes run.json (the webhook sink's drain, the log server's shutdown and the
@@ -3295,7 +3383,7 @@ public static class RunCommand
     {
         return ComposeObserverChain(
             inner, logsRoot, runId, plan, diagramSeed, onRow: null, includeDetail: false,
-            logUrlForTask, liveRunUrl: null, liveDiagramUrl: null, statusTarget: null);
+            logUrlForTask, liveRunUrl: null, liveDiagramUrl: null, statusTarget: null).Diagram;
     }
 
     /// <summary>
@@ -3323,6 +3411,23 @@ public static class RunCommand
         LogServer? logServer,
         JournalDocument? diagramSeed,
         Action<EventDelivery>? onRow,
+        bool includeDetail) =>
+        BuildIsolatedObserverChain(inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail).Diagram;
+
+    /// <summary>
+    /// The production chain with its fault-isolated head (#803): <see cref="ObserverChain.Diagram"/> for the
+    /// diagram-specific calls the run makes directly, and <see cref="ObserverChain.Head"/>, the same chain behind
+    /// its own <see cref="FaultIsolatingObserver"/>, for everything that reports events through
+    /// <see cref="IRunObserver"/>.
+    /// </summary>
+    public static ObserverChain BuildIsolatedObserverChain(
+        IRunObserver inner,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
+        LogServer? logServer,
+        JournalDocument? diagramSeed,
+        Action<EventDelivery>? onRow,
         bool includeDetail)
     {
         return ComposeObserverChain(
@@ -3331,11 +3436,23 @@ public static class RunCommand
     }
 
     /// <summary>
+    /// A composed observer chain (#803). <paramref name="Diagram"/> is the outermost decorator, for the calls the
+    /// run makes on it directly; <paramref name="Head"/> is that same decorator behind its own
+    /// <see cref="FaultIsolatingObserver"/>, and is what the run reports <see cref="IRunObserver"/> events to.
+    /// </summary>
+    public sealed record ObserverChain(OnTheFlyDiagramObserver Diagram, IRunObserver Head);
+
+    /// <summary>
     /// The chain itself, built from explicit pieces. Both public overloads come here, the production one with every
     /// piece taken from its one server. <paramref name="statusTarget"/> is started serving from the log-site
     /// observer's status map, the map the during-run index is rendered from (issue #713).
+    ///
+    /// <para><b>Every link is fault-isolated (#803).</b> Each observer sits behind its own
+    /// <see cref="FaultIsolatingObserver"/>, so an exception from one is logged to <c>observer-faults.log</c> and
+    /// the event stream and never reaches the run, and the links after it still hear the event. A link disabled
+    /// after repeated faults hands its calls straight to the link after it, so no fault can cut the chain.</para>
     /// </summary>
-    private static OnTheFlyDiagramObserver ComposeObserverChain(
+    private static ObserverChain ComposeObserverChain(
         IRunObserver inner,
         string logsRoot,
         string runId,
@@ -3348,22 +3465,52 @@ public static class RunCommand
         string? liveDiagramUrl,
         LogServer? statusTarget)
     {
-        var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
-        var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
+        var faultLog = new ObserverFaultLog(logsRoot);
+        RunEventStream? eventsProjection = null;
+        void OnFault(ObserverFault fault)
+        {
+            faultLog.Record(fault);
+            try
+            {
+                eventsProjection?.ObserverFaulted(fault);
+            }
+            catch (Exception)
+            {
+                // The event stream may be the link that is failing; the fault log above already has it.
+            }
+        }
+
+        IRunObserver renderer = new FaultIsolatingObserver(inner, RendererName(inner), OnFault);
+        eventsProjection = new RunEventStream(renderer, logsRoot, runId, onRow, includeDetail);
+        IRunObserver events = new FaultIsolatingObserver(eventsProjection, "event-stream", OnFault, whenDisabled: renderer);
+        IRunObserver projection = new FaultIsolatingObserver(
+            new ObserverProjection(events, logsRoot), "observer-projection", OnFault, whenDisabled: events);
         var siteObserver = new OnTheFlyLogSiteObserver(
-            observerProjection, logsRoot, runId, plan.Tasks, taskUrl, liveRunUrl, plan.Waves);
+            projection, logsRoot, runId, plan.Tasks, taskUrl, liveRunUrl, plan.Waves);
         statusTarget?.StartServing(siteObserver.StatusSnapshot);
-        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed, liveDiagramUrl);
+        IRunObserver site = new FaultIsolatingObserver(siteObserver, "log-site", OnFault, whenDisabled: projection);
+        var diagram = new OnTheFlyDiagramObserver(site, logsRoot, plan, diagramSeed, liveDiagramUrl);
+        return new ObserverChain(diagram, new FaultIsolatingObserver(diagram, "diagram", OnFault, whenDisabled: site));
     }
+
+    /// <summary>The fault-report name of the innermost observer: the live table or the plain console.</summary>
+    private static string RendererName(IRunObserver inner) => inner switch
+    {
+        LiveRunObserver => "live-table",
+        ConsoleRunObserver => "console",
+        _ => inner.GetType().Name
+    };
 
     /// <summary>
     /// What a run shows while it goes (#714 review, W1): the observer chain every event passes through, and the live
     /// progress table when the console can show one.
     /// </summary>
-    /// <param name="Chain">The observer chain; its head is what the run reports every event to.</param>
+    /// <param name="Chain">The observer chain's outermost decorator, for the diagram-specific calls the run makes.</param>
     /// <param name="LiveTable">The live progress table, or null under <c>--no-ui</c> or a console that cannot show
     /// one. The caller disposes it once the DAG has drained, before anything else writes to the console.</param>
-    public sealed record RunSurfaces(OnTheFlyDiagramObserver Chain, LiveRunObserver? LiveTable);
+    /// <param name="Observer">The chain behind its fault-isolated head (#803): what the run reports every
+    /// <see cref="IRunObserver"/> event to.</param>
+    public sealed record RunSurfaces(OnTheFlyDiagramObserver Chain, LiveRunObserver? LiveTable, IRunObserver Observer);
 
     /// <summary>
     /// Open everything a run shows while it goes, through the ONE path the live table and <c>--no-ui</c> both take
@@ -3407,8 +3554,9 @@ public static class RunCommand
         try
         {
             IRunObserver inner = table is null ? new ConsoleRunObserver(io.Out) : table;
-            return new RunSurfaces(
-                BuildObserverChain(inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail), table);
+            ObserverChain chain = BuildIsolatedObserverChain(
+                inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail);
+            return new RunSurfaces(chain.Diagram, table, chain.Head);
         }
         catch
         {
@@ -3469,8 +3617,16 @@ public static class RunCommand
         IReadOnlyDictionary<string, bool>? breakdownConfirmations,
         string? junctionRoot,
         WorktreeModeResolution worktreeMode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RunHostServices hostServices)
     {
+        // #810: the host-sleep monitor and its heartbeat live exactly as long as the DAG run. The executor records each
+        // sleep it detects on the in-flight attempts (run.json) and reports it (events.jsonl, the live view, --no-ui).
+        HostSleepMonitor hostSleep = hostServices.HostSleep();
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task heartbeat = Task.Run(
+            () => hostSleep.WatchAsync(hostServices.HeartbeatInterval, hostServices.HeartbeatDelay, heartbeatCts.Token),
+            CancellationToken.None);
         try
         {
             // #596: the run's ONE worktree-mode resolution is handed to the factory rather than letting it
@@ -3478,7 +3634,7 @@ public static class RunCommand
             Scheduler scheduler = SchedulerFactory.Create(
                 plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
                 breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot,
-                worktreeMode: worktreeMode);
+                worktreeMode: worktreeMode, hostSleep: hostSleep);
             RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
             return new RunExecution(report, scheduler);
         }
@@ -3494,6 +3650,18 @@ public static class RunCommand
             // (and its original stack trace) propagates unchanged.
             observer.RunFinished(exitCode: null, faultKind: ex.GetType().Name);
             throw;
+        }
+        finally
+        {
+            await heartbeatCts.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await heartbeat.ConfigureAwait(false);
+            }
+            catch (Exception heartbeatFault) when (heartbeatFault is not OutOfMemoryException)
+            {
+                // The heartbeat reports sleep; its own fault must never replace the run's outcome or its exception.
+            }
         }
     }
 
@@ -3513,6 +3681,22 @@ public static class RunCommand
     /// this is the seam its tests drive.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The serial run-start write-scope notice (issue #816). With a snapshot available, it warns that the run is in
+    /// the operator's own checkout and that editing it mid-run is NOT supported: anything that changes during an
+    /// attempt outside the running task's writeScope is reverted, whoever changed it (#816 review Q1). Without one
+    /// (<paramref name="unavailableReason"/> non-null), it says the scope will not be checked retrospectively at all.
+    /// Public for the same reason as <see cref="RenderGitProbeFailureWarning"/>: the Cli ships no InternalsVisibleTo.
+    /// </summary>
+    public static string SerialWriteScopeNote(string? unavailableReason) =>
+        unavailableReason is null
+            ? "Note: this is a serial run in your own checkout. Do not edit it while the run is going: anything that " +
+              "changes during an attempt outside the running task's writeScope is REVERTED when the attempt ends, " +
+              "whoever changed it (the bytes are kept in that attempt's out-of-scope.patch)."
+            : $"Note: writeScope will NOT be checked when attempts end — {unavailableReason}. Only an out-of-scope " +
+              "Write/Edit on a hook-capable runner is refused; run from the top level of a git repository to have " +
+              "every attempt checked.";
+
     public static void RenderGitProbeFailureWarning(
         WorktreeModeResolution resolution, Core.Model.PlanDefinition plan, TextWriter output)
     {
@@ -3779,7 +3963,7 @@ public static class RunCommand
                 }
             }
 
-            output.WriteLine($"  Inspect {taskLogDir}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
+            output.WriteLine(InspectLine(taskLogDir));
 
             IReadOnlyList<string> missingResourceLines = MissingResourceHaltLines(needsHuman, logsRoot);
             if (missingResourceLines.Count > 0)
@@ -3793,6 +3977,53 @@ public static class RunCommand
             {
                 output.WriteLine(NeedsHumanClosingLine(needsHuman.NeedsHumanKind));
             }
+        }
+    }
+
+    /// <summary>
+    /// The NEEDS HUMAN section's "Inspect" line (#798). Names the latest attempt by its directory —
+    /// <c>attempt-N</c>, the journal's number, which is what the console's retry lines now name too — so an
+    /// operator goes straight to the right folder rather than reconciling a per-run "retry 2/3" against a
+    /// directory listing. Falls back to the shipped wording when no <c>attempt-N</c> directory exists.
+    /// </summary>
+    public static string InspectLine(string taskLogDir)
+    {
+        char sep = Path.DirectorySeparatorChar;
+        return LatestAttemptNumber(taskLogDir) is { } latest
+            ? $"  Inspect {taskLogDir}{sep} (the latest attempt is attempt-{latest}; its feedback.md has the full failure detail),"
+            : $"  Inspect {taskLogDir}{sep} (latest attempt's feedback.md has the full failure detail),";
+    }
+
+    /// <summary>
+    /// The highest <c>N</c> among <paramref name="taskLogDir"/>'s <c>attempt-N</c> directories, or null when there
+    /// are none (or the directory cannot be read — display-only, so an IO fault costs the number, never the halt text).
+    /// </summary>
+    private static int? LatestAttemptNumber(string taskLogDir)
+    {
+        try
+        {
+            if (!Directory.Exists(taskLogDir))
+            {
+                return null;
+            }
+
+            int? latest = null;
+            foreach (string dir in Directory.EnumerateDirectories(taskLogDir, "attempt-*"))
+            {
+                if (int.TryParse(
+                        Path.GetFileName(dir).AsSpan("attempt-".Length), System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out int n)
+                    && n > (latest ?? 0))
+                {
+                    latest = n;
+                }
+            }
+
+            return latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 
@@ -3896,9 +4127,10 @@ public static class RunCommand
         }
 
         JournalDocument document = JournalReader.Read(journalPath);
-        if (JournalCost.Total(document) is { } total)
+        // #782 §4: a gateway run's spend is its token usage, kept apart from the dollars ("$X + Nk tok (gateway)").
+        if (JournalCost.Render(document) is { } total)
         {
-            output.WriteLine($"Total prompt cost: ${total:F4}");
+            output.WriteLine($"Total prompt cost: {total}");
         }
 
         // The per-tier split is ADDITIVE to the total above, never a replacement — the two answer

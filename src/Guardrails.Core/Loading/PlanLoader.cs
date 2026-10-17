@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Guardrails.Core.Hashing;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Loading;
 
@@ -456,12 +457,15 @@ public sealed class PlanLoader
                     : new Dictionary<string, string>(raw.GuardrailOverrides.Env, StringComparer.Ordinal)
             };
 
+        PromptRunnerKind kind = ReadKind(name, raw.Kind, configPath, diagnostics);
+
         return new PromptRunnerConfig
         {
             Name = name,
-            Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
+            Command = string.IsNullOrWhiteSpace(raw.Command) ? DefaultCommand(name, kind) : raw.Command,
             Settings = settings,
-            Kind = ReadKind(name, raw.Kind, configPath, diagnostics),
+            Kind = kind,
+            DeclaredSettingsKeys = DeclaredSettingsKeys(raw),
             Effort = raw.Effort,
             Costly = ReadCostly(name, raw.Costly, configPath, diagnostics),
             Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
@@ -475,12 +479,152 @@ public sealed class PlanLoader
             // not the loader's.
             Endpoint = raw.Endpoint,
             ContextTokens = raw.ContextTokens,
+            StallTimeoutSeconds = ReadStallTimeout(name, raw.StallTimeoutSeconds, raw.GuardrailOverrides?.StallTimeoutSeconds, configPath, diagnostics),
             ApiKeyEnv = raw.ApiKeyEnv,
             Wire = raw.Wire is null
                 ? null
                 : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
-            Engine = raw.Engine
+            Engine = raw.Engine,
+            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, raw.GuardrailOverrides?.ApprovalMode, configPath, diagnostics),
+
+            // The claude-gateway keys (#782, SSOT §9.10). Bound verbatim; every shape rule is GR2084 at validate.
+            BaseUrl = raw.BaseUrl,
+            AuthTokenEnv = raw.AuthTokenEnv,
+            BackendModel = raw.BackendModel,
+            GatewayKeysInOverrides = GatewayKeysInOverrides(raw.GuardrailOverrides)
         };
+    }
+
+    /// <summary>
+    /// The block's <c>stallTimeoutSeconds</c> (#811), passed through; the same key under <c>guardrailOverrides</c> is
+    /// GR2089, a warning: the bound applies to task actions only, and judges never read the override profile's copy.
+    /// </summary>
+    private static int? ReadStallTimeout(
+        string name, int? value, JsonElement? overrideValue, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (!AbsentAxis(overrideValue, out _))
+        {
+            diagnostics.Add(Warning(DiagnosticCodes.StallTimeoutInGuardrailOverrides, configPath,
+                $"promptRunners.{name}.guardrailOverrides.stallTimeoutSeconds does nothing: the stall bound is " +
+                $"block-level and applies to task actions only. Move it to promptRunners.{name}.stallTimeoutSeconds (SSOT §9)."));
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// The gateway keys written under <c>guardrailOverrides</c> (#782) — block-level only, so each one found is
+    /// carried to the validator (GR2084) instead of being dropped here without a word.
+    /// </summary>
+    private static IReadOnlyList<string> GatewayKeysInOverrides(RawPromptRunnerOverrides? overrides)
+    {
+        if (overrides is null)
+        {
+            return [];
+        }
+
+        (string Key, JsonElement? Value)[] candidates =
+        [
+            ("baseUrl", overrides.BaseUrl),
+            ("authTokenEnv", overrides.AuthTokenEnv),
+            ("backendModel", overrides.BackendModel),
+            ("contextTokens", overrides.ContextTokens)
+        ];
+
+        return candidates.Where(c => !AbsentAxis(c.Value, out _)).Select(c => c.Key).ToList();
+    }
+
+    /// <summary>
+    /// The cursor <c>approvalMode</c> (#767, SSOT §9.9). ABSENT ⇒ null (the runner applies
+    /// <see cref="CursorApprovalModes.Default"/>). An unrecognised token — or a value that is not a string — is
+    /// GR2081 and loads as null: REPORTED, never silently served as <c>force</c>, which is the one mode an
+    /// enterprise account may refuse outright. <c>guardrailOverrides.approvalMode</c> is GR2081 too: the key is
+    /// block-level only, and an override nothing reads is indistinguishable from one that works. Whether the key
+    /// belongs on this block's kind at all is the validator's question.
+    /// </summary>
+    private static CursorApprovalMode? ReadApprovalMode(
+        string name, JsonElement? rawValue, JsonElement? overrideValue, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (!AbsentAxis(overrideValue, out _))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+                $"promptRunners.{name}.guardrailOverrides.approvalMode is not honoured: approvalMode is block-level " +
+                "only — Cursor's approval policy is a property of the account and the launch, not of the prompt. " +
+                $"Move it to promptRunners.{name}.approvalMode (SSOT §9.9)."));
+        }
+
+        if (AbsentAxis(rawValue, out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+                $"promptRunners.{name}.approvalMode must be a string, one of {CursorApprovalModes.TokenList}, but " +
+                $"was {DescribeJson(value)} (SSOT §9.9)."));
+            return null;
+        }
+
+        string rawMode = value.GetString() ?? string.Empty;
+        if (CursorApprovalModes.TryParse(rawMode, out CursorApprovalMode mode))
+        {
+            return mode;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+            $"promptRunners.{name}.approvalMode '{rawMode}' is not a recognised Cursor approval mode; expected " +
+            $"one of {CursorApprovalModes.TokenList}. 'force' (--force, Cursor's Run Everything) is the default " +
+            "when the key is omitted; 'auto-review' (--auto-review) is the route for a team whose administrator " +
+            "disabled Run Everything; 'none' passes neither flag, so shell is refused unless extraArgs enables " +
+            "Cursor's sandbox (\"--sandbox\", \"enabled\") (SSOT §9.9)."));
+        return null;
+    }
+
+    /// <summary>
+    /// The <c>command</c> a block that declares none launches: the block NAME (a block named
+    /// <c>claude</c> runs <c>claude</c>), except for <c>kind: "cursor"</c>, whose CLI binary is <c>agent</c>
+    /// whatever the block is called (#764) — so a block named <c>cursor</c> with no <c>command</c> still
+    /// reaches Cursor's Agent CLI, and GR2009's PATH probe checks the binary that would actually run.
+    /// </summary>
+    private static string DefaultCommand(string name, PromptRunnerKind kind) =>
+        kind == PromptRunnerKind.Cursor ? CursorPromptRunner.DefaultCommand : name;
+
+    /// <summary>
+    /// The settings keys the raw block declared (see <see cref="PromptRunnerConfig.DeclaredSettingsKeys"/>),
+    /// captured here because the defaults applied in <see cref="BuildRunnerConfig"/> erase the difference.
+    /// </summary>
+    private static IReadOnlyList<string> DeclaredSettingsKeys(RawPromptRunner raw)
+    {
+        var keys = new List<string>();
+        AddIfDeclared(keys, "", raw.PermissionMode, raw.AllowedTools, raw.MaxTurns, raw.Model, raw.ExtraArgs,
+            raw.MaxOutputTokens, raw.Env);
+
+        if (raw.GuardrailOverrides is { } o)
+        {
+            AddIfDeclared(keys, "guardrailOverrides.", o.PermissionMode, o.AllowedTools, o.MaxTurns, o.Model,
+                o.ExtraArgs, o.MaxOutputTokens, o.Env);
+        }
+
+        return keys;
+
+        static void AddIfDeclared(
+            List<string> into, string prefix, string? permissionMode, List<string>? allowedTools, int? maxTurns,
+            string? model, List<string>? extraArgs, int? maxOutputTokens, Dictionary<string, string>? env)
+        {
+            (string Key, bool Declared)[] candidates =
+            [
+                ("permissionMode", permissionMode is not null),
+                ("allowedTools", allowedTools is not null),
+                ("maxTurns", maxTurns is not null),
+                ("model", model is not null),
+                ("extraArgs", extraArgs is not null),
+                ("maxOutputTokens", maxOutputTokens is not null),
+                ("env", env is not null)
+            ];
+
+            into.AddRange(candidates.Where(c => c.Declared).Select(c => prefix + c.Key));
+        }
     }
 
     /// <summary>

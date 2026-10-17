@@ -15,9 +15,20 @@ public interface IRunObserver
 
     /// <summary>
     /// An attempt is starting: <paramref name="attempt"/> of <paramref name="budget"/>
-    /// for this run (1-based; budget = 1 + retries).
+    /// for this run (1-based; budget = 1 + retries), which the journal numbers
+    /// <paramref name="attemptNumber"/>.
+    ///
+    /// <para><b>Two numbers, on purpose (#798).</b> <paramref name="attempt"/>/<paramref name="budget"/> is the
+    /// executor's per-RUN position — it restarts at 1 on every resume, because a resume grants a fresh budget.
+    /// <paramref name="attemptNumber"/> is the JOURNAL's number (<c>RunJournal.NextAttemptNumber</c>: one past the
+    /// highest recorded attempt, surviving resumes and <c>guardrails reset</c>), and it is the <c>N</c> of this
+    /// attempt's <c>attempt-N</c> log directory, of its <c>run.json</c> <c>inFlightAttempt</c> marker, and of the
+    /// <see cref="Journal.AttemptRecord.Attempt"/> <see cref="AttemptFinished"/> will carry. A surface that names
+    /// the attempt to an operator names <paramref name="attemptNumber"/>; the per-run pair is only a budget
+    /// position. They differ on any resumed task — "retry 1/3" once wrote <c>attempt-3</c>, and nothing on the
+    /// console said so.</para>
     /// </summary>
-    void AttemptStarting(TaskNode task, int attempt, int budget) { }
+    void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) { }
 
     /// <summary>
     /// This attempt's model is now KNOWN (#349). <paramref name="model"/> is the BEST-KNOWN-ACTUAL model —
@@ -85,6 +96,37 @@ public interface IRunObserver
     /// lesson).</para>
     /// </summary>
     void AttemptFinished(TaskNode task, Journal.AttemptRecord record) { }
+
+    /// <summary>
+    /// Attempt <paramref name="attempt"/> (the journal's number) of <paramref name="task"/> was killed by the stall
+    /// watchdog (#811, the cheap half of #806): it produced no progress for <paramref name="silentFor"/> against a
+    /// bound of <paramref name="bound"/>, after discounting <paramref name="suspendsObserved"/> host suspends (#517).
+    /// <paramref name="contextManagement"/> is the wire token of a context-management failure seen in the same
+    /// session (<c>compaction-failed</c>), with the runner's own <paramref name="contextManagementDetail"/>, or null.
+    /// Raised before the attempt settles, so the verdict is on record even if the settle is interrupted; the matching
+    /// <see cref="AttemptFinished"/> still follows.
+    ///
+    /// <para>Primitives beside <see cref="TaskNode"/> for the CS0051 reason <see cref="AttemptModelResolved"/> gives.
+    /// Default no-op, but a transparent DECORATOR must forward it EXPLICITLY (the <c>ObserverForwardingSweepTests</c>
+    /// contract), or the verdict is swallowed before it reaches <c>events.jsonl</c>.</para>
+    /// </summary>
+    void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) { }
+
+    /// <summary>
+    /// The HOST was asleep for <paramref name="sleptFor"/> somewhere between <paramref name="from"/> and
+    /// <paramref name="to"/> (#810): the wall clock ran ahead of the awake clock by at least a minute. Run-scoped.
+    /// <paramref name="inFlight"/> names the attempts that were running, as <c>&lt;task&gt;/attempt-&lt;N&gt;</c>; the
+    /// sleep was added to each one's <c>sleptSeconds</c> in <c>run.json</c>. A sleep does not count against an attempt's
+    /// timeout (SSOT §7), which is why a surface must show it: without it, an attempt that slept looks hung.
+    ///
+    /// <para>Raised on whichever thread detected the sleep: the heartbeat's, or a worker's at an attempt boundary (the
+    /// executor checks when an attempt starts and settles), so an implementation must be thread-safe, as the console
+    /// renderers already are. Default no-op, but a transparent DECORATOR must forward it EXPLICITLY (the
+    /// <c>ObserverForwardingSweepTests</c> contract).</para>
+    /// </summary>
+    void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) { }
 
     /// <summary>
     /// The run is about to terminate, on every exit path — green, a gate failure, an unhandled fault
@@ -159,6 +201,23 @@ public interface IRunObserver
     /// punished. Default no-op so non-CLI observers need not handle it.
     /// </summary>
     void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
+
+    /// <summary>
+    /// Issue #816 review (WEAK 6): this attempt's <c>writeScope</c> was NOT fully checked or enforced — the serial
+    /// snapshot could not be taken, the end-of-attempt check hit a git error, or a revert failed — for
+    /// <paramref name="reason"/>. Also stated in the attempt's summary and <c>write-scope-check.log</c>; raised here
+    /// so it reaches the console as it happens rather than only a file. Default no-op.
+    /// </summary>
+    void WriteScopeNotChecked(TaskNode task, int attempt, string reason) { }
+
+    /// <summary>
+    /// Issue #816: at RUN START, the workspace differs from the snapshot an earlier attempt of
+    /// <paramref name="task"/> journaled and never finished with (the harness was killed, crashed, or the host slept)
+    /// on <paramref name="paths"/>, all outside the task's writeScope. They are REPORTED, not reverted — they may be
+    /// that attempt's out-of-scope edits, or a human's fix since. <paramref name="patchPath"/> is the kept copy of
+    /// the differences, or null when none could be written. Default no-op.
+    /// </summary>
+    void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) { }
 
     /// <summary>
     /// An autonomy-policy decision was recorded to the unified <c>decisions[]</c> log (SSOT §2.1/§7): the

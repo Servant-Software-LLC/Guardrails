@@ -48,16 +48,19 @@ public static class ClaudeTranscriptRenderer
     public static string Render(string streamJsonl)
     {
         var text = new StringBuilder();
+        var cursorCalls = new CursorCallState();
         foreach (string line in streamJsonl.Replace("\r\n", "\n").Split('\n'))
         {
-            RenderLine(line, text);
+            RenderLine(line, text, cursorCalls);
         }
+
+        cursorCalls.RenderStillOpen(text);
 
         // Collapse any run of 3+ blank lines to a single blank line, trim trailing whitespace.
         return Normalize(text.ToString());
     }
 
-    private static void RenderLine(string line, StringBuilder text)
+    private static void RenderLine(string line, StringBuilder text, CursorCallState cursorCalls)
     {
         if (string.IsNullOrWhiteSpace(line))
         {
@@ -76,12 +79,12 @@ public static class ClaudeTranscriptRenderer
 
         using (document)
         {
-            RenderDocument(document.RootElement, text);
+            RenderDocument(document.RootElement, text, cursorCalls);
         }
     }
 
     /// <summary>Map one parsed stream object to its transcript fragment (shared by batch and streaming).</summary>
-    private static void RenderDocument(JsonElement root, StringBuilder text)
+    private static void RenderDocument(JsonElement root, StringBuilder text, CursorCallState cursorCalls)
     {
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("type", out JsonElement typeElement) ||
@@ -89,6 +92,8 @@ public static class ClaudeTranscriptRenderer
         {
             return;
         }
+
+        cursorCalls.Observe(root, typeElement.GetString(), text);
 
         switch (typeElement.GetString())
         {
@@ -101,7 +106,11 @@ public static class ClaudeTranscriptRenderer
             case "result":
                 RenderResult(root, text);
                 break;
-            // system, rate_limit_event, etc. — telemetry, dropped.
+            case "tool_call":
+                RenderCursorToolCall(root, text);
+                break;
+            // system, rate_limit_event, etc. — telemetry, dropped. Cursor's `thinking` (delta/completed)
+            // events land here too and render NOTHING: a real Cursor stream carries dozens of them.
         }
     }
 
@@ -129,6 +138,7 @@ public static class ClaudeTranscriptRenderer
     public sealed class StreamingWriter
     {
         private readonly TextWriter _writer;
+        private readonly CursorCallState _cursorCalls = new();
         private int _pendingNewlines;
         private bool _wroteContent;
         private bool _completed;
@@ -159,7 +169,7 @@ public static class ClaudeTranscriptRenderer
             using (document)
             {
                 var fragment = new StringBuilder();
-                RenderDocument(document.RootElement, fragment);
+                RenderDocument(document.RootElement, fragment, _cursorCalls);
                 EmitClamped(fragment.ToString());
             }
 
@@ -175,6 +185,12 @@ public static class ClaudeTranscriptRenderer
             }
 
             _completed = true;
+
+            // Calls a stream with no terminal result left open (#778) — the same lines Render appends at its end.
+            var fragment = new StringBuilder();
+            _cursorCalls.RenderStillOpen(fragment);
+            EmitClamped(fragment.ToString());
+
             if (_wroteContent)
             {
                 _writer.Write('\n'); // Normalize ends a non-empty transcript with exactly one newline.
@@ -218,6 +234,66 @@ public static class ClaudeTranscriptRenderer
             catch (JsonException)
             {
                 return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one piece of cross-line state a transcript keeps (#778): Cursor's open tool calls, paired by
+    /// <c>call_id</c> through the same <see cref="CursorCallPairing"/> the verdict uses. A call still open when the
+    /// terminal <c>result</c> arrives renders <c>⎿ REFUSED: shell `git commit …` — abandoned: …</c> just before the
+    /// final message (its <c>started</c> line is already written, so the call is named); one still open when a stream
+    /// with no result ends was cut off, not refused, and renders <c>⎿ STILL RUNNING when the session ended (not
+    /// refused): shell `dotnet test`</c>. Per-line
+    /// independence is unchanged — a malformed line is still skipped on its own and poisons nothing — and
+    /// <see cref="Render"/> and <see cref="StreamingWriter"/> share this class, so byte-identity holds. A Claude
+    /// stream has no <c>tool_call</c> events and renders nothing here.
+    /// </summary>
+    private sealed class CursorCallState
+    {
+        private readonly CursorCallPairing _pairing = new();
+        private bool _resultSeen;
+
+        public void Observe(JsonElement root, string? type, StringBuilder text)
+        {
+            if (type == "result")
+            {
+                _resultSeen = true;
+                RenderAbandoned(_pairing.Drain(), CursorToolCallScanner.AbandonedReason, text);
+                return;
+            }
+
+            if (type == "tool_call")
+            {
+                _pairing.Observe(root);
+            }
+        }
+
+        public void RenderStillOpen(StringBuilder text)
+        {
+            if (_resultSeen)
+            {
+                RenderAbandoned(_pairing.Drain(), CursorToolCallScanner.AbandonedReason, text);
+                return;
+            }
+
+            foreach (CursorCallPairing.OpenCall call in _pairing.Drain())
+            {
+                InFlightToolCall cut = CursorToolCallScanner.DescribeInFlight(call);
+                text.Append("  ").Append(ResultBullet).Append(" STILL RUNNING when the session ended (not refused): ")
+                    .Append(Truncate(CollapseWhitespace(cut.ToString()), MaxResultLineChars + MaxArgValueChars))
+                    .Append('\n');
+            }
+        }
+
+        private static void RenderAbandoned(IReadOnlyList<CursorCallPairing.OpenCall> calls, string reason, StringBuilder text)
+        {
+            foreach (CursorCallPairing.OpenCall call in calls)
+            {
+                ToolRefusal refusal = CursorToolCallScanner.Describe(call.Kind, call.Args, rejected: default, reason).Refusal;
+                text.Append("  ").Append(ResultBullet).Append(" REFUSED: ")
+                    .Append(Truncate(CollapseWhitespace(refusal.ToString()), MaxResultLineChars + MaxArgValueChars))
+                    .Append('\n');
             }
         }
     }
@@ -297,6 +373,89 @@ public static class ClaudeTranscriptRenderer
         }
 
         text.Append('\n').Append(FinalBullet).Append(' ').Append(final).Append('\n');
+    }
+
+    /// <summary>
+    /// Cursor's tool event (#764): <c>{"type":"tool_call","subtype":"started","tool_call":{"readToolCall":
+    /// {"args":{…}}}}</c>, the key varying per tool (<c>readToolCall</c>, <c>writeToolCall</c>,
+    /// <c>shellToolCall</c>…). Rendered as the same <c>● name(args)</c> tool line a Claude <c>tool_use</c>
+    /// gets, with the <c>ToolCall</c> suffix dropped from the name (<c>readToolCall</c> ⇒ <c>read</c>). Only
+    /// the <c>started</c> event renders — its <c>completed</c> twin repeats the call with a result whose shape
+    /// is per-tool and undocumented, so it is dropped rather than guessed at. Claude never emits this type,
+    /// so a Claude transcript is unchanged.
+    /// <para>The live <c>tool_call</c> object carries sibling keys beside the tool (<c>toolCallId</c>,
+    /// <c>startedAtMs</c>, <c>hookAdditionalContexts</c>), so the tool is the first key that ends in
+    /// <c>ToolCall</c> and holds an object — never simply the first key.</para>
+    /// <para><b>One exception (#773):</b> a <c>completed</c> event whose result is <c>rejected</c> renders a
+    /// <c>⎿ REFUSED: &lt;reason&gt;</c> line under its call. That shape IS known — it is the one
+    /// <see cref="CursorToolCallScanner"/> reads — and a transcript that shows a refused <c>git status</c> as a
+    /// plain tool line reads as if it ran. A call that STARTED and never completed (#778) gets its
+    /// <c>REFUSED</c> line from <see cref="CursorCallState"/> instead, at the terminal result.</para>
+    /// </summary>
+    private static void RenderCursorToolCall(JsonElement root, StringBuilder text)
+    {
+        if (!root.TryGetProperty("subtype", out JsonElement subtype) ||
+            subtype.ValueKind != JsonValueKind.String ||
+            !root.TryGetProperty("tool_call", out JsonElement call) ||
+            call.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        if (subtype.GetString() == "completed")
+        {
+            RenderCursorRefusal(call, text);
+            return;
+        }
+
+        if (subtype.GetString() != "started")
+        {
+            return;
+        }
+
+        const string suffix = "ToolCall";
+        foreach (JsonProperty tool in call.EnumerateObject())
+        {
+            if (tool.Value.ValueKind != JsonValueKind.Object ||
+                !tool.Name.EndsWith(suffix, StringComparison.Ordinal) ||
+                tool.Name.Length <= suffix.Length)
+            {
+                continue;
+            }
+
+            string name = tool.Name[..^suffix.Length];
+            string args = tool.Value.TryGetProperty("args", out JsonElement input)
+                ? RenderToolArgs(input)
+                : string.Empty;
+            text.Append(ToolBullet).Append(' ').Append(name).Append('(').Append(args).Append(')').Append('\n');
+            return; // one tool per event
+        }
+    }
+
+    /// <summary>The <c>⎿ REFUSED: …</c> line for a completed Cursor tool call whose result is <c>rejected</c> (#773).</summary>
+    private static void RenderCursorRefusal(JsonElement call, StringBuilder text)
+    {
+        foreach (JsonProperty tool in call.EnumerateObject())
+        {
+            if (tool.Value.ValueKind != JsonValueKind.Object ||
+                !tool.Name.EndsWith("ToolCall", StringComparison.Ordinal) ||
+                !tool.Value.TryGetProperty("result", out JsonElement result) ||
+                result.ValueKind != JsonValueKind.Object ||
+                !result.TryGetProperty("rejected", out JsonElement rejected))
+            {
+                continue;
+            }
+
+            string reason = rejected.ValueKind == JsonValueKind.Object &&
+                            rejected.TryGetProperty("reason", out JsonElement r) &&
+                            r.ValueKind == JsonValueKind.String &&
+                            !string.IsNullOrWhiteSpace(r.GetString())
+                ? CollapseWhitespace(r.GetString()!)
+                : CursorToolCallScanner.NoReasonGiven;
+            text.Append("  ").Append(ResultBullet).Append(" REFUSED: ")
+                .Append(Truncate(reason, MaxArgValueChars * 2)).Append('\n');
+            return;
+        }
     }
 
     /// <summary>The <c>message.content</c> array, or empty when absent/malformed.</summary>

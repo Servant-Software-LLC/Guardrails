@@ -192,6 +192,10 @@ public sealed class FakeOpenAiServer : IDisposable, IAsyncDisposable
             {
                 return; // listener stopped mid-accept
             }
+            catch (InvalidOperationException)
+            {
+                return; // "Not listening": stopped between the shutdown check and the accept call
+            }
 
             // Counted HERE, before a single byte is read: a connection that sends nothing still counts.
             Interlocked.Increment(ref _acceptedConnections);

@@ -121,12 +121,20 @@ public sealed record TelemetryReport
         // actually reported one, and the stratum renders null (not 0) when NOT ONE of them did.
         decimal costUsd = 0m;
         bool anyCost = false;
+        long gatewayTokens = 0;
+        bool anyGateway = false;
         foreach (TelemetryReportSample sample in strataSamples)
         {
             if (sample.CostUsd is { } cost)
             {
                 costUsd += cost;
                 anyCost = true;
+            }
+
+            if (sample.GatewayTokens is { } tokens)
+            {
+                gatewayTokens += tokens;
+                anyGateway = true;
             }
         }
 
@@ -143,7 +151,8 @@ public sealed record TelemetryReport
                 P90Attempts = Percentile(attemptsAmongGreen, 0.9),
                 AbandonmentRate = abandonmentRate
             },
-            CostUsd = anyCost ? costUsd : null
+            CostUsd = anyCost ? costUsd : null,
+            GatewayTokens = anyGateway ? gatewayTokens : null
         };
     }
 
@@ -202,6 +211,12 @@ public sealed record TelemetryReportSample
 
     /// <summary>What this task cost, or <c>null</c> when nothing about it ever reported a cost — never defaulted to <c>0</c>.</summary>
     public decimal? CostUsd { get; init; }
+
+    /// <summary>
+    /// The token usage of this task's attempts that went through a claude gateway (#782 §4), or <c>null</c> when none
+    /// did — the spend figure that stands in for a gateway attempt's absent cost.
+    /// </summary>
+    public long? GatewayTokens { get; init; }
 }
 
 /// <summary>
@@ -242,6 +257,9 @@ public sealed record SufficientEvidenceReportRow : TelemetryReportRow
 
     /// <summary><c>null</c> when no sample in this stratum ever reported a cost — a costless provider, not a <c>$0</c> one.</summary>
     public decimal? CostUsd { get; init; }
+
+    /// <summary>The stratum's summed gateway token usage (#782 §4), or <c>null</c> when no sample went through a gateway.</summary>
+    public long? GatewayTokens { get; init; }
 }
 
 /// <summary>

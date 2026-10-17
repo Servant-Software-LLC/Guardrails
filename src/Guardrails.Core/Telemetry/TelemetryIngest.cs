@@ -150,6 +150,8 @@ public static class TelemetryIngest
                     HarnessVersion = environment?.HarnessVersion,
                     SkillVersion = environment?.SkillVersion,
                     ModelDigest = provenance?.ModelDigest,
+                    Gateway = provenance?.Gateway,
+                    BackendModel = provenance?.BackendModel,
                     RouteWarm = provenance?.RouteWarm,
                     Turns = attempt.Turns,
                     ActionMs = attempt.Segments?.ActionMs,

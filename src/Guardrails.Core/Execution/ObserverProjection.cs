@@ -126,16 +126,19 @@ public sealed class ObserverProjection : IRunObserver
         _inner.TaskWaitingOnWorktree(task, operation);
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
         Append(new JsonObject
         {
             ["member"] = "AttemptStarting",
             ["taskId"] = task.Id,
             ["attempt"] = attempt,
-            ["budget"] = budget
+            ["budget"] = budget,
+            // #798: the journal's number (the attempt-N log dir). OPTIONAL on read — a file written before
+            // #798 lacks it, and the replay falls back to `attempt`, which is what those runs displayed.
+            ["attemptNumber"] = attemptNumber
         });
-        _inner.AttemptStarting(task, attempt, budget);
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
     }
 
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
@@ -186,14 +189,56 @@ public sealed class ObserverProjection : IRunObserver
             ["outcome"] = record.Outcome.ToString(),
             ["logDir"] = record.LogDir,
             ["costUsd"] = JsonValue.Create(record.CostUsd),
+            ["inputTokens"] = JsonValue.Create(record.Usage?.InputTokens),
+            ["outputTokens"] = JsonValue.Create(record.Usage?.OutputTokens),
+            ["gateway"] = record.Provenance?.Gateway,
+            ["backendModel"] = record.Provenance?.BackendModel,
             ["turns"] = JsonValue.Create(record.Turns),
             ["needsHumanKind"] = record.NeedsHumanKind,
             ["model"] = record.Provenance?.Model,
             ["runner"] = record.Provenance?.Runner,
             ["tier"] = record.Provenance?.Tier,
-            ["tierSource"] = record.Provenance?.TierSource?.ToString()
+            ["tierSource"] = record.Provenance?.TierSource?.ToString(),
+            // #816: the write-scope facts the record carries, so an attached client rebuilds the same record.
+            ["scopeRevertedPaths"] = record.ScopeRevertedPaths is { } reverted
+                ? new JsonArray(reverted.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray())
+                : null,
+            ["writeScopeNotChecked"] = record.WriteScopeNotChecked
         });
         _inner.AttemptFinished(task, record);
+    }
+
+    /// <summary>#810: a host sleep, recorded like every other call.</summary>
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "HostSlept",
+            ["from"] = JsonValue.Create(from),
+            ["to"] = JsonValue.Create(to),
+            ["sleptForSeconds"] = JsonValue.Create((long)Math.Round(sleptFor.TotalSeconds)),
+            ["inFlight"] = new JsonArray([.. inFlight.Select(x => (JsonNode?)JsonValue.Create(x))])
+        });
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+    }
+
+    /// <summary>#811: the stall watchdog's verdict, recorded like every other call (seconds, not TimeSpan strings).</summary>
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "AttemptStalled",
+            ["taskId"] = task.Id,
+            ["attempt"] = attempt,
+            ["boundSeconds"] = JsonValue.Create((long)Math.Round(bound.TotalSeconds)),
+            ["silentSeconds"] = JsonValue.Create((long)Math.Round(silentFor.TotalSeconds)),
+            ["suspends"] = suspendsObserved,
+            ["contextManagement"] = contextManagement,
+            ["contextManagementDetail"] = contextManagementDetail
+        });
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
     }
 
     /// <summary>
@@ -288,6 +333,36 @@ public sealed class ObserverProjection : IRunObserver
             ["strippedPaths"] = strippedPaths
         });
         _inner.OutOfScopeStripped(task, stripped);
+    }
+
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "WriteScopeNotChecked",
+            ["taskId"] = task.Id,
+            ["attempt"] = attempt,
+            ["reason"] = reason
+        });
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+    }
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath)
+    {
+        var changed = new JsonArray();
+        foreach (WriteScopeOffense offense in paths)
+        {
+            changed.Add(JsonValue.Create(offense.Path));
+        }
+
+        Append(new JsonObject
+        {
+            ["member"] = "InterruptedAttemptChangesFound",
+            ["taskId"] = task.Id,
+            ["paths"] = changed,
+            ["patchPath"] = patchPath
+        });
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
     }
 
     public void DecisionRecorded(DecisionEntry entry)

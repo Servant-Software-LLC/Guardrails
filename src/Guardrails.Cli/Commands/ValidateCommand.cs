@@ -24,7 +24,7 @@ public static class ValidateCommand
         return command;
     }
 
-    private static int Run(string folder, IConsoleIo io)
+    internal static int Run(string folder, IConsoleIo io)
     {
         PlanProbe.Result result = PlanProbe.LoadAndValidate(folder);
 

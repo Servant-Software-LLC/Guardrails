@@ -61,7 +61,8 @@ internal sealed class ActionRunner
         TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot = null,
-        IReadOnlyList<string>? enforcedWriteScope = null)
+        IReadOnlyList<string>? enforcedWriteScope = null,
+        IReadOnlyList<string>? writeTimeScope = null)
     {
         if (task.Action.Kind != ActionKind.Prompt)
         {
@@ -82,7 +83,7 @@ internal sealed class ActionRunner
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
             logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot,
-            enforcedWriteScope).ConfigureAwait(false);
+            enforcedWriteScope, writeTimeScope).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -111,7 +112,8 @@ internal sealed class ActionRunner
         TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot,
-        IReadOnlyList<string>? enforcedWriteScope)
+        IReadOnlyList<string>? enforcedWriteScope,
+        IReadOnlyList<string>? writeTimeScope)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
         PromptFile promptFile = PromptExecutionSupport.LoadPromptFile(task.Action.Path);
@@ -190,9 +192,20 @@ internal sealed class ActionRunner
         // other one could drop the boundary for a file-writing runner whenever the two differ. This is
         // not a weakening — NeedsContainmentHook answers TRUE for every kind but the ones registered as
         // tool-less, so a future writing runner inherits the boundary rather than silently losing it.
-        if (isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook((route?.Runner ?? runnerConfig).Kind))
+        //
+        // #816: the write-scope hook (WriteScopeHook) rides the same mechanism in BOTH modes — composed into the
+        // containment settings in worktree mode, alone in serial mode — so a file-editing tool call outside the
+        // task's writeScope is refused at the moment of the write, naming the scope and the needsHuman door. The
+        // retrospective write-scope check at the end of every attempt stays the backstop.
+        WriteScopeHook.Spec? scopeHook = writeTimeScope is not null
+            ? new WriteScopeHook.Spec(effectiveWorkspaceRoot, writeTimeScope)
+            : null;
+        if (PromptRunnerKinds.NeedsContainmentHook((route?.Runner ?? runnerConfig).Kind)
+            && (isWorktreeMode || scopeHook is not null))
         {
-            string settingsPath = WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!);
+            string settingsPath = isWorktreeMode
+                ? WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!, writeScope: scopeHook)
+                : WriteScopeHook.WriteHookFiles(logDir, scopeHook!);
             settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", settingsPath] };
         }
 
@@ -204,6 +217,12 @@ internal sealed class ActionRunner
             ["GUARDRAILS_STATE_OUT"] = stagingStateOutPath
         };
 
+        TimeSpan actionTimeout = Extend(
+            _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+            timeoutMultiplier);
+        string? dispatchName = PromptRunnerRegistry.DispatchNameFor(
+            _plan.Config, route, task.Action.Runner, promptFile.Frontmatter.Runner);
+
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
@@ -212,9 +231,11 @@ internal sealed class ActionRunner
             PlanDirectory = _plan.PlanDirectory,
             Environment = actionEnv,
             Settings = settings,
-            Timeout = Extend(
-                _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
-                timeoutMultiplier),
+            Timeout = actionTimeout,
+
+            // #811: a silence bound for every prompt action, from the DISPATCHED block's stallTimeoutSeconds (the block
+            // whose CLI actually runs), else derived from the extended timeout. See ActionStallBound for the numbers.
+            StallBound = ActionStallBound.Resolve(registry.ResolveConfig(dispatchName), actionTimeout),
             StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl"),
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
@@ -235,9 +256,7 @@ internal sealed class ActionRunner
         // The whole order now lives ONCE, on the registry (PromptRunnerRegistry.DispatchNameFor), because
         // `--dry-run` must preview the block this line dispatches to and a second spelling of it is how
         // #549 happened one rule further up: the preview re-derived precedence instead of asking.
-        PromptResult result = await registry.Resolve(
-                PromptRunnerRegistry.DispatchNameFor(
-                    _plan.Config, route, task.Action.Runner, promptFile.Frontmatter.Runner))
+        PromptResult result = await registry.Resolve(dispatchName)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
         // Promote the staged fragment to its documented final location THE INSTANT the sub-agent
@@ -470,6 +489,15 @@ internal sealed record ActionRun
     /// </summary>
     public string? ModelDigest { get; init; }
 
+    /// <summary>
+    /// The claude gateway the action dispatched through (#782 §4) — <see cref="PromptResult.Gateway"/> carried one hop
+    /// further, on the same terms as <see cref="ModelDigest"/> — or null for every non-gateway action.
+    /// </summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>The backend identity behind <see cref="Gateway"/> (#782 §3.2), or <c>"unverified"</c>; null with it.</summary>
+    public string? BackendModel { get; init; }
+
     public string? NeedsHumanQuestion { get; init; }
 
     /// <summary>
@@ -533,6 +561,45 @@ internal sealed record ActionRun
 
     /// <summary>The entries of <see cref="BlockedWritePaths"/> that are refused commands rather than paths (#708).</summary>
     public IReadOnlyList<string> RefusedCommands { get; init; } = [];
+
+    /// <summary>
+    /// Every tool call the runner's approval policy refused this attempt, with its reason (#773) — a straight carry
+    /// of <see cref="PromptResult.RefusedToolCalls"/>. Rendered into <c>feedback.md</c> on a failed attempt so the
+    /// next one (and the human) sees what was refused and why. Empty for a script action and for Claude.
+    /// </summary>
+    public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// Tool calls still running when the session was stopped with no result (#778) — a straight carry of
+    /// <see cref="PromptResult.InFlightToolCalls"/>. Not refusals: rendered under their own neutral heading.
+    /// </summary>
+    public IReadOnlyList<InFlightToolCall> InFlightToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// The runner reported that the action attempted shell and every shell call was refused (#773) — a straight
+    /// carry of <see cref="PromptResult.AllShellRefused"/>. The action still counts as succeeded so its guardrails
+    /// run; if they FAIL, <see cref="TaskExecutor"/> settles the task needs-human at once with
+    /// <see cref="RunnerConfigurationRemedy"/> instead of retrying under the same approval policy.
+    /// </summary>
+    public bool AllShellRefused { get; init; }
+
+    /// <summary>The runner's remedy text for <see cref="AllShellRefused"/> (#773), or null.</summary>
+    public string? RunnerConfigurationRemedy { get; init; }
+
+    /// <summary>
+    /// A context-management failure the runner saw (#811), a straight carry of <see cref="PromptResult.ContextManagement"/>.
+    /// Named in a FAILED attempt's summary and feedback; ignored on success, where the session recovered from it.
+    /// </summary>
+    public ContextManagementFailure? ContextManagement { get; init; }
+
+    /// <summary>
+    /// How often the session's context was compacted (#817), a straight carry of <see cref="PromptResult.Compactions"/>.
+    /// Folded onto the attempt's provenance on every outcome; read by <see cref="ContextThrash"/> on a failed one.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
+
+    /// <summary>The stall watchdog's verdict (#811), a straight carry of <see cref="PromptResult.Stall"/>; null unless stalled.</summary>
+    public StallReport? Stall { get; init; }
 
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
@@ -618,6 +685,9 @@ internal sealed record ActionRun
             // and a fabricated digest would make two different quantizations of one model look like one
             // sample.
             ModelDigest = result.ModelDigest,
+            // #782 §4: the gateway facts, a straight carry — the gateway runner instance set them on every dispatch.
+            Gateway = result.Gateway,
+            BackendModel = result.BackendModel,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,
@@ -628,6 +698,13 @@ internal sealed record ActionRun
             ResetHint = result.ResetHint,
             BlockedWritePaths = result.BlockedWritePaths,
             RefusedCommands = result.RefusedCommands,
+            RefusedToolCalls = result.RefusedToolCalls,
+            InFlightToolCalls = result.InFlightToolCalls,
+            AllShellRefused = result.AllShellRefused,
+            RunnerConfigurationRemedy = result.RunnerConfigurationRemedy,
+            ContextManagement = result.ContextManagement,
+            Compactions = result.Compactions,
+            Stall = succeeded ? null : result.Stall,
             FailureSummary = result.Summary
         };
     }
@@ -649,6 +726,9 @@ internal sealed record ActionRun
             text.AppendLine(tail.TrimEnd());
             text.AppendLine("```");
         }
+
+        text.Append(RetryPolicy.ForRunnerRefusals(result.RefusedToolCalls));
+        text.Append(RetryPolicy.ForInFlightCalls(result.InFlightToolCalls));
 
         text.AppendLine();
         text.AppendLine("Fix the specific problem above on retry; do not start over.");

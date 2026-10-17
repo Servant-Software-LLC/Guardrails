@@ -119,7 +119,7 @@ public sealed class NeedsHumanTriage
         // #314): the spend is REAL regardless of whether the body parses (or a later write fails), so it is
         // charged here — BEFORE the parse — so it BOTH counts toward the maxCostUsd gate AND appears in the
         // reported total. A null CostUsd is a no-op.
-        journal.AddOverheadCost(result.CostUsd);
+        journal.AddOverheadDispatch("ai-triage", result);
 
         if (!result.Completed || result.IsError || result.ResultText is null)
             return null;

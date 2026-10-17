@@ -54,6 +54,32 @@ public sealed record ClaudeResult
     /// </para>
     /// </summary>
     public string? Model { get; init; }
+
+    /// <summary>
+    /// A compaction that FAILED during the session (#811), read from
+    /// <c>{"type":"system","subtype":"status","compact_result":"failed","compact_error":"…"}</c>, or null when none
+    /// did. Its <see cref="ContextManagementFailure.Detail"/> is the LAST failure's <c>compact_error</c>.
+    /// </summary>
+    public ContextManagementFailure? CompactionFailure { get; init; }
+
+    /// <summary>
+    /// Claude Code's "Autocompact is thrashing" give-up (#800), or null. Takes precedence over
+    /// <see cref="CompactionFailure"/> wherever one context-management failure is reported: it is the terminal one.
+    /// </summary>
+    public ContextManagementFailure? Thrashing { get; init; }
+
+    /// <summary>
+    /// True when <see cref="Thrashing"/> came from Claude Code's own STRUCTURED signal (a top-level
+    /// <c>api_error: autocompact_thrashing</c> or <c>terminal_reason: rapid_refill_breaker</c>), not the text fallback.
+    /// The session trusts a structured signal even over a result that says <c>is_error: false</c>.
+    /// </summary>
+    public bool ThrashingIsStructured { get; init; }
+
+    /// <summary>
+    /// How often the session's context was compacted, and how many of those compactions failed (#817), or null
+    /// when it compacted nothing. Counted in episodes, not status lines: see <see cref="CompactionCounts"/>.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
 }
 
 /// <summary>
@@ -103,6 +129,41 @@ public sealed class ClaudeStreamParser
     private string? _initModel;
     private string? _resultModel;
 
+    // #811: failed compactions, counted, with the last one's error text.
+    private int _compactionFailures;
+    private string? _compactionError;
+
+    // #817: compaction EPISODES (see CompactionCounts). `_compactionOpen` is true between an episode's first
+    // `compacting` status line and its close; `_compactionJustClosed` is true only on the line straight after a close,
+    // so the close's twin (a compact_boundary after its compact_result, or the reverse) is not counted again.
+    private int _compactions;
+    private bool _compactionOpen;
+    private bool _compactionJustClosed;
+
+    // #817 review W1: distinct top-level assistant message ids, the turn ESTIMATE for a stream with no result line.
+    private readonly HashSet<string> _assistantMessageIds = new(StringComparer.Ordinal);
+
+    // #800: Claude Code's "Autocompact is thrashing" give-up, recognised only for the claude dialect (a Cursor session's
+    // final text can never trigger it). Volatile because the session's tee reads them on the reader thread right after
+    // Feed to arm its grace timer, and the timer reads _resultSeen from the pool.
+    private readonly bool _recognizeThrash;
+    private volatile bool _thrashing;
+    private volatile bool _resultSeen;
+    private bool _thrashStructured;
+    private string? _thrashText;
+
+    /// <summary>A parser; <paramref name="recognizeThrash"/> turns on the #800 autocompact-thrash signals (claude only).</summary>
+    public ClaudeStreamParser(bool recognizeThrash = false) => _recognizeThrash = recognizeThrash;
+
+    /// <summary>
+    /// True once the stream has reported that autocompact is thrashing (#800). Read by the session straight after
+    /// <see cref="Feed"/>, to end a session that can no longer make progress if its CLI does not exit on its own.
+    /// </summary>
+    public bool ContextExhausted => _thrashing;
+
+    /// <summary>True once a terminal <c>result</c> line has been parsed. Read by the session's #800 grace timer.</summary>
+    public bool ResultSeen => _resultSeen;
+
     /// <summary>
     /// Feed one raw output line (newline excluded). Non-JSON lines are ignored, as is every event
     /// other than the terminal <c>result</c> and the opening <c>system</c>/<c>init</c> (whose only
@@ -141,14 +202,65 @@ public sealed class ClaudeStreamParser
 
             string? type = typeElement.GetString();
 
+            // #817: any line other than a compaction's own close ends the "just closed" window.
+            bool closesCompaction = type == "system" && IsCompactionClose(root);
+            if (!closesCompaction)
+            {
+                _compactionJustClosed = false;
+            }
+
             // The stream's opening echo (#349): {"type":"system","subtype":"init", … "model": …}. Its
             // model is the ONLY thing read off a non-result line — everything else about the event is
             // still ignored, and any other system event still falls through untouched.
             if (type == "system")
             {
-                if (TryGetNonEmptyString(root, "subtype") == "init")
+                string? systemSubtype = TryGetNonEmptyString(root, "subtype");
+                if (systemSubtype == "init")
                 {
                     _initModel = TryGetNonEmptyString(root, "model") ?? _initModel;
+                }
+                else if (systemSubtype == "status" && TryGetNonEmptyString(root, "status") == "compacting")
+                {
+                    // #817: a compaction is running. Claude Code repeats this line as a keep-alive, so only the first
+                    // of a run opens (and counts) an episode.
+                    if (!_compactionOpen)
+                    {
+                        _compactions++;
+                        _compactionOpen = true;
+                    }
+                }
+                else if (closesCompaction)
+                {
+                    CloseCompaction();
+                    if (systemSubtype == "status" && TryGetNonEmptyString(root, "compact_result") == "failed")
+                    {
+                        // #811: a compaction that failed. The session may carry on (and later succeed), so this is a
+                        // FACT recorded for the summary, not an outcome decided here.
+                        _compactionFailures++;
+                        _compactionError = TryGetNonEmptyString(root, "compact_error") ?? _compactionError;
+                    }
+                }
+
+                return;
+            }
+
+            // #800: the give-up arrives as a synthetic assistant message with a structured api_error, then (when the
+            // CLI exits on its own) a result carrying terminal_reason "rapid_refill_breaker". The phrase-matching lives
+            // in ClaudeSignalClassifier, the claude quarantine.
+            if (type == "assistant")
+            {
+                if (TryGetNonEmptyString(root, "parent_tool_use_id") is null
+                    && root.TryGetProperty("message", out JsonElement assistantMessage)
+                    && assistantMessage.ValueKind == JsonValueKind.Object
+                    && TryGetNonEmptyString(assistantMessage, "id") is { } messageId)
+                {
+                    _assistantMessageIds.Add(messageId);
+                }
+
+                if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactGiveUp(root))
+                {
+                    _thrashStructured = true;
+                    MarkThrashing(AssistantText(root));
                 }
 
                 return;
@@ -158,6 +270,14 @@ public sealed class ClaudeStreamParser
             {
                 return;
             }
+
+            if (_recognizeThrash && ClaudeSignalClassifier.IsAutocompactThrashResult(root))
+            {
+                _thrashStructured |= ClaudeSignalClassifier.IsStructuredThrashResult(root);
+                MarkThrashing(TryGetNonEmptyString(root, "result"));
+            }
+
+            _resultSeen = true;
 
             // Terminal result message — capture it (last one wins).
             _hasResult = true;
@@ -190,13 +310,55 @@ public sealed class ClaudeStreamParser
         // Init WINS over a differing result-line model (#349) — the two can only disagree when a
         // session switched models mid-run, and the opening echo is the model the session was created
         // on. Both null stays null: absent, never "".
-        Model = _initModel ?? _resultModel
+        Model = _initModel ?? _resultModel,
+
+        Thrashing = _thrashing
+            ? new ContextManagementFailure(ContextManagementFailureKind.AutocompactThrashing, _thrashText, 1)
+            : null,
+        ThrashingIsStructured = _thrashStructured,
+
+        CompactionFailure = _compactionFailures > 0
+            ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
+            : null,
+
+        // A failure is always a compaction too (its close counts one when no `compacting` line opened it), so the
+        // failure count never exceeds the compaction count.
+        Compactions = _compactions > 0
+            ? new CompactionCounts(
+                _compactions, _compactionFailures, _assistantMessageIds.Count > 0 ? _assistantMessageIds.Count : null)
+            : null
     };
 
-    /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>
-    public static ClaudeResult ParseAll(string streamText)
+    /// <summary>
+    /// #817: whether a system line CLOSES a compaction: a status line carrying <c>compact_result</c> (success or
+    /// failure), or a <c>compact_boundary</c>.
+    /// </summary>
+    private static bool IsCompactionClose(JsonElement root)
     {
-        var parser = new ClaudeStreamParser();
+        string? subtype = TryGetNonEmptyString(root, "subtype");
+        return subtype == "compact_boundary"
+               || (subtype == "status" && TryGetNonEmptyString(root, "compact_result") is not null);
+    }
+
+    /// <summary>
+    /// #817: close the running compaction episode. A close with no open episode counts one (a compaction seen only by
+    /// its result or its boundary), unless it is the twin of the close on the line before.
+    /// </summary>
+    private void CloseCompaction()
+    {
+        if (!_compactionOpen && !_compactionJustClosed)
+        {
+            _compactions++;
+        }
+
+        _compactionOpen = false;
+        _compactionJustClosed = true;
+    }
+
+    /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>
+    public static ClaudeResult ParseAll(string streamText, bool recognizeThrash = false)
+    {
+        var parser = new ClaudeStreamParser(recognizeThrash);
         foreach (string line in streamText.Replace("\r\n", "\n").Split('\n'))
         {
             parser.Feed(line);
@@ -211,13 +373,40 @@ public sealed class ClaudeStreamParser
             ? value
             : null;
 
+    private void MarkThrashing(string? text)
+    {
+        _thrashText ??= text;
+        _thrashing = true;
+    }
+
+    private static string? AssistantText(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out JsonElement message) || message.ValueKind != JsonValueKind.Object
+            || !message.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (JsonElement block in content.EnumerateArray())
+        {
+            if (block.ValueKind == JsonValueKind.Object
+                && TryGetNonEmptyString(block, "type") == "text"
+                && TryGetNonEmptyString(block, "text") is { } text)
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// A string field, read as tolerantly as every number above: absent, not a string, or blank all
     /// yield <b>null</b>. Blank collapses to null deliberately — <c>""</c> would read as "the runner
     /// reported this and it was empty", a claim about the attempt, where null is the truthful "the
     /// runner reported none". Same absent-not-zero rule <see cref="TryGetUsage"/> follows.
     /// </summary>
-    private static string? TryGetNonEmptyString(JsonElement root, string name) =>
+    internal static string? TryGetNonEmptyString(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String &&
         !string.IsNullOrWhiteSpace(element.GetString())
             ? element.GetString()
@@ -251,6 +440,13 @@ public sealed class ClaudeStreamParser
     /// <c>modelUsage</c> map carrying the same numbers, but on a multi-model attempt that map holds
     /// one entry per model — preferring it would report only one of them as the whole attempt.
     /// </para>
+    /// <para>
+    /// <b>Cursor's camelCase block (#764).</b> Cursor's Agent CLI reports
+    /// <c>{"inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"}</c>, with <c>inputTokens</c>
+    /// NET of cache. It is read ONLY when the block carries none of the four snake_case fields, so a
+    /// Claude block parses exactly as before, and it follows the same cache-inclusive rule:
+    /// <c>inputTokens + cacheReadTokens + cacheWriteTokens</c>.
+    /// </para>
     /// </summary>
     private static ClaudeUsage? TryGetUsage(JsonElement root)
     {
@@ -263,6 +459,15 @@ public sealed class ClaudeStreamParser
         int? cacheCreation = TryGetInt(usage, "cache_creation_input_tokens");
         int? cacheRead = TryGetInt(usage, "cache_read_input_tokens");
         int? output = TryGetInt(usage, "output_tokens");
+
+        if (input is null && cacheCreation is null && cacheRead is null && output is null)
+        {
+            // Cursor's camelCase spelling (#764) — consulted only when no snake_case field is present.
+            input = TryGetInt(usage, "inputTokens");
+            cacheCreation = TryGetInt(usage, "cacheWriteTokens");
+            cacheRead = TryGetInt(usage, "cacheReadTokens");
+            output = TryGetInt(usage, "outputTokens");
+        }
 
         if (input is null && cacheCreation is null && cacheRead is null && output is null)
         {

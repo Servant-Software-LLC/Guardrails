@@ -106,7 +106,7 @@ internal static class ClaudePermissionScanner
     /// names nothing is attributed to the call that was refused (#708). Not thread-safe (the runner's
     /// stdout callback is serialized).
     /// </summary>
-    public sealed class Scanner
+    public sealed class Scanner : IToolDenialScanner
     {
         // Ordinal-distinct, INSERTION-ORDERED so feedback lists the walls in the order they were hit.
         private readonly List<string> _blocked = new();

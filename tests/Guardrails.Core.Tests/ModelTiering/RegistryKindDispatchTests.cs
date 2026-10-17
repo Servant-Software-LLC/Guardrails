@@ -51,6 +51,20 @@ public sealed class RegistryKindDispatchTests : IDisposable
         Assert.IsType<ClaudePromptRunner>(registry.Resolve(RunnerName));
     }
 
+    /// <summary>
+    /// #764: <c>kind: "cursor"</c> builds the CONCRETE <see cref="CursorPromptRunner"/> — never a Claude
+    /// runner pointed at Cursor's binary, which is the configuration #764 showed dies at CLI parse time.
+    /// </summary>
+    [Fact]
+    public void KindCursor_BuildsACursorPromptRunner()
+    {
+        RunConfig config = ConfigWithKind("cursor");
+
+        PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(config, new ProcessRunner());
+
+        Assert.IsType<CursorPromptRunner>(registry.Resolve(RunnerName));
+    }
+
     [Theory]
     [InlineData("codex")]
     [InlineData("openrouter")]

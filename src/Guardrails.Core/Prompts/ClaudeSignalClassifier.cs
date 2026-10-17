@@ -38,6 +38,21 @@ internal static class ClaudeSignalClassifier
         "ratelimit",
         "usage limit",
         "session limit",
+        // Claude Code's quota refusal ("You've hit your individual spend limit", #764): a provider refusal
+        // no retry can fix, observed burning three attempts in seconds. Transient routes it to the #115
+        // bounded pause, which then settles needs-human "re-run later" instead of consuming the budget.
+        //
+        // Kept as the two-word "spend limit" rather than the longer "hit your individual spend limit" (#763
+        // weighed both). The longer form would guard against an agent's own text mentioning a spend limit, and
+        // that exposure is narrow but NOT zero. Where it is closed: the #516 NonStreamStdout filter drops every
+        // stream envelope, so what an agent read or wrote in its turns never reaches this list; and since the
+        // #763 review a result that is not is_error is never read either. Where it remains: an is_error result's
+        // text, and the process's stderr, which is read unfiltered, so a tool or wrapper that prints "spend
+        // limit" to stderr on a failed run would pause the task. That is the same exposure the equally generic
+        // "usage limit" and "rate limit" already carry. Against it: the vendor has reworded this refusal before
+        // ("session limit", "usage limit"), and "individual" names one plan tier, so an org or team quota that
+        // says "your spend limit" would silently fall back to Error and burn the budget again.
+        "spend limit",
         "too many requests",
         "service unavailable",
         "temporarily unavailable",
@@ -123,6 +138,34 @@ internal static class ClaudeSignalClassifier
     private static readonly Regex ResetHint = new(
         @"resets?\s+(?<when>[0-9][0-9:apmAPM\s.]*\b)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>The opening of Claude Code's "Autocompact is thrashing" give-up (#800).</summary>
+    internal const string AutocompactThrashingPhrase = "Autocompact is thrashing";
+
+    /// <summary>
+    /// #800: Claude Code's give-up line — a synthetic assistant message carrying <c>"api_error":"autocompact_thrashing"</c>
+    /// at the TOP level of the session (<c>parent_tool_use_id</c> null or absent), never a subagent's.
+    /// </summary>
+    internal static bool IsAutocompactGiveUp(System.Text.Json.JsonElement assistantLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(assistantLine, "api_error") == "autocompact_thrashing"
+        && (!assistantLine.TryGetProperty("parent_tool_use_id", out System.Text.Json.JsonElement parent)
+            || parent.ValueKind == System.Text.Json.JsonValueKind.Null);
+
+    /// <summary>#800: Claude Code's own structured thrash result, <c>"terminal_reason":"rapid_refill_breaker"</c>.</summary>
+    internal static bool IsStructuredThrashResult(System.Text.Json.JsonElement resultLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(resultLine, "terminal_reason") == "rapid_refill_breaker";
+
+    /// <summary>
+    /// #800: a result line that reports the thrash — <see cref="IsStructuredThrashResult"/>, or, as the fallback, an ERROR
+    /// result (<c>is_error: true</c>) whose text opens with the give-up sentence. A successful result that merely mentions
+    /// the phrase (a model reporting that it wired up thrash detection) is never one.
+    /// </summary>
+    internal static bool IsAutocompactThrashResult(System.Text.Json.JsonElement resultLine) =>
+        ClaudeStreamParser.TryGetNonEmptyString(resultLine, "terminal_reason") == "rapid_refill_breaker"
+        || resultLine.TryGetProperty("is_error", out System.Text.Json.JsonElement isError)
+           && isError.ValueKind == System.Text.Json.JsonValueKind.True
+           && ClaudeStreamParser.TryGetNonEmptyString(resultLine, "result") is { } text
+           && text.StartsWith(AutocompactThrashingPhrase, StringComparison.Ordinal);
 
     /// <summary>
     /// Classify an error <paramref name="text"/> (a terminal <c>result</c> message's error text, or,

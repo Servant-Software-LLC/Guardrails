@@ -113,6 +113,9 @@ public sealed class PlanValidator
         ValidateOpenAiCompatBlockSchema(plan, diagnostics);
         ValidateOpenAiCompatActionReachable(plan, diagnostics);
         ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
+        ValidateCursorRunnerUngoverned(plan, diagnostics);
+        ValidateCursorApprovalMode(plan, diagnostics);
+        ClaudeGatewayValidation.Validate(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
@@ -281,6 +284,14 @@ public sealed class PlanValidator
                     "but it must be a positive integer."));
             }
 
+            // #811: a negative stall bound has no meaning (0 disables it; absent derives it from the timeout).
+            if (runner.StallTimeoutSeconds is < 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.StallTimeoutNegative, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.stallTimeoutSeconds is {runner.StallTimeoutSeconds}, but it must be 0 " +
+                    "(no stall bound) or a positive number of seconds; omit it to derive the bound from the action timeout."));
+            }
+
             // The guardrail profile (base + guardrailOverrides) is checked too: an override could drive
             // the effective cap non-positive even when the base is fine.
             if (runner.GuardrailOverrides is not null &&
@@ -355,11 +366,159 @@ public sealed class PlanValidator
             diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, plan.PlanDirectory,
                 $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', which is a " +
                 "recognised runner kind but has NO implementation in this build — this build can serve " +
-                $"{PromptRunnerKinds.ImplementedTokenList} (concrete non-Claude runners are issue #223)." +
+                $"{PromptRunnerKinds.ImplementedTokenList} (the remaining reserved kinds are issue #223)." +
                 $"{redirect} Point that promptRunners block at an implemented kind, or remove it and " +
                 "route the tasks that used it to a runner this build can serve. The harness will NOT " +
                 "substitute a different model for the one the config asked for, so this is an honest halt " +
                 "at validate time rather than a surprise when the run starts (SSOT §9)."));
+        }
+    }
+
+    /// <summary>
+    /// The settings keys a <c>cursor</c> block cannot honour (#764): Cursor's CLI has no spelling for any of
+    /// them, and <see cref="Prompts.CursorPromptRunner"/> never emits them. Base key and its
+    /// <c>guardrailOverrides.</c> form are both ignored.
+    /// </summary>
+    private static readonly string[] CursorIgnoredSettingsKeys =
+        ["permissionMode", "allowedTools", "maxTurns", "maxOutputTokens"];
+
+    /// <summary>
+    /// GR2080 (WARNING, #764, SSOT §9.9): one per <c>cursor</c> block
+    /// (<see cref="DiagnosticCodes.CursorRunnerUngoverned"/>). States what the operator gives up — no tool
+    /// allowlist, no containment hook, what the approval mode grants — and names the declared keys that stopped applying.
+    /// </summary>
+    private static void ValidateCursorRunnerUngoverned(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .Where(r => r.Kind == PromptRunnerKind.Cursor)
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            string[] ignored = runner.DeclaredSettingsKeys
+                .Where(key => CursorIgnoredSettingsKeys.Contains(
+                    key.StartsWith("guardrailOverrides.", StringComparison.Ordinal)
+                        ? key["guardrailOverrides.".Length..]
+                        : key,
+                    StringComparer.Ordinal))
+                .ToArray();
+
+            string declared = ignored.Length == 0
+                ? "This block declares none of them."
+                : $"This block declares {string.Join(", ", ignored.Select(k => $"'{k}'"))} — " +
+                  (ignored.Length == 1 ? "it has" : "they have") + " NO effect on a cursor runner.";
+
+            diagnostics.Add(Warning(DiagnosticCodes.CursorRunnerUngoverned, plan.PlanDirectory,
+                $"promptRunners.{runner.Name} is kind 'cursor'. Cursor's print mode has no per-tool allowlist the " +
+                "harness can set (a project .cursor/cli.json has no effect there) and cannot load the worktree " +
+                $"containment hook. {ApprovalModeSentence(runner)} 'permissionMode', 'allowedTools', 'maxTurns' and " +
+                "'maxOutputTokens' — and any " +
+                $"'guardrailOverrides' of them — are IGNORED for this block. {declared} Cursor reports no cost, " +
+                "so 'maxCostUsd' can never trip on this block's spend. What the harness DOES enforce: the git-diff " +
+                "write-scope check (worktree mode only, and only inside the worktree); the task's own definition " +
+                "files are hashed around every action and any change fails the attempt; stale verdict files are " +
+                "deleted before every prompt judge; the agent's echo of its prompt must match what was sent; and " +
+                "this block never serves the overwatcher, ai-triage or the criticality judge (if it is the " +
+                "default runner, those are OFF for the run). What it does NOT contain: writes outside the " +
+                "worktree — the plan folder via --add-dir, other worktrees, the main checkout, git stash — and " +
+                "in-scope edits a prompt guardrail on this block makes. The bounds that still apply are the " +
+                "timeout and the stall bound. Cursor's own '--sandbox enabled' can be opted into through " +
+                "'extraArgs'; it is not defaulted because its Windows behavior and its effect on network access " +
+                "(e.g. dotnet restore, governed by your Cursor sandbox settings) are unproven. Cursor's \"Include " +
+                "Third-Party Configs\" setting imports ~/.claude hooks, which can refuse shell calls in any mode " +
+                "(SSOT §9.9)."));
+        }
+    }
+
+    /// <summary>
+    /// GR2080's approval sentence (#767): what the block's <c>approvalMode</c> actually lets Cursor do, stated
+    /// per mode rather than as the pre-#767 blanket "--force", so the warning is honest for every mode.
+    /// </summary>
+    private static string ApprovalModeSentence(PromptRunnerConfig runner)
+    {
+        CursorApprovalMode mode = runner.ApprovalMode ?? CursorApprovalModes.Default;
+        return mode switch
+        {
+            CursorApprovalMode.AutoReview =>
+                "approvalMode 'auto-review': the harness launches it with --auto-review, so Cursor's server-side " +
+                "classifier approves or refuses each command. Writes and shell run, but any single command can be " +
+                "refused; every refusal is read from the stream and named in the attempt summary and feedback, and " +
+                "an action in which every shell command was refused still has its guardrails run, and settles " +
+                "needs-human if they fail (a prompt judge in that state fails closed) — never a clean action.",
+            CursorApprovalMode.None when CursorPromptRunner.EnablesSandbox(runner.Settings.ExtraArgs) =>
+                "approvalMode 'none' with Cursor's sandbox ('--sandbox enabled' in extraArgs): no approval flag is " +
+                "passed, files are written and shell runs INSIDE Cursor's sandbox, whose network access is governed " +
+                "by your Cursor (or team admin) sandbox settings — a NuGet restore may be blocked there. A refused " +
+                "command is read from the stream and named in the attempt summary and feedback.",
+            CursorApprovalMode.None =>
+                "approvalMode 'none' and extraArgs does NOT enable Cursor's sandbox: no approval flag is passed, " +
+                "so files are written but Cursor REFUSES EVERY SHELL COMMAND (measured on Cursor's agent " +
+                "2026.09.23), and a task whose guardrails need its build, test or git work settles needs-human when they fail. Add \"extraArgs\": " +
+                "[\"--sandbox\", \"enabled\"], or set \"approvalMode\": \"auto-review\".",
+            _ =>
+                "approvalMode 'force' (the default): the harness grants it FULL write and shell access (--force, " +
+                "Cursor's 'Run Everything'). A team whose administrator disabled Run Everything cannot launch in " +
+                "this mode — the run halts needs-human on the first attempt; set \"approvalMode\": \"auto-review\" " +
+                "for such an account."
+        };
+    }
+
+    /// <summary>
+    /// GR2081 (validator half, ERROR, #767): <c>approvalMode</c> on a block that is not <c>kind: "cursor"</c>
+    /// (<see cref="DiagnosticCodes.CursorApprovalModeInvalid"/>). The loader reports an unrecognised token.
+    /// GR2082 (ERROR, #767): a cursor block whose <c>extraArgs</c> (base or <c>guardrailOverrides</c>) carries
+    /// an approval flag (<see cref="DiagnosticCodes.CursorApprovalFlagInExtraArgs"/>) — the flag belongs to
+    /// <c>approvalMode</c>, and Cursor refuses <c>--auto-review</c> with <c>--force</c>/<c>--yolo</c> at launch.
+    /// </summary>
+    private static void ValidateCursorApprovalMode(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (runner.Kind != PromptRunnerKind.Cursor)
+            {
+                if (runner.ApprovalMode is { } misplaced)
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, plan.PlanDirectory,
+                        $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', but it " +
+                        $"declares approvalMode '{CursorApprovalModes.Token(misplaced)}', which only a " +
+                        "kind 'cursor' block honours — a key that does nothing where it was written is " +
+                        "indistinguishable from one that works. Remove 'approvalMode', or set \"kind\": " +
+                        "\"cursor\" if that is what was intended (SSOT §9.9)."));
+                }
+
+                continue;
+            }
+
+            CursorApprovalMode mode = runner.ApprovalMode ?? CursorApprovalModes.Default;
+            ReportApprovalFlags(runner, mode, "extraArgs", runner.Settings.ExtraArgs, plan, diagnostics);
+            if (runner.GuardrailOverrides?.ExtraArgs is { } overrideArgs)
+            {
+                ReportApprovalFlags(runner, mode, "guardrailOverrides.extraArgs", overrideArgs, plan, diagnostics);
+            }
+        }
+    }
+
+    private static void ReportApprovalFlags(
+        PromptRunnerConfig runner,
+        CursorApprovalMode mode,
+        string key,
+        IReadOnlyList<string> extraArgs,
+        PlanDefinition plan,
+        List<Diagnostic> diagnostics)
+    {
+        foreach (string flag in CursorPromptRunner.ApprovalFlagsIn(extraArgs))
+        {
+            bool isAutoReview = flag == CursorPromptRunner.AutoReviewFlag;
+            CursorApprovalMode wanted = isAutoReview ? CursorApprovalMode.AutoReview : CursorApprovalMode.Force;
+            string relation = wanted == mode
+                ? $"it DUPLICATES approvalMode '{CursorApprovalModes.Token(mode)}', which already passes it"
+                : mode == CursorApprovalMode.None
+                    ? "it contradicts approvalMode 'none', which exists to pass NO approval flag"
+                    : $"it CONTRADICTS approvalMode '{CursorApprovalModes.Token(mode)}' — Cursor's CLI refuses " +
+                      "--auto-review combined with --force/--yolo at launch (\"pick one\")";
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalFlagInExtraArgs, plan.PlanDirectory,
+                $"promptRunners.{runner.Name}.{key} carries '{flag}', one of Cursor's approval flags; {relation}. " +
+                $"The approval flag is owned by 'approvalMode': remove '{flag}' from {key} and set \"approvalMode\": " +
+                $"\"{CursorApprovalModes.Token(wanted)}\" if that is the mode you want (SSOT §9.9)."));
         }
     }
 
@@ -371,7 +530,9 @@ public sealed class PlanValidator
     private static readonly (string Key, Func<PromptRunnerConfig, bool> IsPresent)[] OpenAiCompatOnlyKeys =
     [
         ("endpoint", r => r.Endpoint is not null),
-        ("contextTokens", r => r.ContextTokens is not null),
+        // Widened by #782: a claude GATEWAY block declares the backend's per-slot window here too (SSOT §9.10), so
+        // the key is legal there; a claude block with no baseUrl still gets this error.
+        ("contextTokens", r => r.ContextTokens is not null && !r.IsClaudeGateway),
         ("apiKeyEnv", r => r.ApiKeyEnv is not null),
         ("wire", r => r.Wire is not null)
     ];
@@ -402,6 +563,16 @@ public sealed class PlanValidator
                 {
                     if (!isPresent(runner))
                     {
+                        continue;
+                    }
+
+                    if (key == "contextTokens" && runner.Kind == PromptRunnerKind.Claude)
+                    {
+                        // #782: on a claude block the key is meaningful — but only on a GATEWAY block.
+                        diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                            $"promptRunners.{runner.Name} declares 'contextTokens' but no 'baseUrl', so it does nothing: " +
+                            "on a claude block it is the per-slot context window of a GATEWAY backend. Add the gateway's " +
+                            "\"baseUrl\" if this block should route through one (SSOT §9.10), or remove 'contextTokens'."));
                         continue;
                     }
 
@@ -1860,6 +2031,7 @@ public sealed class PlanValidator
     /// <c>[]</c> ("writes nothing to the repo") is VALID and falls through untouched.
     /// GR2019 ERROR: an entry is an absolute path or contains <c>..</c> (escapes the workspace).
     /// GR2020 WARNING: an entry is vacuous/over-broad (e.g. <c>**</c> or <c>*</c>).
+    /// GR2090 WARNING: an entry is a well-known extensionless FILE name (<c>Dockerfile</c>) the matcher reads as a directory (#838).
     /// Plan-level and wave-level gate FOLDERS have no <c>task.json</c>, so they are unaffected.
     /// </summary>
     private static void ValidateWriteScopes(PlanDefinition plan, List<Diagnostic> diagnostics)
@@ -1894,6 +2066,23 @@ public sealed class PlanValidator
                         $"Task '{task.Id}' writeScope entry '{entry}' is an absolute path or contains " +
                         "'..' segments, which could reference files outside the workspace root. " +
                         "Write-scope entries must be relative to the repository root (SSOT §3.4)."));
+                }
+
+                // GR2090 (#838): a well-known extensionless FILE name is read as a directory prefix.
+                if (WriteScope.IsExtensionlessFileEntry(entry, out string fileName))
+                {
+                    // The matcher splits on '/' only and never strips './', so suggest the normalized form.
+                    string fixedEntry = entry.Trim().Replace('\\', '/');
+                    while (fixedEntry.StartsWith("./", StringComparison.Ordinal))
+                    {
+                        fixedEntry = fixedEntry[2..];
+                    }
+
+                    diagnostics.Add(Warning(DiagnosticCodes.WriteScopeExtensionlessFile, task.Directory,
+                        $"Task '{task.Id}' writeScope entry '{entry}' has no extension, so the harness treats it " +
+                        $"as a DIRECTORY prefix ('{entry}/**') and a write to the file '{fileName}' itself is out " +
+                        $"of scope. Write '{fixedEntry}*' to claim the file (entries are repo-relative with '/' " +
+                        $"separators, SSOT §3.4); if '{fixedEntry}' really is a directory, write '{fixedEntry}/' to say so."));
                 }
 
                 // GR2020: vacuous entry that matches everything (e.g. "**" or "*").

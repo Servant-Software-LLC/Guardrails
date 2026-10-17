@@ -114,6 +114,14 @@ public sealed record JournalDocument
     public decimal? OverheadCostUsd { get; init; }
 
     /// <summary>
+    /// OPTIONAL: every overhead prompt dispatch that went through a claude gateway (#782 §4) — its gateway, backend
+    /// identity and token usage, since a gateway dispatch adds nothing to <see cref="OverheadCostUsd"/>. Additive and
+    /// backward-compatible: absent until the first such dispatch.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<OverheadGatewayDispatch>? OverheadGatewayDispatches { get; init; }
+
+    /// <summary>
     /// OPTIONAL machine-readable reason the run STOPPED at a deterministic GATE (SSOT §7, issue #432): the
     /// pre-DAG Full Flight Checks, a wave ENTRY/EXIT gate, or the terminal plan gate. A gate halt settles no
     /// task, so without this section a halted run's <c>tasks{}</c> is a wall of silent <c>pending</c>
@@ -646,6 +654,91 @@ public sealed record TaskJournalEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<TransientPauseRecord>? TransientPauses { get; init; }
+
+    /// <summary>
+    /// OPTIONAL in-flight marker (SSOT §7 <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798): the attempt this
+    /// task is running RIGHT NOW — its journal attempt number (the same <c>N</c> as its <c>attempt-N</c> log
+    /// directory), when it started, and which phase it is in.
+    /// <para>
+    /// <see cref="Attempts"/> only learns of an attempt when it SETTLES, so without this a live transcript in
+    /// <c>logs/&lt;runId&gt;/&lt;task&gt;/attempt-4/</c> had nothing in <c>run.json</c> naming it, and the console's
+    /// per-run "retry 2/3" could not be matched to it either. Written when the attempt starts, updated at each
+    /// phase change, and REMOVED the moment the attempt settles into <see cref="Attempts"/> (or the task is
+    /// settled, reset, blocked, or the journal is reloaded for a resume — a marker from a previous process
+    /// describes an attempt no process is running).
+    /// </para>
+    /// <para>ABSENT (never <c>null</c> noise) whenever no attempt is in flight, and in every journal written
+    /// before this field existed; a reader that does not know it ignores it.</para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InFlightAttemptRecord? InFlightAttempt { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>tasks.&lt;id&gt;.scopeSnapshotTree</c> (issue #816): the git tree id of the serial-mode write-scope
+    /// snapshot taken as this task's CURRENT attempt started — present only while that attempt has not ended
+    /// normally. An attempt that ends (settled, retried, cancelled) clears it after its own end-of-attempt check, and
+    /// every settle clears it too; a value that survives into a later process therefore marks an attempt that never
+    /// ended — the harness was killed, crashed, or the host slept — and the next run REPORTS (never reverts) the
+    /// out-of-scope differences against it at run start, then clears it in every mode. Deliberately NOT on
+    /// <see cref="InFlightAttempt"/>: the resume rules drop that marker at load (it belongs to the previous
+    /// process), which is exactly when this is needed. ABSENT in worktree mode, when no snapshot was taken, and in
+    /// every journal written before this field existed — a resume then simply skips the check.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScopeSnapshotTree { get; init; }
+}
+
+/// <summary>
+/// The attempt a task is running right now (SSOT §7 <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798). See
+/// <see cref="TaskJournalEntry.InFlightAttempt"/>.
+/// </summary>
+public sealed record InFlightAttemptRecord
+{
+    /// <summary>
+    /// The JOURNAL attempt number — one past the highest recorded attempt, so it continues across resumes and
+    /// <c>guardrails reset</c> — and therefore the <c>N</c> of this attempt's <c>attempt-N</c> log directory and
+    /// of the <see cref="AttemptRecord.Attempt"/> it will settle as. Stable across a transient pause, which
+    /// re-runs the same attempt under the same number.
+    /// </summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>UTC time the attempt started (ISO-8601). Kept across a transient pause's re-run.</summary>
+    public required DateTimeOffset StartedAt { get; init; }
+
+    /// <summary>
+    /// Which phase the attempt is in: <see cref="InFlightPhase.Action"/> (<c>"action"</c>),
+    /// <see cref="InFlightPhase.Guardrails"/> (<c>"guardrails"</c>), <see cref="InFlightPhase.Settling"/>
+    /// (<c>"settling"</c> — the guardrails have returned and the attempt is being journaled, merged or queued
+    /// for integration) or <see cref="InFlightPhase.Paused"/> (<c>"paused"</c> — waiting out a transient backoff).
+    /// </summary>
+    public required string Phase { get; init; }
+
+    /// <summary>
+    /// Whole seconds the HOST was asleep while this attempt was in flight (#810, SSOT §7), accumulated as each sleep is
+    /// detected. ABSENT when the host has not slept during the attempt. Moves onto the settled
+    /// <see cref="AttemptRecord.SleptSeconds"/> when the attempt settles.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? SleptSeconds { get; init; }
+}
+
+/// <summary>The SSOT §7 tokens for <see cref="InFlightAttemptRecord.Phase"/> (issue #798).</summary>
+public static class InFlightPhase
+{
+    /// <summary>The action (script or prompt) is running.</summary>
+    public const string Action = "action";
+
+    /// <summary>The task's guardrails are running against the action's work.</summary>
+    public const string Guardrails = "guardrails";
+
+    /// <summary>The guardrails have returned; the attempt is settling (journal, merge, integration queue).</summary>
+    public const string Settling = "settling";
+
+    /// <summary>
+    /// The attempt hit a transient provider condition and is waiting out its backoff (#115); it re-runs under the
+    /// SAME number, which moves the marker back to <see cref="Action"/>.
+    /// </summary>
+    public const string Paused = "paused";
 }
 
 /// <summary>
@@ -712,6 +805,14 @@ public sealed record TransientPauseRecord
 /// <summary>One attempt of one task (SSOT §7 attempt record).</summary>
 public sealed record AttemptRecord
 {
+    /// <summary>
+    /// Whole seconds the HOST was asleep during this attempt (#810, SSOT §7), or absent when it did not sleep. The wall
+    /// time between <see cref="StartedAt"/> and <see cref="EndedAt"/> includes it; the attempt's awake time does not.
+    /// Stamped by the journal from the in-flight marker when the attempt settles, so every settle path carries it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? SleptSeconds { get; init; }
+
     /// <summary>1-based attempt number.</summary>
     public required int Attempt { get; init; }
 
@@ -826,6 +927,23 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HarnessWriteRecord? HarnessWrite { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].scopeRevertedPaths</c> (issue #816): the paths outside the task's writeScope that the
+    /// END-OF-ATTEMPT check reverted — on an attempt that never reached the ordinary write-scope check (a timeout,
+    /// a turn cap, a failed action, a halt …). Absent when nothing was reverted that way, and in older journals. A
+    /// phase-1 violation is recorded by its outcome (<c>write-scope-violation</c>), not here.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? ScopeRevertedPaths { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].writeScopeNotChecked</c> (issue #816): why this attempt's writeScope was NOT fully
+    /// checked or enforced — the serial snapshot failed, the check hit a git error, or a revert failed. Absent on
+    /// every attempt whose check ran normally, and in older journals.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteScopeNotChecked { get; init; }
 }
 
 /// <summary>
@@ -1151,6 +1269,41 @@ public sealed record AttemptProvenance
     public string? ModelDigest { get; init; }
 
     /// <summary>
+    /// The claude GATEWAY this attempt dispatched through (#782 §4, SSOT §9.10) — its normalized <c>baseUrl</c>, never
+    /// carrying userinfo. Absent for every non-gateway attempt. Its presence also says two things about the rest of
+    /// this record: <see cref="AttemptRecord.CostUsd"/> is absent because no honest price exists (tokens stand in for
+    /// it), and <see cref="Model"/> is only the CLI's ECHO of the model name it asked for — <see cref="BackendModel"/>
+    /// is the one field that makes a claim about what served the request. Rides the provenance on the same D32
+    /// terms as <see cref="ModelDigest"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Gateway { get; init; }
+
+    /// <summary>
+    /// The backend identity behind <see cref="Gateway"/> (#782 §3.2): the pre-DAG preflight's resolved
+    /// <c>"&lt;backend base&gt; &lt;loaded model&gt;"</c>, or <c>"unverified"</c> when it could not be resolved — never
+    /// a guess. Absent whenever <see cref="Gateway"/> is.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BackendModel { get; init; }
+
+    /// <summary>
+    /// How many times the attempt's session compacted its context (#817), counted in EPISODES from the runner's stream
+    /// (Claude Code repeats its <c>compacting</c> status line while one compaction runs; see
+    /// <see cref="Prompts.CompactionCounts"/>). Absent when the session compacted nothing, when its runner reports no
+    /// compactions, and in every journal written before #817, so an old run loads unchanged. Rides the provenance on
+    /// the same D32 terms as <see cref="ModelDigest"/>: a fact learned after launch that must reach both settle paths.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Compactions { get; init; }
+
+    /// <summary>
+    /// How many of <see cref="Compactions"/> reported <c>"compact_result":"failed"</c> (#817). Absent when none did.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompactionFailures { get; init; }
+
+    /// <summary>
     /// Whether the attempt's resolved route was already WARM (plan 30 §3.4) when it launched. <c>bool?</c>
     /// rather than <c>bool</c> for the same class of reason <see cref="TierSource"/> is nullable: "not
     /// known" is not "cold", and a script action resolved no route at all, so there is nothing to report.
@@ -1386,6 +1539,36 @@ public sealed record AttemptJudge
     /// <see cref="AttemptRecord.Usage"/>, so a costless judge provider still shows how much work it did.
     /// Absent (never a zeroed record) when the judge runner reports no usage.
     /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptUsage? Usage { get; init; }
+
+    /// <summary>The claude gateway the JUDGE dispatched through (#782 §4), or absent — see <see cref="AttemptProvenance.Gateway"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Gateway { get; init; }
+
+    /// <summary>The judge's backend identity behind <see cref="Gateway"/> (#782 §3.2), or <c>"unverified"</c>; absent with it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BackendModel { get; init; }
+}
+
+/// <summary>
+/// One OVERHEAD prompt dispatch — ai-merge, ai-triage, the overwatcher or a between-wave breakdown — that went through a claude gateway (#782
+/// §4). Overhead spend is otherwise recorded only as <see cref="JournalDocument.OverheadCostUsd"/>, and a gateway
+/// dispatch reports no cost, so without this record its gateway, backend and token usage would leave no trace in
+/// <c>run.json</c> at all.
+/// </summary>
+public sealed record OverheadGatewayDispatch
+{
+    /// <summary>What dispatched it: <c>ai-merge</c>, <c>ai-triage</c>, <c>overwatch</c> or <c>breakdown</c> (a between-wave JIT breakdown).</summary>
+    public required string Source { get; init; }
+
+    /// <summary>The gateway's normalized <c>baseUrl</c>, without userinfo.</summary>
+    public required string Gateway { get; init; }
+
+    /// <summary>The resolved backend identity, or <c>"unverified"</c>.</summary>
+    public required string BackendModel { get; init; }
+
+    /// <summary>The dispatch's token volume; absent when the runner reported none. Its cost is never recorded — there is none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AttemptUsage? Usage { get; init; }
 }

@@ -1228,7 +1228,7 @@ public sealed class LogServer : IAsyncDisposable
             // "unknown" is the static index's own word for a status it cannot resolve, and it is the honest
             // reading for a task the source does not list (under `guardrails logs`, a journal read that failed).
             string status = WebUtility.HtmlEncode(statuses.TryGetValue(task.Id, out string? word) ? word : "unknown");
-            string attempt = ResolveAttemptDir(task.Id, null, out int? number) is null ? "—" : $"attempt {number}";
+            string attempt = ResolveAttemptDir(task.Id, null, out int? number) is null ? "—" : $"attempt-{number}";
 
             rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td>")
                 .Append("<td class=\"status\" data-status=\"").Append(status).Append("\">").Append(status).Append("</td>")

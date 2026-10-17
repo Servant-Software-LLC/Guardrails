@@ -35,6 +35,7 @@ public static class CommandFactory
         rootCommand.Add(StatusCommand.Create(io));
         rootCommand.Add(LogsCommand.Create(io));
         rootCommand.Add(AttachCommand.Create(io));
+        rootCommand.Add(BundleCommand.Create(io));
         rootCommand.Add(ResetCommand.Create(io));
         rootCommand.Add(SupplyCommand.Create(io, environment));
         rootCommand.Add(LockCommand.Create(io));

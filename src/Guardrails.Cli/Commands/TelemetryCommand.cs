@@ -502,12 +502,21 @@ public static class TelemetryCommand
 
             decimal cost = 0m;
             bool anyCost = false;
+            long gatewayTokens = 0;
+            bool anyGateway = false;
             foreach (TelemetryRow attempt in attempts)
             {
                 if (attempt.CostUsd is { } reported)
                 {
                     cost += reported;
                     anyCost = true;
+                }
+
+                // #782 §4: a gateway attempt's cost is null by design; its tokens are the spend.
+                if (attempt.Gateway is not null && (attempt.InputTokens is not null || attempt.OutputTokens is not null))
+                {
+                    gatewayTokens += (attempt.InputTokens ?? 0) + (attempt.OutputTokens ?? 0);
+                    anyGateway = true;
                 }
             }
 
@@ -531,7 +540,8 @@ public static class TelemetryCommand
                 // null, not 0, when the task never went green — an abandoned task is not a zero-attempt
                 // success (charter §5 survivorship).
                 AttemptsToGreen = attempts.FirstOrDefault(a => a.Outcome == SucceededOutcomeToken)?.Attempt,
-                CostUsd = anyCost ? cost : null
+                CostUsd = anyCost ? cost : null,
+                GatewayTokens = anyGateway ? gatewayTokens : null
             });
         }
 
@@ -539,22 +549,10 @@ public static class TelemetryCommand
     }
 
     /// <summary>
-    /// The strongest model identity the corpus carries: the resolved route <c>kind/runner/model</c>, plus
-    /// <c>@</c><see cref="TelemetryRow.ModelDigest"/> when the row carries one — see the class doc for why
-    /// a digest is a provider fact, not a gap. A row with no digest fingerprints exactly as it always has,
-    /// so no existing corpus row's stratum moves. A component the row left null is spelled <c>?</c>
-    /// rather than silently collapsed, and a row with no route at all (a script attempt) says so.
+    /// The stratum's model identity — <see cref="TelemetryFingerprint.Of"/>, which also keeps a claude GATEWAY row
+    /// (#782) in a stratum of its own.
     /// </summary>
-    private static string Fingerprint(TelemetryRow row)
-    {
-        if (row.Kind is null && row.Runner is null && row.Model is null)
-        {
-            return NoRouteRecorded;
-        }
-
-        string route = $"{row.Kind ?? "?"}/{row.Runner ?? "?"}/{row.Model ?? "?"}";
-        return row.ModelDigest is { } digest ? $"{route}@{digest}" : route;
-    }
+    private static string Fingerprint(TelemetryRow row) => TelemetryFingerprint.Of(row);
 
     /// <summary>
     /// Render the report as a fixed-width table. Column widths are measured over the headers and the
@@ -594,7 +592,7 @@ public static class TelemetryCommand
                     Number(sufficient.AttemptsToGreen.MedianAttempts),
                     Number(sufficient.AttemptsToGreen.P90Attempts),
                     Percent(sufficient.AttemptsToGreen.AbandonmentRate),
-                    Money(sufficient.CostUsd)
+                    Money(sufficient.CostUsd, sufficient.GatewayTokens)
                 ];
                 numbered.Add(cells);
             }
@@ -802,8 +800,12 @@ public static class TelemetryCommand
 
     private static string Number(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
 
-    private static string Money(decimal? cost) =>
-        cost is { } value ? "$" + value.ToString("0.00##", CultureInfo.InvariantCulture) : CostNotReported;
+    /// <summary>
+    /// The COST cell: the dollars, or — for a stratum whose spend went through a claude gateway (#782 §4) — its token
+    /// usage in their own unit, never a blank and never <c>$0.00</c>.
+    /// </summary>
+    private static string Money(decimal? cost, long? gatewayTokens = null) =>
+        Core.Journal.SpendFormat.Total(cost, gatewayTokens, "0.00##") ?? CostNotReported;
 
     // --- census -----------------------------------------------------------------------------------
 

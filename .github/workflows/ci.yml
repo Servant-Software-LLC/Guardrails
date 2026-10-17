@@ -11,9 +11,26 @@ on:
   # pull_request already covers every branch that matters and master keeps its post-merge
   # run. What is given up is CI on a branch pushed with NO PR open — the case where nobody
   # was reading the result anyway.
+  #
+  # paths-ignore: a change that touches ONLY prose docs skips CI. Scoped narrowly on purpose.
+  # docs/plans/** is NOT prose to the test suite: SchemaDriftTests diffs the SSOT
+  # (docs/plans/02-schemas-and-contracts.md) against the skills' copy, ProducerCoverageCorpusTests
+  # sweeps the real plan folders there, and doctrine-anchor tests pin design docs. README.md is
+  # checked by ReadmeCommandCoverageTests. Those keep running CI. A PR that also touches anything
+  # else runs CI as usual, because paths-ignore skips only when EVERY changed file matches.
+  # Safe only while no status check is REQUIRED on master (none is today): a skipped workflow
+  # never reports, so a required check would wait on it forever.
   push:
     branches: [master]
+    paths-ignore:
+      - 'docs/*.md'
+      - 'docs/asks/**'
+      - 'docs/presentations/**'
   pull_request:
+    paths-ignore:
+      - 'docs/*.md'
+      - 'docs/asks/**'
+      - 'docs/presentations/**'
 
 jobs:
   build-and-test:

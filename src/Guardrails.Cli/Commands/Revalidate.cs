@@ -1,5 +1,6 @@
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
@@ -144,6 +145,19 @@ public static class Revalidate
             // Reuse the exact run-wiring for the executor (state init, journal load+resume, interpreter
             // map, prompt-runner registry, triage). Serial path: cwd = the user's checkout where the fix
             // lives. Worktree path (#456): cwd = the plan branch's tree, supplied as the override.
+            // #782 review (sec W2): a judge dispatched through a claude gateway gets the same preflight a run gives it.
+            if (await ClaudeGatewayPreflight
+                    .PrepareStandaloneAsync(
+                        plan, output, worktreeTarget is not null, cancellationToken,
+                        // The plan branch's tree is where a committed .claude/settings*.json lives in worktree mode.
+                        worktreeTarget is not null ? [worktreeTarget.Path] : null)
+                    .ConfigureAwait(false) is not { } gatewayPlan)
+            {
+                output.WriteLine("\nThe claude gateway preflight failed — nothing was revalidated.");
+                return ExitCodes.HarnessError;
+            }
+
+            plan = gatewayPlan;
             (TaskExecutor executor, _) = SchedulerFactory.CreateExecutor(
                 plan, new ProcessRunner(), new PathExecutableProbe(), new ConsoleRunObserver(output));
 
@@ -179,7 +193,16 @@ public static class Revalidate
         {
             if (worktreeTarget is { Ephemeral: true } ephemeral)
             {
-                GitWorktreeProvider.RemoveDetachedWorktree(plan.Workspace, ephemeral.Path);
+                try
+                {
+                    GitWorktreeProvider.RemoveDetachedWorktree(plan.Workspace, ephemeral.Path);
+                }
+                catch (LinkRemovalException refusal)
+                {
+                    // #826: the ephemeral tree is left standing rather than deleted through a link — say so,
+                    // without masking the revalidation verdict above.
+                    output.WriteLine($"\nWARNING: the temporary revalidation worktree was left in place — {refusal.Message}");
+                }
             }
         }
     }
@@ -217,7 +240,16 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone. The lead line is revalidate's
+        // own: the recorded headline says "halting before scheduling any task", which this verb never does.
+        // Without a usable halt record, the pre-#762 line is the fallback.
+        if (!GateHaltReport.TryWriteFromJournal(
+                plan.PlanDirectory, output, leadLine: "Terminal gate still failing:", checksAlreadyPrinted: null))
+        {
+            output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 
@@ -248,7 +280,16 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone. The lead line is revalidate's
+        // own: the recorded headline says "halting before scheduling any task", which this verb never does.
+        // Without a usable halt record, the pre-#762 line is the fallback.
+        if (!GateHaltReport.TryWriteFromJournal(
+                plan.PlanDirectory, output, leadLine: "Plan preflight still failing:", checksAlreadyPrinted: PlanPreflightPhase.HaltHasOwnConsoleReport))
+        {
+            output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 

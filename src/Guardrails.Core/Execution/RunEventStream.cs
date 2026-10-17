@@ -32,16 +32,26 @@ namespace Guardrails.Core.Execution;
 ///         paired "finished" row (the task's own <c>task-started</c> ends it) — never a verdict, because
 ///         the harness cannot tell a slow git from a hung one (issue #722).</item>
 ///   <item><c>task-started</c> — a task entered execution. The FIRST of these is a run's liveness proof.</item>
-///   <item><c>attempt-started</c> — an attempt began, carrying its <c>budget</c>.</item>
+///   <item><c>attempt-started</c> — an attempt began: <c>attempt</c> (the journal's number, the same as its
+///         <c>attempt-finished</c> row and its <c>attempt-N</c> log dir), plus <c>runAttempt</c>/<c>budget</c>, its
+///         position within this run's budget (#798).</item>
 ///   <item><c>guardrail-finished</c> — one guardrail settled: <c>guardrail</c>, <c>passed</c>, and on
 ///         failure the <c>detail</c> a supervisor would otherwise open <c>feedback.md</c> to read.</item>
 ///   <item><c>attempt-finished</c> — an attempt settled, carrying the journal's own attempt record
 ///         (<see cref="Journal.AttemptRecord"/>): <c>outcome</c>, <c>costUsd</c>, <c>turns</c>,
 ///         <c>model</c>/<c>tier</c>/<c>runner</c>, <c>startedAt</c>/<c>endedAt</c>, and
 ///         <c>needsHumanKind</c>.</item>
+///   <item><c>attempt-stalled</c> — the stall watchdog killed an attempt's session (#811): <c>attempt</c>,
+///         <c>boundSeconds</c>, <c>silentSeconds</c>, <c>suspends</c> (host suspends it discounted), and, when the
+///         session's context management failed, <c>contextManagement</c> (<c>compaction-failed</c>) with the runner's
+///         error text in <c>detail</c>. Written before the attempt's own <c>attempt-finished</c> row.</item>
+///   <item><c>host-slept</c> — the host was asleep (#810): <c>from</c>, <c>to</c>, <c>sleptForSeconds</c>, and
+///         <c>inFlight</c>, the attempts that were running. Run-scoped: no <c>taskId</c>.</item>
 ///   <item><c>task-settled</c> — a task reached a terminal outcome.</item>
 ///   <item><c>run-finished</c> — the run itself reached a terminal outcome, carrying <c>exitCode</c> and
-///         <c>faultKind</c>. It is the only kind with no <c>taskId</c>: it is run-scoped, not task-scoped.</item>
+///         <c>faultKind</c>. It is run-scoped, not task-scoped, so it carries no <c>taskId</c>.</item>
+///   <item><c>observer-fault</c> — an observer threw and was isolated (#803); see <see cref="ObserverFaulted"/>.
+///         Run-scoped, no <c>taskId</c>.</item>
 /// </list></para>
 ///
 /// <para><b>Row shape.</b> The row is the telemetry corpus row (<see cref="Telemetry.TelemetryRow"/>)
@@ -161,16 +171,20 @@ public sealed class RunEventStream : IRunObserver
     }
 
     /// <inheritdoc/>
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
-        _inner.AttemptStarting(task, attempt, budget);
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
 
         AppendLine(new EventRow
         {
             Kind = "attempt-started",
             RunId = _runId,
             TaskId = task.Id,
-            Attempt = attempt,
+            // #798: `attempt` is the JOURNAL number — the same value the matching attempt-finished row carries
+            // and the N of the attempt-N log dir. Before #798 it was the per-run index, so on a resumed task the
+            // two rows of ONE attempt disagreed. The per-run position rides beside the budget it counts against.
+            Attempt = attemptNumber,
+            RunAttempt = attempt,
             Budget = budget
         });
     }
@@ -197,7 +211,14 @@ public sealed class RunEventStream : IRunObserver
             Attempt = record.Attempt,
             Outcome = Journal.JournalJson.OutcomeToken(record.Outcome),
             CostUsd = record.CostUsd,
+            // #782 §4: a gateway attempt has no cost, so its token usage and gateway ride beside it — a consumer
+            // must never read the absent cost as "free".
+            Tokens = record.Usage is { } usage ? (long)usage.InputTokens + usage.OutputTokens : null,
+            Gateway = record.Provenance?.Gateway,
             Turns = record.Turns,
+            // #817: absent when the session compacted nothing.
+            Compactions = record.Provenance?.Compactions,
+            CompactionFailures = record.Provenance?.CompactionFailures,
             Model = record.Provenance?.Model,
             Tier = record.Provenance?.Tier,
             Runner = record.Provenance?.Runner,
@@ -206,6 +227,52 @@ public sealed class RunEventStream : IRunObserver
             NeedsHumanKind = record.NeedsHumanKind
         });
     }
+
+    /// <inheritdoc/>
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail)
+    {
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
+
+        AppendLine(new EventRow
+        {
+            Kind = AttemptStalledKind,
+            RunId = _runId,
+            TaskId = task.Id,
+            Attempt = attempt,
+            BoundSeconds = (long)Math.Round(bound.TotalSeconds),
+            SilentSeconds = (long)Math.Round(silentFor.TotalSeconds),
+            Suspends = suspendsObserved,
+            ContextManagement = contextManagement,
+
+            // The runner's own error text rides in `detail`, which the webhook copy withholds by default (§8.3).
+            Detail = contextManagementDetail
+        });
+    }
+
+    /// <inheritdoc/>
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight)
+    {
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
+        AppendLine(new EventRow
+        {
+            Kind = HostSleptKind,
+            RunId = _runId,
+            TaskId = null,
+            From = from,
+            To = to,
+            SleptForSeconds = (long)Math.Round(sleptFor.TotalSeconds),
+            InFlight = inFlight.Count > 0 ? inFlight : null
+        });
+    }
+
+    /// <summary>The wire token for the #810 host-sleep row.</summary>
+    public const string HostSleptKind = "host-slept";
+
+    /// <summary>The wire token for the #811 stall-verdict row.</summary>
+    public const string AttemptStalledKind = "attempt-stalled";
 
     /// <inheritdoc/>
     public void RunFinished(int? exitCode, string? faultKind)
@@ -279,6 +346,14 @@ public sealed class RunEventStream : IRunObserver
         _inner.OutOfScopeStripped(task, stripped);
 
     /// <inheritdoc/>
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    /// <inheritdoc/>
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
+
+    /// <inheritdoc/>
     public void DecisionRecorded(DecisionEntry entry) => _inner.DecisionRecorded(entry);
 
     /// <inheritdoc/>
@@ -340,6 +415,30 @@ public sealed class RunEventStream : IRunObserver
             Paths = paths,
             Commit = commit,
             By = by
+        });
+    }
+
+    /// <summary>The wire token for an observer fault (#803).</summary>
+    public const string ObserverFaultKind = "observer-fault";
+
+    /// <summary>
+    /// Record that an observer threw (#803): an <c>observer-fault</c> row, run-scoped (no <c>taskId</c>), carrying
+    /// the observer's name, the callback, the exception's TYPE NAME only (never its message, for the reason
+    /// <c>run-finished</c>'s <c>faultKind</c> gives), and whether this fault disabled the observer. Not an
+    /// <see cref="IRunObserver"/> member: it is raised by <see cref="FaultIsolatingObserver"/>'s sink, beside the
+    /// chain rather than through it, so a fault is recorded even when the link that faulted is this one.
+    /// </summary>
+    public void ObserverFaulted(ObserverFault fault)
+    {
+        AppendLine(new EventRow
+        {
+            Kind = ObserverFaultKind,
+            RunId = _runId,
+            TaskId = null,
+            Observer = fault.Observer,
+            Callback = fault.Callback,
+            FaultKind = fault.Error.GetType().Name,
+            Disabled = fault.Disabled
         });
     }
 
@@ -482,6 +581,12 @@ public sealed class RunEventStream : IRunObserver
         /// <summary><c>attempt-started</c>: the attempt budget this attempt counts against.</summary>
         public int? Budget { get; init; }
 
+        /// <summary>
+        /// <c>attempt-started</c>: this attempt's 1-based position within THIS run's <see cref="Budget"/> (#798) —
+        /// restarts at 1 on a resume, unlike <see cref="Attempt"/>, which is the journal's number.
+        /// </summary>
+        public int? RunAttempt { get; init; }
+
         /// <summary><c>guardrail-finished</c>: the guardrail's name.</summary>
         public string? Guardrail { get; init; }
 
@@ -509,14 +614,29 @@ public sealed class RunEventStream : IRunObserver
         /// <summary><c>run-finished</c>: the process exit code, when the run reached one.</summary>
         public int? ExitCode { get; init; }
 
-        /// <summary><c>run-finished</c>: the fault's TYPE NAME only — never its message (see <see cref="RunFinished"/>).</summary>
+        /// <summary><c>run-finished</c> and <c>observer-fault</c>: the fault's TYPE NAME only — never its message (see <see cref="RunFinished"/>).</summary>
         public string? FaultKind { get; init; }
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.CostUsd"/>.</summary>
         public decimal? CostUsd { get; init; }
 
+        /// <summary>
+        /// <c>attempt-finished</c>: the attempt's input plus output tokens (<see cref="Journal.AttemptRecord.Usage"/>),
+        /// when reported. For a gateway attempt (#782 §4) this is the spend figure, since its cost is null.
+        /// </summary>
+        public long? Tokens { get; init; }
+
+        /// <summary><c>attempt-finished</c>: the claude gateway the attempt went through (#782), when it did.</summary>
+        public string? Gateway { get; init; }
+
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Turns"/>.</summary>
         public int? Turns { get; init; }
+
+        /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>Compactions</c> (#817).</summary>
+        public int? Compactions { get; init; }
+
+        /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>CompactionFailures</c> (#817).</summary>
+        public int? CompactionFailures { get; init; }
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>Model</c>.</summary>
         public string? Model { get; init; }
@@ -548,6 +668,39 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>supplied-resources-committed</c>: the SHA the drain committed them in.</summary>
         public string? Commit { get; init; }
+
+        /// <summary><c>host-slept</c>: the last check before the sleep (#810).</summary>
+        public DateTimeOffset? From { get; init; }
+
+        /// <summary><c>host-slept</c>: the first check after the sleep.</summary>
+        public DateTimeOffset? To { get; init; }
+
+        /// <summary><c>host-slept</c>: how long the host was asleep, in whole seconds.</summary>
+        public long? SleptForSeconds { get; init; }
+
+        /// <summary><c>host-slept</c>: the attempts in flight, as <c>&lt;task&gt;/attempt-&lt;N&gt;</c>; omitted when none was.</summary>
+        public IReadOnlyList<string>? InFlight { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: the silence bound the watchdog enforced, in whole seconds (#811).</summary>
+        public long? BoundSeconds { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: how long the session had produced no progress when it was killed, in whole seconds.</summary>
+        public long? SilentSeconds { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: host suspends the watchdog discounted (#517); 0 when none.</summary>
+        public int? Suspends { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: a context-management failure seen in the session (<c>compaction-failed</c>), when one was.</summary>
+        public string? ContextManagement { get; init; }
+
+        /// <summary><c>observer-fault</c>: the name of the observer that threw (#803).</summary>
+        public string? Observer { get; init; }
+
+        /// <summary><c>observer-fault</c>: the <see cref="IRunObserver"/> member it threw from.</summary>
+        public string? Callback { get; init; }
+
+        /// <summary><c>observer-fault</c>: true when this fault disabled the observer for the rest of the run.</summary>
+        public bool? Disabled { get; init; }
 
         /// <summary><c>supplied-resources-committed</c>: the supplier (design 41 §6) — <c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c>.</summary>
         public string? By { get; init; }

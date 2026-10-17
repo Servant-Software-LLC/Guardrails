@@ -70,6 +70,26 @@ public static class PlanPreflightPhase
     /// </summary>
     private const string ToolProbeName = "probe_tool";
 
+    /// <summary>The sample-pair halt's headline, up to its list of pair names.</summary>
+    private const string SampleHeadlinePrefix = "Sample-pair verification FAILED — halting before scheduling any task: ";
+
+    /// <summary>The openai-compat endpoint halt's headline, up to its list of findings.</summary>
+    private const string EndpointHeadlinePrefix = "openai-compat endpoint preflight FAILED — halting before scheduling any task: ";
+
+    /// <summary>
+    /// True when <paramref name="halt"/> came from a source that has ALREADY printed its own console report —
+    /// the sample-pair verification and the openai-compat endpoint preflight, each of which writes every finding
+    /// plus its rationale before returning. The caller then prints only the trailing pointers
+    /// (<see cref="GateHaltReport"/>), rather than a second copy of every finding (#762 review). The Full Flight
+    /// Checks print nothing of their own, so their halt gets the full block. Decided by the headline this class
+    /// itself writes for those two sources, so the test cannot drift from the writer.
+    /// </summary>
+    public static bool HaltHasOwnConsoleReport(RunHalt halt) =>
+        halt.Headline is { } headline
+        && (headline.StartsWith(SampleHeadlinePrefix, StringComparison.Ordinal)
+            || headline.StartsWith(EndpointHeadlinePrefix, StringComparison.Ordinal)
+            || headline.StartsWith(ClaudeGatewayPreflight.HeadlinePrefix, StringComparison.Ordinal));
+
     /// <summary>
     /// Evaluate (or skip) the pre-DAG phase for <paramref name="plan"/>, whose journal
     /// <paramref name="journal"/> was just loaded/seeded by <see cref="RunJournal.LoadOrCreate"/>.
@@ -89,7 +109,8 @@ public static class PlanPreflightPhase
         TextWriter? heartbeatOut,
         CancellationToken cancellationToken,
         string? junctionRoot = null,
-        WorktreeModeResolution? worktreeMode = null)
+        WorktreeModeResolution? worktreeMode = null,
+        ClaudeGatewayPreflightOptions? gatewayOptions = null)
     {
         // Committed sample pairs come FIRST — before BOTH short-circuits below — and this placement is
         // the whole point of the step (plan of record 26 §3/§7, issue #510).
@@ -125,6 +146,16 @@ public static class PlanPreflightPhase
         // HttpClient at all, which is what makes that a property of the code rather than of a guard that
         // happened to be hit first.
         if (!await OpenAiCompatEndpointsPassAsync(plan, journal, heartbeatOut, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        // The claude-gateway preflight (#782 §3), beside the openai-compat check and BEFORE both short-circuits
+        // for the same reasons: a wrong backend, a dead gateway or an unresolved token is fatal to every dispatch
+        // through that block, and re-probing it on resume can never false-halt a healthy run. A plan with no
+        // gateway block returns having opened zero connections.
+        if (!await ClaudeGatewayPreflight.EvaluateAsync(plan, journal, heartbeatOut, gatewayOptions, cancellationToken)
                 .ConfigureAwait(false))
         {
             return false;
@@ -299,7 +330,7 @@ public static class PlanPreflightPhase
         {
             Kind = RunHaltKind.PlanPreflightFailed,
             HaltedAt = DateTimeOffset.UtcNow,
-            Headline = "Sample-pair verification FAILED — halting before scheduling any task: "
+            Headline = SampleHeadlinePrefix
                        + string.Join(", ", checks.Select(c => c.Name).Distinct(StringComparer.Ordinal)),
             FailedChecks = checks
                 .Select(c => new FailedGuardrail { Name = c.Name, Reason = c.Reason! })
@@ -415,7 +446,7 @@ public static class PlanPreflightPhase
         {
             Kind = RunHaltKind.PlanPreflightFailed,
             HaltedAt = DateTimeOffset.UtcNow,
-            Headline = "openai-compat endpoint preflight FAILED — halting before scheduling any task: "
+            Headline = EndpointHeadlinePrefix
                        + string.Join(", ", failures.Select(c => c.Name).Distinct(StringComparer.Ordinal)),
             FailedChecks = failures
                 .Select(c => new FailedGuardrail { Name = c.Name, Reason = c.Reason! })

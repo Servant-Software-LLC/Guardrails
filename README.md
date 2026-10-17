@@ -68,7 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/mas
 **Prerequisites:** for the `dotnet tool` route, the
 [.NET 10+ SDK](https://dotnet.microsoft.com/download) — the Homebrew and `install.sh`
 routes need no .NET at all. For prompt tasks, [Claude Code](https://claude.com/claude-code)
-installed and authenticated (the headless `claude -p` runner the harness drives).
+installed and authenticated (the headless `claude -p` runner the harness drives), or the
+Cursor Agent CLI (see [Running prompt tasks on Cursor](#running-prompt-tasks-on-cursor-instead-of-claude)).
 Deterministic-only plans need nothing but .NET. Restart Claude Code after `skills install`
 so it picks up the skills.
 
@@ -123,7 +124,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails breakdown <plan.md> [--out <dir>] [--runner-config <file>] [--force] [--no-validate]` | Author a plan folder from a plan `.md` — the same breakdown the JIT wave checkpoint runs, available as a verb so you do not have to be a Claude Code session to invoke `/plan-breakdown`. Writes beside the plan unless `--out`; refuses a `.charter.md` (flatten it with `charter handoff` first); **never marks the plan reviewed** — `/guardrails-review` still gates the run |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
 | `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness. On a **waved** plan this covers every diagram the plan owns — the plan-level one *and* each `wave-NN-<slug>/diagram.md` |
-| `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
+| `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>] [--allow-sleep]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running. On macOS the run keeps the Mac from idle-sleeping until it ends (`caffeinate -i`); `--allow-sleep` lets it sleep. Host sleep never counts against an attempt's timeout, and each sleep during the task DAG is reported (`host slept` in the live view, a `host-slept` row in `events.jsonl`) |
 | `guardrails status [folder]` | Whether the run is alive (`Run state:` line), then the journal table: per-task status, attempts, last failure |
 | `guardrails lock [folder] [--check] [--diff]` | Record or compare a plan folder's breakdown manifest (`guardrails.baseline`); `--check` reports drift via exit code, `--diff` prints the per-file classification |
 | `guardrails merge [folder] --remote <dir> [--apply]` | Merge a freshly regenerated breakdown into the current folder, preserving human guardrail edits; `--apply` materializes it (otherwise dry-run report) |
@@ -133,6 +134,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 | `guardrails attach [folder]` | Attach a **second terminal** to a run's live progress table, replaying its recorded events. Read-only — it never touches the run — and it works both while the run is in flight and after it has finished. This is how you watch an unattended run without being the terminal that launched it |
+| `guardrails bundle [folder] [--task <id>] [--lean] [--without-agent-text] [--out <zip>]` | Package one run's evidence (live or finished) into a redacted zip under `~/guardrails-bundles/` to attach to a GitHub issue — see [Filing an issue](#filing-an-issue-guardrails-bundle). Credentials are scrubbed; prompts and transcripts are included unless `--lean` |
 | `guardrails samples verify [folder]` | Execute every committed `tasks/<id>/samples/` pair against its guardrail and report the findings. Worth knowing about *before* a run: the same check runs as a **pre-DAG gate**, so a broken pair halts the run before task one |
 | `guardrails mark-reviewed [folder] [--evidence <report>] [--source <kind>]` | Record that `/guardrails-review` ran, clearing the GR2025 "not reviewed" nudge. The marker is keyed on the plan's definition hash, so editing any guardrail body re-stales it. `--evidence` points at the written report and records a stronger attestation class than a bare stamp |
 | `guardrails plan-hash [folder]` | Print the plan's `PlanDefinitionHash` (or one wave's) — read-only. This is the hash the review flow embeds in its report |
@@ -289,6 +291,275 @@ Watch it from anywhere with `guardrails attach <plan>/`, which tails the run's r
 the work is complete and sitting on the plan branch; the summary says so at the end. Check with
 `git branch --no-merged` before assuming it shipped.
 
+### Running prompt tasks on Cursor instead of Claude
+
+Prompt tasks run on Claude Code by default. From **v1.22.0**, they can run on
+[Cursor's Agent CLI](https://cursor.com/docs/cli/overview) (`agent`) instead. That helps when your
+Claude account has hit a usage or spend limit but Cursor is installed on the same machine.
+
+**1. Install and sign in to the Cursor CLI**, then check that `agent` is on your PATH:
+
+```bash
+curl https://cursor.com/install -fsS | bash                    # macOS / Linux
+irm 'https://cursor.com/install?win32=true' | iex              # Windows (PowerShell)
+agent login
+agent --list-models                                            # model ids you can put in "model"
+```
+
+**2. Replace the plan's `promptRunners` in `guardrails.json` with one `cursor` block:**
+
+```json
+"promptRunners": {
+  "default": "cursor",
+  "cursor": {
+    "kind": "cursor",
+    "model": "claude-opus-5-5-high"
+  }
+}
+```
+
+- `command` defaults to `agent`. Set it to a full path if `agent` is not on the PATH that
+  `guardrails` sees.
+- Leave out `model` to use Cursor's own default ("Auto").
+- Use a **single** block, not a Cursor block added next to the Claude ones. A task still goes to
+  Claude when a Claude block declares `routing` (tier routing), when the task sets `action.runner`,
+  or when its prompt's front matter sets `runner:`. With only a `cursor` block left, every one of those
+  leftover references fails `guardrails validate` by name, so you can find and repoint them rather than
+  having a task quietly run on Claude.
+- To go back to Claude, restore the original block.
+
+**Choose how Cursor approves commands: `approvalMode`.** Cursor has no per-tool allowlist that works in
+headless mode (a project `.cursor/cli.json` allowlist has no effect there), so this one setting decides what
+the agent may run:
+
+| `approvalMode` | Cursor flag | What happens |
+|---|---|---|
+| `"force"` (default) | `--force` | Every command runs (Cursor's "Run Everything"). |
+| `"auto-review"` | `--auto-review` | Cursor's server-side reviewer approves or refuses each command. Writes, `git` and `dotnet` ran in testing. |
+| `"none"` | none | Files are written, but Cursor refuses **every** shell command unless you also add `"extraArgs": ["--sandbox", "enabled"]`, which runs them in Cursor's sandbox. |
+
+**Enterprise teams whose administrator disabled "Run Everything"** can't use the default. Cursor refuses
+to start and prints `Your team administrator has disabled the 'Run Everything' option`. Guardrails stops
+the task right away as needs-human, quotes that message, and tells you what to change. It doesn't spend
+your retries. Use `"auto-review"` instead:
+
+```json
+"cursor": { "kind": "cursor", "approvalMode": "auto-review" }
+```
+
+Or use `"none"` with the sandbox: `"approvalMode": "none", "extraArgs": ["--sandbox", "enabled"]`. Inside
+the sandbox, network access follows your team's sandbox settings, so a `dotnet restore` or `npm install`
+may be blocked. Don't put `--force` (or `-f`), `--yolo` or `--auto-review` in `extraArgs`. `validate` rejects them
+(`GR2082`), because `approvalMode` owns that flag, and Cursor itself refuses `--auto-review` together
+with `--force`.
+
+**Refused commands are never reported as success.** When Cursor refuses a command, the session can still
+end with "success". Guardrails reads each tool call's own result. A command that Cursor started but never
+finished before the session ended also counts as refused. Under `"auto-review"` this happens when Cursor's
+reviewer holds a command for an approval that headless mode can't give, such as the agent's own `git commit`.
+Such a command is reported as `abandoned: started but never completed`. It's named like any refused
+command, but it doesn't count toward "every shell command was refused" for a task's own agent, so the task
+retries as usual. A Cursor prompt guardrail (a judge) whose commands were all refused or abandoned still fails.
+If Guardrails stopped the session itself (a timeout or a stall), a command that was still running is not
+treated as refused. The retry feedback lists it as still running, and the attempt keeps its own failure
+reason.
+
+- If **every** shell command the agent tried was refused, the task's guardrails still run, because the
+  edits may be right. If they pass, the task succeeds and its summary lists the refused commands. If they
+  fail, the task stops as needs-human right away, without spending retries, and names each command, the
+  reason, and the `approvalMode` change to make.
+- If only **some** were refused, the attempt continues and the task's guardrails decide. Each refused
+  command and its reason appear in the attempt summary and in the retry feedback.
+- A Cursor **prompt guardrail** (a judge) that couldn't run any shell command fails, even if it wrote a
+  passing verdict.
+
+A reason like `Hook blocked with message: …` comes from a hook, not from Cursor's policy. Cursor's
+**"Include Third-Party Configs"** setting imports your Claude Code configuration from `~/.claude`,
+including its hooks, so a Claude hook can refuse Cursor's shell calls. Fix or disable that hook, or turn
+the setting off.
+
+**3. Validate, then run as usual:**
+
+```bash
+guardrails validate <plan>/
+guardrails run <plan>/
+```
+
+**What changes on Cursor.** `validate` prints one `GR2080` warning per `cursor` block, meaning the
+block runs without Claude's per-tool controls. It is expected. Here is what it means:
+
+- **No per-tool controls.** Cursor has no per-tool allowlist, so what the agent may run is set by
+  `approvalMode` alone. The warning says what your chosen mode allows. `permissionMode`,
+  `allowedTools`, `maxTurns` and `maxOutputTokens` do nothing on this block, and the warning names any
+  of them you left in.
+- **Weaker containment.** The harness's diff checks cover the task's worktree. Cursor can't load
+  the Claude hook that confines writes to that worktree. A task that edits its own task
+  definition (its `task.json`, action prompt or guardrail files) fails.
+- **No cost figures.** Cursor reports token counts but no cost, so the `--max-cost-usd` ceiling (and
+  the $20 `--autonomous` default) never trips on a Cursor run. Watch spend in your Cursor account.
+- **Read-only helpers switch off.** The overwatcher, needs-human AI triage and the autonomy
+  criticality judge never run on a Cursor block. When they would fall back to the `cursor` block, the run
+  turns them off and says so at startup. Declare a Claude block named `overwatch` or `ai-triage` to
+  keep them.
+- **Delivery is checked.** The harness sends the prompt on stdin and checks Cursor's echo of it. If
+  Cursor did not receive the prompt, the attempt fails. For example, a bare word in `extraArgs` would
+  make Cursor ignore stdin. That attempt is never reported as success.
+
+### Running prompt tasks on a local model through a gateway
+
+Prompt tasks can run on Claude Code pointed at a local model, such as Qwen served by
+[`llama-server`](https://github.com/ggml-org/llama.cpp), through an Anthropic-compatible gateway such as
+[LiteLLM](https://docs.litellm.ai/). Give a `claude` block a `baseUrl`, and Guardrails configures the Claude
+Code child itself. You don't need a `claude-local` wrapper script. You still start `llama-server` and LiteLLM
+yourself; Guardrails never starts either one.
+
+**New to this? Follow the step-by-step guide: [Local inference setup](docs/local-inference.md).** It goes from a
+bare Mac to a verified local-only run, and also covers pointing the interactive `/plan-breakdown` and
+`/guardrails-review` skills at the same models, plus the troubleshooting table. The rest of this section is the
+reference.
+
+> Anthropic documents gateways for its own models. Running Claude Code against a non-Claude model through a
+> gateway is outside what Claude Code supports. It works, and Guardrails checks as much of it as it can before
+> any task runs, but treat it as experimental.
+
+**1. Start one `llama-server` per model, and LiteLLM in front of them.** One `llama-server` holds one model,
+so Qwen 3.6 and Qwen 3.8 each need their own server on their own port. Adjust the model paths to yours:
+
+```bash
+llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_M.gguf --alias Qwen3.6-35B-A3B --jinja -c 65536 -np 1 --port 8080
+llama-server -m /models/Qwen3.8-27B-Q4_K_M.gguf     --alias Qwen3.8-27B     --jinja -c 65536 -np 1 --port 8081
+```
+
+`-c 65536 -np 1` gives the single slot a 65,536-token window. `contextTokens` below must not exceed the window one
+slot reports in `llama-server`'s `/props` (`default_generation_settings.n_ctx`). Newer `llama.cpp` builds share one KV
+cache across slots, so read that number rather than dividing `-c` by `-np`.
+
+```yaml
+# litellm.yaml
+model_list:
+  - model_name: Qwen                       # what the Guardrails block's "model" names
+    litellm_params:
+      model: openai/Qwen3.6-35B-A3B
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+  - model_name: Qwen3.8
+    litellm_params:
+      model: openai/Qwen3.8-27B
+      api_base: http://127.0.0.1:8081/v1
+      api_key: none
+```
+
+```bash
+litellm --config litellm.yaml --port 4000
+```
+
+If your LiteLLM has a `master_key`, export it under a name of your choice before you run Guardrails, for example
+`export LITELLM_KEY=sk-...` (PowerShell: `$env:LITELLM_KEY = 'sk-...'`), and add `"authTokenEnv": "LITELLM_KEY"`
+to the block. Put the variable's **name** in `guardrails.json`, never the key itself.
+
+**2. Point the plan's `promptRunners` at the gateway:**
+
+```json
+"maxParallelism": 1,
+"promptRunners": {
+  "default": "qwen36",
+  "qwen36": {
+    "kind": "claude",
+    "command": "claude",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "Qwen",
+    "backendModel": "qwen3.6-35b-a3b",
+    "contextTokens": 65536
+  },
+  "qwen38": {
+    "kind": "claude",
+    "command": "claude",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "Qwen3.8",
+    "backendModel": "qwen3.8-27b",
+    "contextTokens": 65536
+  }
+}
+```
+
+- Keep `"command": "claude"`. A block's `command` defaults to the block's name, so without it Guardrails
+  would try to launch a program called `qwen36`.
+- `baseUrl` is the gateway's root. Don't add `/v1`; Claude Code appends `/v1/messages` itself.
+- `model` is required. It must be a name in LiteLLM's `model_list`, and every Claude Code model alias,
+  background model and subagent model is pinned to it.
+- `backendModel` is optional but recommended. It is what the server behind the gateway must have **loaded**,
+  and the run stops before any task if it doesn't match. Include the version (`qwen3.6-35b-a3b`, not `qwen`).
+- `contextTokens` is optional. It tells Claude Code to compact before the backend's per-slot window fills, and
+  the run stops if it is larger than the slot.
+- `permissionMode`, `allowedTools`, `maxTurns`, `env` and `extraArgs` work as on any `claude` block, with two
+  exceptions: `ANTHROPIC_*` and the other variables Guardrails sets, and `--settings`, are rejected by
+  `validate` (`GR2084`).
+- Keep `maxParallelism` at 1 when two models share one gateway. `validate` warns otherwise (`GR2086`).
+- A Claude model name (`sonnet`, `claude-…`) that would reach a gateway block, for example through a task's
+  `action.model`, draws a `GR2085` warning.
+
+**3. Validate, check tool calling, then run:**
+
+```bash
+guardrails validate <plan>/
+guardrails providers check <plan>/ qwen36     # a tool_use round trip through the gateway
+guardrails run <plan>/
+```
+
+**What the run checks before any task starts.** A plan with a gateway block runs a preflight, and any failure
+stops the run with the reason, before a task spends a turn:
+
+- your machine's managed Claude Code settings, and the target repo's `.claude/settings.json` and
+  `.claude/settings.local.json`, don't set anything that could send requests elsewhere or with another
+  credential, such as `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK` or `apiKeyHelper`.
+  The message names the file and the key. Every managed source Claude Code documents is read — the
+  `managed-settings.json` file and `managed-settings.d/` drop-ins, the Windows `HKLM`/`HKCU` policy registry value,
+  and the macOS `com.anthropic.claudecode` configuration profile. Server-managed settings (pushed from the
+  claude.ai console) can't be read from here, and the run header says so. The integration worktree a resumed run
+  continues from is checked too;
+- the `authTokenEnv` variable, if any, is set;
+- the gateway answers, lists each declared model, and returns a real reply to a short message;
+- the server behind each model has the `backendModel` you declared loaded, `contextTokens` fits its per-slot
+  window, and no two model names are served by the same loaded model. That includes a model a task pins with
+  `action.model`: every model a run can send to the gateway is checked. The server is asked what it loaded
+  WITHOUT your gateway key, and only when it is on this machine or a private network address; a server elsewhere
+  is reported as not probed rather than sent a request. If you start `llama-server` with `--alias`, keep the alias
+  honest: the match trusts it.
+
+The run header then shows the identity it found, for example
+`Gateway: block 'qwen36' → http://127.0.0.1:4000, model 'Qwen': backend http://127.0.0.1:8080 Qwen3.6-35B-A3B (backendModel 'qwen3.6-35b-a3b' matched).`
+When the gateway isn't LiteLLM, or the server doesn't say what it loaded, it reads `backend identity
+unverified`, and a declared `backendModel` is reported as "declared, not verified", never as matched. This check
+runs once, at the start. A server that swaps models mid-run isn't detected. `guardrails breakdown --runner-config`
+and `guardrails run --revalidate-task` run the same checks before they use a gateway block.
+
+**What changes on a gateway block:**
+
+- **Tokens instead of cost.** Claude Code prices every call from Anthropic's list, which is meaningless for a
+  local model, so Guardrails records no cost and shows token usage wherever it would show a dollar figure:
+  `48.2k tok (gateway)`. A mixed run shows both, for example `Total prompt cost: $1.8400 + 310.5k tok (gateway)`.
+  A gateway dispatch that reported no token usage is counted, not dropped: `+ 1 dispatch(es) without usage (gateway)`.
+  `--max-cost-usd` (and the $20 `--autonomous` default) doesn't limit gateway spend; the run says so at startup.
+- **A clean Claude Code profile.** Each run gives Claude Code its own empty config directory under
+  `logs/<runId>/claude-config/`, so your `~/.claude` settings, `CLAUDE.md`, skills, memory, MCP servers and
+  stored login aren't used, and session transcripts land there instead of `~/.claude/projects/`. Claude Code
+  also starts without a record of trusting the repo, so some project settings may not apply. Treat the block's
+  `allowedTools` as the agent's whole permission grant. That directory is served by the local log viewer with the
+  rest of the run's logs, so anything an agent prints into its session — including a token — can be read there.
+  All of a run's gateway sessions share its one `.claude.json`; at `maxParallelism` above 1, watch for it being
+  corrupted.
+- **The token is visible to the agent's shell commands.** Commands the model runs inherit the child's
+  environment, including `ANTHROPIC_AUTH_TOKEN` and the variable `authTokenEnv` names (which Guardrails leaves in
+  place). Without `authTokenEnv` the token is a harmless placeholder. With a real key for a remote gateway, any
+  command the model runs can read it.
+- **Some traffic may still leave the machine.** Guardrails turns off Claude Code's nonessential traffic, but
+  some features (such as fast-mode checks and WebFetch's safety check) are documented to call
+  `api.anthropic.com` directly, and whether that switch stops them is unverified.
+- Every provenance record, telemetry row and event for a gateway dispatch names the gateway and the backend
+  identity, so a local-model attempt can always be told apart from a Claude one.
+
+The full contract is in [`docs/plans/02-schemas-and-contracts.md`](docs/plans/02-schemas-and-contracts.md) §9.10.
+
 ### Local telemetry
 
 **Every run records what it cost and which model ran each task, into a file on your own machine.**
@@ -310,6 +581,54 @@ often a model gets it right first time, how many attempts it needs, what that co
 makes "should this task run on a cheaper model?" a question with an answer instead of a guess.
 
 The contract is `docs/plans/02-schemas-and-contracts.md` §15.
+
+### Filing an issue: `guardrails bundle`
+
+**When a run goes wrong, don't hand-pick files for the issue. Run `guardrails bundle <plan>/` and attach
+the zip.** The harness knows which files describe a run, so it packages exactly those: the journal, each
+attempt's feedback, provenance and route log, the gate results, `guardrails.json`, `validate` output, tool
+versions, and a computed `SUMMARY.md`.
+
+- **Safe on a live run.** It is read-only: it writes nothing under the plan folder, the logs or any
+  worktree, takes no lock, and opens no network connection. Bundle a stuck run *before* you stop it.
+- **Full by default, with a loud warning.** The default bundle includes your prompts, transcripts, stream
+  logs, gateway sessions and patches. Credentials are scrubbed and paths are anonymized, but redaction
+  removes credentials, not your intellectual property, so every full bundle prints a warning.
+  **If the code is private and the issue is public, pass `--lean`**: it withholds all of that and keeps
+  only the harness-written evidence.
+- **It refuses when it can't see a token.** If a runner block in `guardrails.json` names an `authTokenEnv`
+  or `apiKeyEnv` that is unset or empty in your shell, the scrub would be blind to that token, so `bundle`
+  refuses and writes nothing. Run it from the shell that exported the variable with its real value
+  (`export LITELLM_MASTER_KEY=<value>`; in zsh a bare `export LITELLM_MASTER_KEY` exports it empty, and the
+  refusal says so; in bash it stays unset). Or pass `--without-agent-text` to ship the bundle with all
+  agent-derived text removed, run-wide. Or, only if the bundle stays private (say, moving a run between your
+  own machines), pass `--no-redact`: it skips ALL credential scrubbing and keeps all the evidence, and its
+  name always gets `-UNREDACTED` (an explicit `--out run.zip` becomes `run-UNREDACTED.zip`; a `--dir` folder
+  gets the suffix too). Never attach that one to a public issue.
+- **Where it goes.** `~/guardrails-bundles/<plan>-<runId>.zip` by default (`--out` or `--dir` to change
+  it). Any destination inside a git working tree is refused, so a bundle can't be committed by accident.
+  The absolute path is printed.
+- **Size.** The zip is capped at 20 MiB (`--max-size`; GitHub accepts 25 MB). Over the cap, it trims older
+  attempts' streams and transcripts first. If it's still too big, it writes the zip anyway, exits `1`,
+  and tells you to narrow it with `--task <id>`.
+- **A stuck run.** For a run that is still going, `SUMMARY.md` also says how long the in-flight attempt has
+  been running, which files are still being written, and the harness's process tree (with each process's
+  state, elapsed time and CPU), so you can tell whether the model, the agent CLI or the harness is waiting.
+- **Other options.**
+
+  | Option | What it does |
+  |---|---|
+  | `--run <runId>` | Bundle an earlier run's logs instead of the journal's current run |
+  | `--task <id>` | Only this task's evidence (repeatable) |
+  | `--include-worktree-diff` | Add the full git diff of the integration worktree and each selected task. Refused with `--lean` |
+  | `--keep-paths` | Don't anonymize paths |
+  | `--no-redact` | Skip ALL credential scrubbing (this also clears the token refusal above). The output's name always gets `-UNREDACTED`, `--out`/`--dir` included. Never use it for a public issue |
+  | `--force-path` | Allow a destination inside a git working tree |
+- **Attaching it.** `gh` can't attach files to an issue. Drag the zip into the issue's comment box in the
+  browser (or attach it to a gist or release and paste the link).
+
+The full contract, including the contents allow-list and every redaction pass, is
+`docs/plans/02-schemas-and-contracts.md` §17.
 
 ## The skills
 

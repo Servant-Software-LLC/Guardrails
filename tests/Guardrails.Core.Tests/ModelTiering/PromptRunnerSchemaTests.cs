@@ -60,6 +60,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
     [InlineData("openrouter", PromptRunnerKind.OpenRouter)]
     [InlineData("local", PromptRunnerKind.Local)]
     [InlineData("openai-compat", PromptRunnerKind.OpenAiCompat)]
+    [InlineData("cursor", PromptRunnerKind.Cursor)]
     public void Kind_DefaultsToClaudeWhenAbsent_AndParsesEveryAcceptedValue(string? kind, PromptRunnerKind expected)
     {
         string kindKey = kind is null ? string.Empty : $"\"kind\": \"{kind}\", ";

@@ -58,7 +58,7 @@ public sealed class RunEventBracketTests
         public List<string> Calls { get; } = [];
 
         public void TaskStarting(TaskNode task) => Calls.Add(nameof(TaskStarting));
-        public void AttemptStarting(TaskNode task, int attempt, int budget) => Calls.Add(nameof(AttemptStarting));
+        public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) => Calls.Add(nameof(AttemptStarting));
         public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) =>
             Calls.Add(nameof(AttemptModelResolved));
         public void AttemptRouteResolved(
@@ -114,7 +114,7 @@ public sealed class RunEventBracketTests
             TaskNode task = FlatTask("01-first");
 
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
             stream.AttemptFinished(task, new AttemptRecord
             {
@@ -192,7 +192,7 @@ public sealed class RunEventBracketTests
             TaskNode task = FlatTask("01-first");
 
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.RunFinished(0, null);
 
             List<string> brackets =
@@ -264,7 +264,7 @@ public sealed class RunEventBracketTests
 
             // Only kinds that carry no `detail`.
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.RunFinished(0, null);
 
             List<string> fileLines = ReadEventLines(dir);
@@ -499,7 +499,7 @@ public sealed class RunEventBracketTests
             var exception = Record.Exception(() =>
             {
                 stream.TaskStarting(task);
-                stream.AttemptStarting(task, 1, 3);
+                stream.AttemptStarting(task, 1, 3, 1);
                 stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
                 stream.RunFinished(0, null);
             });

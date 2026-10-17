@@ -189,8 +189,8 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
         });
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget) =>
-        _inner.AttemptStarting(task, attempt, budget);
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) =>
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result)
     {
@@ -261,6 +261,12 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         _inner.OutOfScopeStripped(task, stripped);
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
+
     public void WaveStarting(WaveNode wave, int index, int total) => _inner.WaveStarting(wave, index, total);
 
     // #469: forwarded EXPLICITLY. The interface default is an empty body, so a decorator that omits these
@@ -301,6 +307,18 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // `running` before its action has started would claim more than the harness knows.
     public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
         _inner.TaskWaitingOnWorktree(task, operation);
+
+    // #811: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting this would swallow
+    // the stall verdict before it reached events.jsonl. This observer does not ACT on it: the attempt's own
+    // AttemptFinished still follows and moves the node.
+    // #810: forwarded EXPLICITLY, verbatim; the DAG does not change shape when the host sleeps.
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) =>
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) =>
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
 
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound

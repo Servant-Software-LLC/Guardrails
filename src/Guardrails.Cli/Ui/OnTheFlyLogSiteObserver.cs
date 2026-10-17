@@ -225,8 +225,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         RenderIndex();
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget) =>
-        _inner.AttemptStarting(task, attempt, budget);
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) =>
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
         _inner.GuardrailFinished(task, result);
@@ -307,6 +307,12 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         _inner.OutOfScopeStripped(task, stripped);
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
+
     public void WaveStarting(WaveNode wave, int index, int total) =>
         _inner.WaveStarting(wave, index, total);
 
@@ -332,6 +338,17 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // durable record of the wait is events.jsonl, which the log server already serves.
     public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
         _inner.TaskWaitingOnWorktree(task, operation);
+
+    // #811: forwarded EXPLICITLY, verbatim — an unforwarded call would swallow the stall verdict in every mode. The
+    // site does not ACT on it: the durable record is the attempt-stalled row in events.jsonl, which the log server serves.
+    // #810: forwarded EXPLICITLY, verbatim; the log site does not change shape when the host sleeps.
+    public void HostSlept(DateTimeOffset from, DateTimeOffset to, TimeSpan sleptFor, IReadOnlyList<string> inFlight) =>
+        _inner.HostSlept(from, to, sleptFor, inFlight);
+
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) =>
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
 
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound

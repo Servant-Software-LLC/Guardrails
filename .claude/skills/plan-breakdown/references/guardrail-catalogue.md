@@ -2191,7 +2191,7 @@ for the golden reference.)
 
 A guardrail's failure feedback is only as good as **what survives the tail.** When a guardrail
 exits non-zero, the harness feeds the next attempt the **tail** of that guardrail's stdout — the
-last ~60 lines, then the last 4000 chars (a fixed harness contract, `RetryPolicy.AppendTail`; a
+last ~60 lines, then the last 4000 chars (a fixed harness contract, `OutputTail.Take`; a
 guardrail cannot change the tail size). For most guardrails this is fine: a `file-contains` or
 `build-passes` check prints **one** actionable line and that line IS the tail. The trap is a
 **test-runner** guardrail.

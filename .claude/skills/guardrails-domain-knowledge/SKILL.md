@@ -406,8 +406,57 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
   boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **Teardown never deletes through a link (#826, SSOT 3.2).** `git worktree remove --force` follows a Windows
+  junction and deletes its whole target (measured), so EVERY worktree teardown (segment Discard, trial/revalidate
+  trees, stale-run/segment prune, `--fresh` plan-branch teardown, completion reclaim + startup GC) is the link-safe
+  `SafeDelete` (its no-follow walk removes each link ENTRY -- symlink, junction, dangling, even inside a nested
+  `.git/` -- right before .NET's non-following delete) + `git worktree prune`; the harness NEVER runs `git worktree
+  remove`. `git reset --hard` / `clean -fd` on a harness tree (retry `ResetSegment`, AI-merge failure reset,
+  integration rollback/rewind) disarm links first too -- a junction replacing a tracked dir was written INTO and
+  cleaned out (21 -> 1); on a tree the operator may own (serial supplied-drain rollback, `RewindPlanBranch`) links
+  are never removed and a reset that would write or delete through one (a path under it at the target, HEAD, or in
+  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. The write-scope
+  revert checks the LEAF too, not only ancestors: a tracked file replaced by a junction is removed (worktree) or
+  refused (serial) before any `git checkout`/`rm` batch -- git deletes through a leaf junction (21 -> 0). A link that cannot be
+  removed REFUSES (`LinkRemovalException`): tree + registration + branch left in place, reported loudly (console
+  `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`, a retry reset faults the run), never risked.
+- **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
+  never reaches the phase-1 check (failed action, timeout, max-turns, stall, staging/fragment/harness-write
+  rejection, a serial cancel, a transient pause's re-run) gets the SAME check + #705 `out-of-scope.patch` +
+  scoped revert at its end, BEFORE the salvage stash; its outcome is unchanged, its summary gains
+  `; out-of-scope write(s) reverted: ...`, and its feedback gains a separate `## Out-of-scope writes were
+  reverted` section. The reverted paths feed #707's REPEAT rule, so the same out-of-scope path on a second
+  attempt halts `needs-human` even when every attempt timed out. **Serial mode is now checked** against a
+  per-attempt git SNAPSHOT of the workspace (`ScopeDiffBase`: private `GIT_INDEX_FILE`, plan `logs/`+`state/`
+  ignored), so the prompt shows `## Write scope (harness-enforced)` there too; it needs the workspace to be a git
+  top level, else no retrospective check runs and that is loud (run-start `Note:` + per-attempt
+  `write-scope-check.log`). **Write-time denial:** a prompt action on a hook-capable runner (claude, incl.
+  gateway) also gets the `WriteScopeHook` PreToolUse hook in both modes, refusing an out-of-scope
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the workspace (never Bash; `.guardrails-agent-io/` and
+  `.guardrails-staging/` always allowed), naming the scope and the needsHuman route. Review follow-ups: the serial
+  snapshot runs in NORMAL mode like worktree mode (tracked files revert through the repo's own smudge; files
+  untracked at snapshot time have their raw bytes captured and written back verbatim); editing the checkout
+  mid-serial-run is unsupported but LOUD (run-start Note; revert text says the changes may not be the agent's);
+  serial needs-human/tamper/wall halts revert too, BEFORE journaling, and `attempts[].scopeRevertedPaths` /
+  `writeScopeNotChecked` ride run.json; the snapshot tree is journaled (`tasks.<id>.scopeSnapshotTree`) and a
+  leftover one is REPORTED at run start (never reverted — so a crashed attempt's out-of-scope edits stay as the next
+  baseline, announced but not enforced) and handed to that task's first attempt; raw-byte capture covers regular
+  untracked files only (never symlinks/gitlinks) and a single bad path never fails the snapshot; a check that
+  could not run says `write scope NOT checked this attempt` in the summary and on both consoles.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
+- **Context thrash (#817, SSOT §9)**: every prompt attempt's compaction EPISODES (not `compacting` status lines,
+  which Claude Code repeats while one compaction runs) and failed compactions ride `provenance.compactions` /
+  `provenance.compactionFailures` (absent when zero), `attempt-finished`, and the bundle SUMMARY outcome cell. A
+  failed max-turns / timeout / stall / generic-error attempt with >= 3 compactions AND >= 1 per 12 turns is CONTEXT
+  THRASH (turns = `num_turns`, else an ESTIMATE from distinct assistant message ids, else the floor alone; the ratio
+  rests on few samples from one 64K plan). Its feedback replaces the budget-blaming text (a generic error keeps its
+  own feedback and gets the thrash section appended), its summary names the block's `contextTokens` and "split the
+  task", and it does NOT raise the next attempt's `maxTurns` or clock. #800 exhaustion and #817 thrash share one
+  consecutive count: two in a row, any mix, settle needs-human. A verdict on ESTIMATED turns (a lower bound, 0.35-1.0x
+  of reported) is advisory: text only, the budget is still raised and it does not count toward the halt. The
+  runner-config / repeat-context / repeat-silent-stall halts run the end-of-attempt scope check in BOTH modes. The
+  journal outcome stays `max-turns`/`timeout`/`action-failed`.
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode
   rollback instead of pure discard, and exposes it to the retry as a first-class, AGENT-CONTROLLED input.
   Immediately BEFORE the F2 reset above, the attempt's full working tree (including uncommitted writes) is
@@ -1083,7 +1132,7 @@ tiering as a working feature.
   and `tiering.verifier.minTier`.
 - **`promptRunners.<name>` is the registry unit** -- one block = one concrete (provider `kind`, command,
   `model`, `effort`) route. There is no `providers.json` and no `providers` section. Optional keys: `kind`
-  (default `claude`; `claude|codex|openrouter|local|openai-compat`), `effort` (opaque, runner-translated),
+  (default `claude`; `claude|codex|openrouter|local|openai-compat|cursor`), `effort` (opaque, runner-translated),
   the three axes `costly`/`strength`/`specialization`, and `routing`.
 - **`routing` is the switch.** ABSENT ⇒ the block is never a tier target. PRESENT ⇒ it opts in, and
   **tiering is CONFIGURED for the plan the moment ONE block declares it.** `routing.tiers` is REQUIRED,
@@ -1178,6 +1227,63 @@ tiering as a working feature.
   fails the attempt rather than being allowed to transcribe one -- a verifier that read nothing has
   verified nothing. **Judge spend is recorded but NOT folded into `JournalCost.Total`** -- actor
   spend and verifier spend are two numbers on purpose. Full contract: SSOT section 9.8.
+- **`cursor` runner (#764, SSOT section 9.9).** A third implemented kind: Cursor's Agent CLI (`agent`)
+  headless, built so a run can fail over to Cursor when Claude is quota-blocked. It serves `Action` and
+  `Guardrail` but NEVER `Advisory`. A block with no `command` launches `agent`, not the block name. Argv:
+  `agent -p --output-format stream-json [--force | --auto-review] --trust --workspace <cwd> [--model <m>] --add-dir <planDir>
+  [extraArgs...]`, with the composed prompt on STDIN and NO positional (measured live: Cursor reads stdin only
+  when there is no positional, and with one present it ignores stdin yet still ends `result/success`, exit 0 --
+  a false green). The runner therefore VERIFIES delivery: the stream's first `user` event echoes the prompt,
+  and a completed run whose echo does not open with the composed prompt's first 4 KB is failed
+  ("cursor did not receive the composed prompt"). That also catches a bare token in `extraArgs`. It NEVER
+  emits `--verbose`/`--permission-mode`/`--max-turns`/`--allowedTools` (Cursor exits at parse time on all
+  four -- the #764 defect). On Windows `command` is resolved through PATH+PATHEXT to a full path
+  (`agent.cmd`) by `PathExecutableProbe.ResolveFullPath`, the same rule GR2009 uses. The stream is parsed by
+  the UNFORKED `ClaudeStreamParser`; Cursor's camelCase `usage` is read cache-inclusive, cost and turns stay
+  `null` (so `maxCostUsd` cannot trip on it), and the init `model` is a display name kept OUT of the observed
+  model (it goes in the summary). The process/tee/stall/classify loop is shared with Claude in
+  `StreamJsonCliSession`. **`approvalMode` (#767)** picks the approval flag: `"force"` (default, `--force` =
+  Run Everything; an account whose admin disabled it refuses the launch, classified `RunnerConfiguration` →
+  needs-human on the first attempt with the remedy), `"auto-review"` (`--auto-review`, the enterprise route),
+  `"none"` (no flag: shell refused unless `extraArgs` has `--sandbox enabled`); GR2081 bad value / wrong kind,
+  GR2082 an approval flag in `extraArgs`. **Refused tool calls are read per call (#773):** a session whose
+  EVERY shell call was `rejected` still ends `result/success`, so `CursorToolCallScanner` reads each completed
+  `tool_call`, and pairs `started`/`completed` by exact `call_id` (fallback `toolCallId`) so a call still open at the terminal `result` is an ABANDONED refusal (#778 — auto-review held it for an approval print mode cannot give; NAMED like `rejected` (summary, feedback, transcript), but for an ACTION it neither feeds the wall lists (`BlockedWritePaths`/`RefusedCommands` — auto-review abandons the agent's `git commit` every attempt, which would read as a repeated permission wall) nor counts toward `AllShellRefused`; a JUDGE gets both, so it fails closed — and never feeds the #452 counter; with NO terminal result the session already failed and keeps its failure kind — open calls go to `InFlightToolCalls`, NOT refusals, with neutral "still running, not refused" feedback); every-shell-refused ACTION ⇒ completes marked `AllShellRefused`, guardrails run, pass ⇒ green (refusals named), fail ⇒ needs-human at once with the approval-mode remedy; every-shell-refused JUDGE ⇒ fails closed (`GuardrailRunner`, whatever verdict it wrote); SOME refusals ⇒ the
+  action completes carrying them and the guardrails decide (Claude #534/#708 parity), with each refusal + reason
+  in the summary and `feedback.md` and the targets fed to the wall tracker (the #452 counter is kept but inert for cursor actions: no task-action caller sets the bound; refusals nested in `taskToolCall` subagents are NOT scanned). **No allowlist, no containment hook** (`NeedsContainmentHook` false), so the
+  harness compensates: advisory profiles (overwatch, ai-triage, criticality judge) never resolve to a cursor
+  block (OFF for the run, with a `Note:` line), the task's own definition files are hashed around each action
+  of an uncontained writer (`IsUncontainedWriter`) and any change fails + settles the task, and stale verdict
+  files are deleted before every prompt judge (runner-agnostic). NOT contained: writes outside the worktree
+  (plan folder via `--add-dir`, other worktrees, `git stash`) and in-scope edits by a judge. **GR2080**
+  (`CursorRunnerUngoverned`, a WARNING on every cursor block) states all of this and names each ignored
+  `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` key the block declares. Claude's
+  `You've hit your individual spend limit` is now `Transient` in the SHARED classifier (a deliberate Claude
+  behavior change). Manual live smoke: `scripts/smoke/cursor-live-smoke.ps1` (spends credit; not CI).
+- **claude GATEWAY blocks (#782, SSOT section 9.10) -- a local model behind Claude Code, not a new kind.** A
+  `kind: "claude"` block with `baseUrl` (plus optional `authTokenEnv`, `backendModel`, and `contextTokens` =
+  the backend's PER-SLOT window) runs Claude Code through an Anthropic-compatible gateway (LiteLLM in front of
+  `llama-server`); it replaces #570's `claude-local` wrapper. The operator starts the services; the harness
+  never does. **Gateway-ness lives on the runner INSTANCE (D3):** every dispatch to it is a gateway dispatch,
+  whatever produced it. **Authority over the child (D1):** scrub inherited `ANTHROPIC_*` / `CLAUDE_CODE_USE_*` /
+  OAuth / `CLAUDE_CONFIG_DIR`; set the OWNED values (base URL, token or the `guardrails-gateway-no-auth`
+  placeholder, every model alias + `CLAUDE_CODE_SUBAGENT_MODEL` pinned to `model`, the context cap,
+  nonessential traffic off, and an isolated per-run `CLAUDE_CONFIG_DIR` at `logs/<runId>/claude-config/`);
+  pass ONE composed `--settings` (owned env, `model` = `fallbackModel` = the block's model, the containment hook
+  merged in). Managed settings and project settings it cannot outrank are detected by the pre-DAG preflight,
+  which HALTS. **Backend identity (D2):** the preflight resolves LiteLLM `/model/info` → normalized `api_base`
+  → `llama-server /props`, halts on a `backendModel` mismatch, a `contextTokens` above per-slot `n_ctx`, or two
+  models on one loaded model (#760), and otherwise records `BackendModel: "unverified"` -- never a guess.
+  Point-in-time. **Cost is null at the source; tokens render in its place** (`48.2k tok (gateway)`, mixed
+  `$X + Nk tok (gateway)`), and `maxCostUsd` does not bind on gateway spend (a run-start `Note:` says how far
+  it binds). Provenance/judge/telemetry/events carry `gateway` + `backendModel`; overhead dispatches go to
+  `run.json` `overheadGatewayDispatches[]`. Disclosed residuals: not supported by Anthropic for non-Claude
+  models; some features may still call `api.anthropic.com`; agent shells can read the token; the fresh config
+  dir means no user CLAUDE.md/skills/MCP and less project config without recorded trust; managed settings are
+  read from JSON files only (no Windows registry / macOS MDM). Codes: GR2084 (malformed block, owned env,
+  `--settings` in `extraArgs`), GR2085 (Claude model name reaches a gateway; `action.model` pins warned but not
+  probed), GR2086 (two models, one gateway, `maxParallelism > 1`). `guardrails providers check <plan> <block>`
+  runs a `tool_use` round trip through the gateway.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
@@ -1513,6 +1619,35 @@ lands at that same path once drained.
   path verbatim and classify the halt `blocked-work`; never stub it, fetch it, or hand-copy it into your
   worktree.
 
+## Filing an issue: `guardrails bundle`
+
+**`guardrails bundle [folder]`** (SSOT section 17, design of record `docs/plans/799-run-bundle.charter.md`,
+issue #799) packages ONE run's evidence into one zip, deterministically. **When you file an issue about a run,
+run it and attach the zip -- never hand-pick files.** It exists because agents filing dogfood issues picked
+evidence badly (#791 omitted the token actually sent; #797 omitted what explained the journal's settle).
+
+- **Read-only, safe on a live run.** Writes nothing under the plan folder, logs or worktrees, takes no lock,
+  opens no network connection, runs no model (SUMMARY.md is computed from recorded facts). One bounded read
+  per file with a share-everything handle, `run.json` first (section 17.2). So bundle a stuck run BEFORE
+  killing it.
+- **Full by default; `--lean` withholds proprietary content.** Credentials are always scrubbed (unless
+  `--no-redact`, which ALWAYS names the output `-UNREDACTED`, an explicit `--out`/`--dir` included; #814); prompts, transcripts, stream logs, gateway sessions and
+  patches are INCLUDED under a loud stderr warning. Redaction removes credentials, not IP: for private code
+  on a public issue, pass `--lean`. `--include-worktree-diff` adds source and is refused with `--lean`.
+- **D1 refusal, run-wide.** If ANY runner block names an `authTokenEnv`/`apiKeyEnv` unset or empty in the
+  bundling shell, it refuses (exit 1, nothing written) and names each variable, telling unset from set-but-empty
+  (in zsh a bare `export NAME` exports it empty; in bash it stays unset; #814). Remedies, in refusal order:
+  `export NAME=<value>` and re-run; `--without-agent-text` (all agent-derived free text removed, run-wide); or
+  `--no-redact` only for a bundle that stays private (skips ALL scrubbing incl. pass 5, name gets `-UNREDACTED`).
+  There is no per-file attribution.
+- **Destination.** Default `~/guardrails-bundles/<plan>-<runId>[-<task>].zip`; `--out`/`--dir` override
+  (mutually exclusive). EVERY destination inside a git working tree is refused unless `--force-path`.
+- **Size.** `--max-size` (default 20 MiB) caps the finished zip; fixed trim tiers never touch the protected
+  core (SUMMARY/MANIFEST/REDACTIONS, `run.json`, `guardrails.json`, every `feedback.md`, provenance, route
+  log). Still over after every tier: zip written anyway, exit 1, narrow with `--task <id>`.
+- **Exit codes:** `0` written and fits; `1` refused, unreadable, or over cap. No exit `2`.
+- **Upload:** `gh` cannot attach files to an issue -- drag the zip into the issue in the browser.
+
 ## Load-bearing invariants
 
 1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and
@@ -1730,7 +1865,9 @@ lands at that same path once drained.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2072**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2088**
+  (**GR2083** is RESERVED BY NAME for #544 native local-inference actions -- not free; #782 took GR2084-GR2086
+  around it)
   (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
@@ -1747,7 +1884,7 @@ lands at that same path once drained.
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
-  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39.
+  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9. **GR2081** = CursorApprovalModeInvalid and **GR2082** = CursorApprovalFlagInExtraArgs, both #767/SSOT section 9.9. **GR2084** = ClaudeGatewayBlockInvalid (ERROR), **GR2085** = ClaudeModelNameToGateway (WARNING) and **GR2086** = ClaudeGatewayModelsShareEndpoint (WARNING), all #782/SSOT section 9.10.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

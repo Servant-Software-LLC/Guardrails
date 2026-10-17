@@ -149,7 +149,8 @@ internal static class PromptToolGrantCoverage
 
     /// <summary>
     /// Append a warning for every command a task's prompt instructs but its grants refuse. Silent — appends
-    /// nothing at all — for a task with no prompt action, an unresolvable runner, no declared
+    /// nothing at all — for a task with no prompt action, an unresolvable runner, a <c>cursor</c> runner
+    /// (#764 — no allowlist is enforced), no declared
     /// <c>allowedTools</c>, no <c>Bash(...)</c> grant among them, an unscoped Bash grant, or an unreadable
     /// prompt file.
     /// </summary>
@@ -163,6 +164,14 @@ internal static class PromptToolGrantCoverage
             }
 
             if (ResolveRunner(plan.Config, task.Action.Runner) is not { } runner)
+            {
+                continue;
+            }
+
+            // A cursor block's allowedTools are never passed to its CLI (#764): it runs with --force, so
+            // nothing refuses the command and a warning here would name a wall that does not exist. GR2080
+            // already tells the operator the grants are ignored.
+            if (runner.Kind == PromptRunnerKind.Cursor)
             {
                 continue;
             }
@@ -191,26 +200,18 @@ internal static class PromptToolGrantCoverage
     }
 
     /// <summary>
-    /// The runner a prompt ACTION resolves to: its <c>action.runner</c> pin, else the plan default —
-    /// <c>promptRunners.default</c> when it names a declared block, else the sole declared block. The same
-    /// two-level notion <c>PlanValidator.ResolveDefaultRunner</c> uses; an unresolvable one is another
-    /// check's finding (GR2010) and silence here, never a guess at which block was meant.
+    /// The runner a prompt ACTION dispatches to, asked of <see cref="PromptRunnerRegistry.DispatchNameFor"/> —
+    /// the one expression <c>ActionRunner</c> hands the registry (#764 review) — with no route, since tier
+    /// resolution is a run-time fact: the action's <c>runner</c> pin (which already carries the action prompt's
+    /// front-matter pin, folded at load), else the plan default, else the sole declared block. An
+    /// unresolvable one is another check's finding (GR2010) and silence here, never a guess at which block
+    /// was meant.
     /// </summary>
-    private static PromptRunnerConfig? ResolveRunner(RunConfig config, string? pinned)
-    {
-        if (pinned is not null)
-        {
-            return config.PromptRunners.TryGetValue(pinned, out PromptRunnerConfig? pin) ? pin : null;
-        }
-
-        string? name = config.DefaultPromptRunner is { } named && config.PromptRunnerNames.Contains(named)
-            ? named
-            : config.PromptRunnerNames.Count == 1 ? config.PromptRunnerNames.Single() : null;
-
-        return name is not null && config.PromptRunners.TryGetValue(name, out PromptRunnerConfig? runner)
+    private static PromptRunnerConfig? ResolveRunner(RunConfig config, string? pinned) =>
+        PromptRunnerRegistry.DispatchNameFor(config, route: null, pinned, frontmatterRunner: null) is { } name
+        && config.PromptRunners.TryGetValue(name, out PromptRunnerConfig? runner)
             ? runner
             : null;
-    }
 
     /// <summary>
     /// The scoped contents of every <c>Bash(...)</c> grant in the EFFECTIVE set — the declared entries plus

@@ -238,6 +238,95 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Record that attempt <paramref name="attempt"/> of <paramref name="taskId"/> is IN FLIGHT, in
+    /// <paramref name="phase"/> (an <see cref="InFlightPhase"/> token), and persist — SSOT §7
+    /// <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798. Called when the attempt starts and at each phase
+    /// change; the marker is removed when the attempt settles into <c>attempts[]</c>.
+    /// <para>
+    /// Re-marking the SAME attempt number keeps its original <c>startedAt</c>: a transient pause re-runs the same
+    /// attempt (same number, same log dir), so its start is the first launch, not the latest re-launch. A
+    /// different number replaces the marker outright. Neither touches <see cref="TaskJournalEntry.Status"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="taskId">The task.</param>
+    /// <param name="attempt">The JOURNAL attempt number (<see cref="NextAttemptNumber"/>).</param>
+    /// <param name="phase">An <see cref="InFlightPhase"/> token.</param>
+    /// <param name="now">The start time to record if this is a NEW attempt; defaults to the current UTC time. A
+    /// parameter so a test asserts the keep-or-replace DECISION against fixed values rather than a clock.</param>
+    /// <returns>
+    /// Null when the marker was persisted; otherwise the reason the write failed. <b>Best-effort by design:</b>
+    /// the marker is display state, and a run must never fault on it — a transient lock on <c>run.json</c> (the
+    /// #727 <c>AtomicFile</c> exhaustion) is caught, the in-memory update is KEPT (the journal's next persist
+    /// carries it), and the caller notes the failure where the operator will look.
+    /// </returns>
+    public string? MarkAttemptInFlight(string taskId, int attempt, string phase, DateTimeOffset? now = null)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            bool sameAttempt = entry.InFlightAttempt is { } current && current.Attempt == attempt;
+            DateTimeOffset startedAt = sameAttempt ? entry.InFlightAttempt!.StartedAt : now ?? DateTimeOffset.UtcNow;
+            UpdateTask(taskId, entry with
+            {
+                InFlightAttempt = new InFlightAttemptRecord
+                {
+                    Attempt = attempt,
+                    StartedAt = startedAt,
+                    Phase = phase,
+                    // #810: sleep accumulated on this attempt survives its phase changes; a new attempt starts at none.
+                    SleptSeconds = sameAttempt ? entry.InFlightAttempt!.SleptSeconds : null
+                }
+            });
+
+            try
+            {
+                BeforeMarkerPersist?.Invoke();
+                Persist();
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ex.Message;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Record (non-null) or clear (null) <see cref="TaskJournalEntry.ScopeSnapshotTree"/> for
+    /// <paramref name="taskId"/> and persist (issue #816). Best-effort exactly like
+    /// <see cref="MarkAttemptInFlight"/>: returns null on success, else why the write failed (the in-memory update
+    /// is kept, so the journal's next persist carries it). Never touches the task's status.
+    /// </summary>
+    public string? SetScopeSnapshotTree(string taskId, string? tree)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            if (string.Equals(entry.ScopeSnapshotTree, tree, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            UpdateTask(taskId, entry with { ScopeSnapshotTree = tree });
+            try
+            {
+                Persist();
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ex.Message;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test seam (#798 W2): invoked just before <see cref="MarkAttemptInFlight"/> persists, so a test can make that
+    /// one write fail the way a held <c>run.json</c> does, without also breaking every other journal write.
+    /// </summary>
+    internal Action? BeforeMarkerPersist { get; set; }
+
+    /// <summary>
     /// Set a task to <see cref="TaskStatus.Blocked"/> and persist. A blocked task never ran,
     /// so no attempt is recorded (SSOT §7: <c>attempts</c> are real attempts).
     /// </summary>
@@ -246,7 +335,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked, InFlightAttempt = null, ScopeSnapshotTree = null });
             Persist();
         }
     }
@@ -260,15 +349,18 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
         string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
+        BeforeAttemptRecorded?.Invoke();
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            var attempts = new List<AttemptRecord>(entry.Attempts) { attempt };
+            var attempts = new List<AttemptRecord>(entry.Attempts) { WithSleep(entry, attempt) };
 
             TaskJournalEntry updated = entry with
             {
                 Status = newStatus,
                 Attempts = attempts,
+                // #798: the attempt has settled into attempts[], so it is no longer in flight.
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
@@ -351,6 +443,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             TaskJournalEntry updated = entry with
             {
                 Status = status,
+                // #798: a settled task has no attempt in flight.
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
@@ -399,15 +493,18 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
         string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
+        BeforeAttemptRecorded?.Invoke();
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            var attempts = new List<AttemptRecord>(entry.Attempts) { attempt };
+            var attempts = new List<AttemptRecord>(entry.Attempts) { WithSleep(entry, attempt) };
 
             TaskJournalEntry updated = entry with
             {
                 Status = status,
                 Attempts = attempts,
+                // #798: the attempt has settled into attempts[], so it is no longer in flight.
+                InFlightAttempt = null, ScopeSnapshotTree = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
@@ -445,13 +542,87 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         string? bucket) =>
         RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash, bucket: bucket);
 
-    /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
+    /// <summary>
+    /// #810: add <paramref name="slept"/> to every attempt in flight right now, and persist (best-effort, like the
+    /// marker itself). Returns the attempts it was added to, as (task, attempt) pairs, for the <c>host-slept</c> event.
+    /// </summary>
+    public IReadOnlyList<(string TaskId, int Attempt)> AddSleepToInFlightAttempts(TimeSpan slept)
+    {
+        long seconds = (long)Math.Round(slept.TotalSeconds);
+        lock (_gate)
+        {
+            var touched = new List<(string, int)>();
+            foreach ((string taskId, TaskJournalEntry entry) in _document.Tasks.OrderBy(p => p.Key, StringComparer.Ordinal).ToList())
+            {
+                if (entry.InFlightAttempt is not { } marker)
+                {
+                    continue;
+                }
+
+                UpdateTask(taskId, entry with
+                {
+                    InFlightAttempt = marker with { SleptSeconds = (marker.SleptSeconds ?? 0) + seconds }
+                });
+                touched.Add((taskId, marker.Attempt));
+            }
+
+            if (touched.Count > 0)
+            {
+                try
+                {
+                    Persist();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Display state, like the marker: the in-memory update is kept and the next persist carries it.
+                }
+            }
+
+            return touched;
+        }
+    }
+
+    /// <summary>
+    /// #810: runs at the start of <see cref="RecordAttempt"/> and <see cref="RecordSettleWithAttempt"/>, OUTSIDE the
+    /// journal's lock, so the run's host-sleep check can put a just-ended sleep on the in-flight marker before the attempt
+    /// settles. Null outside a run with a monitor.
+    /// </summary>
+    internal Action? BeforeAttemptRecorded { get; set; }
+
+    /// <summary>The sleep accumulated on <paramref name="taskId"/>'s in-flight attempt so far (#810), or zero.</summary>
+    public TimeSpan InFlightSleep(string taskId)
+    {
+        lock (_gate)
+        {
+            return _document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry)
+                   && entry.InFlightAttempt?.SleptSeconds is { } seconds
+                ? TimeSpan.FromSeconds(seconds)
+                : TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>
+    /// #810: the settling record carries the sleep its in-flight marker accumulated, unless the caller already set it.
+    /// Done HERE, at the two methods that append an attempt, so every settle path carries it without each building it.
+    /// </summary>
+    private static AttemptRecord WithSleep(TaskJournalEntry entry, AttemptRecord attempt) =>
+        attempt.SleptSeconds is null
+        && entry.InFlightAttempt is { SleptSeconds: { } slept } marker
+        && marker.Attempt == attempt.Attempt
+            ? attempt with { SleptSeconds = slept }
+            : attempt;
+
+    /// <summary>
+    /// Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist. #816: also drops
+    /// a leftover <see cref="TaskJournalEntry.ScopeSnapshotTree"/> — a human who reset the task owns the workspace
+    /// now, and a resume must not revert their edits against a dead attempt's snapshot.
+    /// </summary>
     public void ResetTask(string taskId)
     {
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Pending });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Pending, InFlightAttempt = null, ScopeSnapshotTree = null });
             Persist();
         }
     }
@@ -588,6 +759,35 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             _document = _document with { OverheadCostUsd = (_document.OverheadCostUsd ?? 0m) + c };
+            Persist();
+        }
+    }
+
+    /// <inheritdoc cref="Execution.ISchedulerJournal.AddOverheadDispatch"/>
+    public void AddOverheadDispatch(string source, Prompts.PromptResult result)
+    {
+        AddOverheadCost(result.CostUsd);
+        if (result.Gateway is not { } gateway)
+        {
+            return;
+        }
+
+        var dispatch = new OverheadGatewayDispatch
+        {
+            Source = source,
+            Gateway = gateway,
+            BackendModel = result.BackendModel ?? Prompts.ClaudeGatewayConfig.UnverifiedBackend,
+            Usage = result.Usage is { } usage
+                ? new AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+                : null
+        };
+
+        lock (_gate)
+        {
+            _document = _document with
+            {
+                OverheadGatewayDispatches = [.. _document.OverheadGatewayDispatches ?? [], dispatch]
+            };
             Persist();
         }
     }
@@ -970,7 +1170,10 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         // Carry over and normalize tasks the journal already knows.
         foreach (KeyValuePair<string, TaskJournalEntry> pair in existing)
         {
-            result[pair.Key] = pair.Value with { Status = ResumeStatus(pair.Value.Status) };
+            // #798: an in-flight marker loaded from disk belongs to a PREVIOUS process — no attempt is running
+            // in this one yet — so it is dropped here. (`guardrails status` reads the file directly, not through
+            // this path, which is how it can still show a crashed run's interrupted attempt.)
+            result[pair.Key] = pair.Value with { Status = ResumeStatus(pair.Value.Status), InFlightAttempt = null };
         }
 
         // Seed any plan task the journal has never seen.

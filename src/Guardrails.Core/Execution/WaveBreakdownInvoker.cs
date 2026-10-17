@@ -133,7 +133,7 @@ public sealed class WaveBreakdownInvoker
                 workingDirectory: plan.PlanDirectory,
                 planDirectory: plan.PlanDirectory,
                 additionalReadDirectory: integrationWorktreePath,
-                chargeCost: journal.AddOverheadCost,
+                chargeCost: result => journal.AddOverheadDispatch("breakdown", result),
                 ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -164,7 +164,8 @@ public sealed class WaveBreakdownInvoker
     /// <param name="additionalReadDirectory">An extra <c>--add-dir</c> read grant, or null. The
     /// materialized integration worktree for a wave; null for an initial breakdown, where there is no
     /// upstream to read.</param>
-    /// <param name="chargeCost">Sink for the attempt's spend, or null when no journal exists. The spend is
+    /// <param name="chargeCost">Sink for the attempt's RESULT (its spend — and, for a claude gateway dispatch, its gateway,
+    /// backend and token usage, #782), or null when no journal exists. The spend is
     /// charged BEFORE any gate — it is real whether or not the output validates, and it must count toward
     /// <c>maxCostUsd</c> and appear in the reported total (SSOT §9/#314).</param>
     internal async Task<WaveBreakdownOutcome> InvokeCoreAsync(
@@ -172,7 +173,7 @@ public sealed class WaveBreakdownInvoker
         string workingDirectory,
         string planDirectory,
         string? additionalReadDirectory,
-        Action<decimal?>? chargeCost,
+        Action<PromptResult>? chargeCost,
         CancellationToken ct)
     {
         var invocation = new PromptInvocation
@@ -203,7 +204,7 @@ public sealed class WaveBreakdownInvoker
 
         PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
 
-        chargeCost?.Invoke(result.CostUsd);
+        chargeCost?.Invoke(result);
 
         return new WaveBreakdownOutcome
         {
@@ -220,7 +221,10 @@ public sealed class WaveBreakdownInvoker
             // line telling them the run is healthy and will resume at 03:00 — needs it, and none of it was
             // possible while the value stopped at the invoker.
             ResetHint = result.ResetHint,
-            CostUsd = result.CostUsd
+            CostUsd = result.CostUsd,
+            // #782 §4: a gateway session has no cost; its token usage and gateway are what the operator is shown.
+            Usage = result.Usage,
+            Gateway = result.Gateway
         };
     }
 
@@ -482,6 +486,12 @@ public sealed record WaveBreakdownOutcome
     /// </summary>
     public decimal? CostUsd { get; init; }
 
+    /// <summary>The session's token usage, or null when the runner reported none (#782 §4: a gateway session's spend).</summary>
+    public PromptUsage? Usage { get; init; }
+
+    /// <summary>The claude gateway the session went through (#782), or null.</summary>
+    public string? Gateway { get; init; }
+
     /// <summary>
     /// True only when the authoring session reached a clean terminal result. A session that was CUT OFF —
     /// timeout, turn cap, output cap, a fault, or simply no terminal result — is never clean, and per
@@ -504,6 +514,7 @@ public sealed record WaveBreakdownOutcome
         PromptFailureKind.OutputCap => BreakdownFailureTokens.OutputCap,
         PromptFailureKind.Transient => BreakdownFailureTokens.Transient,
         PromptFailureKind.Stalled => BreakdownFailureTokens.Stalled,
+        PromptFailureKind.ContextExhausted => BreakdownFailureTokens.ContextExhausted,
         _ => BreakdownFailureTokens.Error
     };
 
@@ -519,7 +530,11 @@ public sealed record WaveBreakdownOutcome
             ? $"ran out of TURNS (cap {cap})"
             : "ran out of TURNS",
         PromptFailureKind.OutputCap => "hit the runner's OUTPUT-TOKEN cap",
+        PromptFailureKind.ContextExhausted => "ran out of CONTEXT: Claude Code reported that autocompact is thrashing, so the session was ended",
         PromptFailureKind.Transient => "stopped on a transient runner condition (rate limit / overload)",
+        PromptFailureKind.RunnerConfiguration => Summary is { Length: > 0 } refusal
+            ? $"was refused by the runner's own configuration (#767): {refusal}"
+            : "was refused by the runner's own configuration (#767)",
         PromptFailureKind.Error => Error is { Length: > 0 } err
             ? $"FAULTED: {err}"
             : "reported an error",

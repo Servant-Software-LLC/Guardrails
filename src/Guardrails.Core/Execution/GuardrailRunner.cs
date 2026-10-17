@@ -197,6 +197,15 @@ internal sealed class GuardrailRunner
         string stagingVerdictPath = PromptOutputStaging.PrepareStagingPath(
             effectiveWorkspaceRoot, task.Id, attemptFolder, verdictPath);
 
+        // #764: nothing may be waiting at either verdict path when the judge starts. Both are predictable and
+        // both are writable by the ACTION that ran just before this judge — the final path sits in the plan's
+        // log dir (reachable through --add-dir), the staged one in the workspace — so an agent could plant
+        // `{"pass": true}` and a judge that then wrote nothing would be read as passing. Deleting them first
+        // makes "the judge wrote no verdict" fail honestly (GuardrailVerdictReader's no-valid-verdict path).
+        // Runner-agnostic on purpose: Cursor (--force, no hook) makes this easy, but a Claude action in SERIAL
+        // mode has no containment hook either and was never stopped from writing there.
+        PromptOutputStaging.ClearStaleOutputs(stagingVerdictPath, verdictPath);
+
         // §6.4: the verdict contract branches on ONE capability of the block this invocation will
         // actually execute on — can its runner write files? A runner that cannot is told to TRANSCRIBE
         // (emit the verdict as the last fenced JSON block; the harness writes it) instead of being handed
@@ -285,19 +294,44 @@ internal sealed class GuardrailRunner
             ? (verdict.Pass ? "passed" : GuardrailVerdictReader.NoValidVerdictReason)
             : verdict.Reason;
 
+        // #773 (PR #775 B1): a judge whose runner says it could not run — its configuration refused it, or it
+        // attempted shell and every call was refused — FAILS CLOSED, whatever verdict file exists. The verdict
+        // file alone is not enough: a judge that could run none of its checks can still write {"pass": true}.
+        bool judgeCouldNotRun = promptResult.FailureKind == PromptFailureKind.RunnerConfiguration
+                                || promptResult.AllShellRefused;
+        bool passed = verdict.Pass && !judgeCouldNotRun;
+        if (judgeCouldNotRun)
+        {
+            reason = $"judge could not run: {promptResult.Summary}";
+        }
+
+        // Refusals are never silent in the judge role either: a pass that got there with some tool calls refused
+        // carries them in its reason.
+        string? refusalNote = promptResult.RefusedToolCalls.Count == 0
+            ? null
+            : $"{promptResult.RefusedToolCalls.Count} tool call(s) refused by the runner: " +
+              string.Join("; ", promptResult.RefusedToolCalls.Take(5));
+
         var result = new GuardrailResult
         {
             Name = guardrail.Name,
-            Passed = verdict.Pass,
-            Reason = verdict.Pass ? null : reason
+            Passed = passed,
+            Reason = passed
+                ? (refusalNote is null ? null : $"passed; {refusalNote}")
+                : (refusalNote is null || reason.Contains(refusalNote, StringComparison.Ordinal) ? reason : $"{reason}; {refusalNote}")
         };
 
         // The prompt guardrail's stdout/stderr are not the verdict, but tee them for audit
         // (the runner already teed its stream; capture nothing more here). Timeouts surface
         // as "did not complete" → no verdict → fail, which the reader already handled.
+        //
+        // Timed out is read from the runner's classification, as ActionRunner does — never from the summary
+        // text. Since #763 a no-result exit's summary quotes the process's own output ("claude exited 1: Error:
+        // Request timed out"), so a substring test would journal an ordinary judge failure as a Timeout and
+        // extend the next attempt's clock for a failure that had nothing to do with the clock.
         return (
             result,
-            !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal),
+            !promptResult.Completed && promptResult.FailureKind == PromptFailureKind.Timeout,
             ToAttemptJudge(judge, route, promptResult));
     }
 
@@ -340,7 +374,10 @@ internal sealed class GuardrailRunner
         CostUsd = promptResult.CostUsd,
         Usage = promptResult.Usage is { } usage
             ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
-            : null
+            : null,
+        // #782 §4: a judge dispatched to a gateway instance records it too (its cost is already null at the source).
+        Gateway = promptResult.Gateway,
+        BackendModel = promptResult.BackendModel
     };
 
     /// <summary>

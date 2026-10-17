@@ -12,4 +12,13 @@ public sealed record ResolvedCommand
 
     /// <summary>Arguments passed verbatim via ArgumentList.</summary>
     public required IReadOnlyList<string> Arguments { get; init; }
+
+    /// <summary>
+    /// An optional predicate over INHERITED environment-variable names: every inherited variable it matches is
+    /// removed from the child's environment before the overlay is applied (#782 §1.2 step 1 — the gateway scrub of
+    /// <c>ANTHROPIC_*</c>, <c>CLAUDE_CODE_USE_*</c> and friends). Names are handed to it as the OS spells them; the
+    /// predicate compares with <see cref="ProcessRunner.EnvironmentNameComparison"/>. Null = no scrub, the pre-#782
+    /// behavior every existing caller keeps.
+    /// </summary>
+    public Func<string, bool>? ScrubInheritedEnvironment { get; init; }
 }

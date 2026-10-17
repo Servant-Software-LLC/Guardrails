@@ -11,7 +11,7 @@ namespace Guardrails.Core.Prompts;
 ///
 /// Each config block becomes one runner instance carrying that block's <c>command</c>, and the
 /// block's <c>kind</c> (SSOT §9, issue #224) selects the runner CLASS —
-/// <see cref="ClaudePromptRunner"/> and <see cref="OpenAiCompatPromptRunner"/> today. A kind with no
+/// <see cref="ClaudePromptRunner"/>, <see cref="OpenAiCompatPromptRunner"/> and <see cref="CursorPromptRunner"/> today. A kind with no
 /// implementation FAILS construction rather than being served by Claude (see <c>CreateRunner</c>).
 /// Adding a provider is a new class plus one arm of that switch — the seam is here, not in the harness.
 /// </summary>
@@ -36,7 +36,7 @@ public sealed class PromptRunnerRegistry
     /// <c>kind</c>. Throws when a declared block asks for a kind this build cannot serve.
     /// </summary>
     public static PromptRunnerRegistry FromConfig(RunConfig config, ProcessRunner processRunner) =>
-        Build(config, runner => CreateRunner(runner, processRunner));
+        Build(config, runner => CreateRunner(runner, processRunner, config.GatewayRun));
 
     /// <summary>
     /// The one place a <c>kind</c> becomes a runner CLASS (charter §A/#224 item 2).
@@ -55,12 +55,22 @@ public sealed class PromptRunnerRegistry
     /// <para>The switch below and <see cref="PromptRunnerKinds.Implemented"/> state the same fact from two
     /// directions; they are pinned together by a test, so the gate can never start permitting a kind this
     /// method would refuse (or vice versa).</para>
+    ///
+    /// <para><b>A claude block with a <c>baseUrl</c> is a GATEWAY block (#782, D3).</b> Its instance is built with the
+    /// block's <see cref="ClaudeGatewayConfig"/> and the run's <see cref="ClaudeGatewayRunContext"/>, so every
+    /// invocation dispatched to it — a task action, a tier route, a judge, ai-merge, breakdown, ai-triage or
+    /// overwatch — is a gateway dispatch, whichever call site produced it. A claude block without one gets a null
+    /// gateway and launches byte-identically to before.</para>
     /// </summary>
-    private static IPromptRunner CreateRunner(PromptRunnerConfig runner, ProcessRunner processRunner) =>
+    private static IPromptRunner CreateRunner(
+        PromptRunnerConfig runner, ProcessRunner processRunner, ClaudeGatewayRunContext? gatewayRun) =>
         runner.Kind switch
         {
-            PromptRunnerKind.Claude => new ClaudePromptRunner(runner.Name, runner.Command, processRunner),
+            PromptRunnerKind.Claude => new ClaudePromptRunner(
+                runner.Name, runner.Command, processRunner, ClaudeGatewayConfig.From(runner), gatewayRun),
             PromptRunnerKind.OpenAiCompat => new OpenAiCompatPromptRunner(runner.Name, runner, SharedHttpClient),
+            PromptRunnerKind.Cursor => new CursorPromptRunner(
+                runner.Name, runner.Command, processRunner, runner.ApprovalMode ?? CursorApprovalModes.Default),
             _ => throw new InvalidOperationException(UnimplementedKindMessage(runner))
         };
 
@@ -91,8 +101,8 @@ public sealed class PromptRunnerRegistry
             : runner.Kind.ToString();
 
         return $"Prompt runner '{runner.Name}' declares kind '{kind}', which has no implementation in " +
-            $"this build — this build serves {PromptRunnerKinds.ImplementedTokenList} (concrete " +
-            "non-Claude runners are issue #223). Point that promptRunners block at an " +
+            $"this build — this build serves {PromptRunnerKinds.ImplementedTokenList} (the remaining " +
+            "reserved kinds are issue #223). Point that promptRunners block at an " +
             "implemented kind, or remove it and route the tasks that used it to a runner this build can " +
             "serve. The harness will not substitute a different model for the one the config asked for. " +
             "(`guardrails validate` reports this as GR2044 before a run starts — reaching this message " +

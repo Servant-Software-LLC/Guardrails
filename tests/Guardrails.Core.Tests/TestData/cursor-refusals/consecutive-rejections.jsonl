@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/wt1","session_id":"session_id-001","model":"Auto","permissionMode":"default"}
+{"type":"tool_call","subtype":"completed","call_id":"call_id-001","tool_call":{"shellToolCall":{"result":{"rejected":{"command":"dotnet build","workingDirectory":"","reason":""}}},"toolCallId":"toolCallId-001"},"session_id":"session_id-001"}
+{"type":"tool_call","subtype":"completed","call_id":"call_id-002","tool_call":{"editToolCall":{"args":{"path":"/outside/notes.txt"},"result":{"rejected":{"path":"/outside/notes.txt","reason":"outside the workspace"}}},"toolCallId":"toolCallId-002"},"session_id":"session_id-001"}
+{"type":"tool_call","subtype":"completed","call_id":"call_id-003","tool_call":{"shellToolCall":{"result":{"rejected":{"command":"dotnet test","workingDirectory":"","reason":""}}},"toolCallId":"toolCallId-003"},"session_id":"session_id-001"}

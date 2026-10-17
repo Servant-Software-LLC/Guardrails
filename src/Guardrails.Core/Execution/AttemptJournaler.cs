@@ -24,6 +24,29 @@ internal sealed class AttemptJournaler
     private readonly IRunObserver _observer;
 
     /// <summary>
+    /// #816: the write-scope facts of each task's attempt in flight, keyed by task id (tasks run concurrently in
+    /// worktree mode). Registered by the executor when an attempt starts and read at the moment its record is built
+    /// (<see cref="Annotate"/>), so run.json and <see cref="IRunObserver.AttemptFinished"/> carry what was known by
+    /// then — the end-of-attempt revert and any "not checked" reason are settled BEFORE the journaler is called.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, AttemptScopeAnnotation> _scopeAnnotations =
+        new(StringComparer.Ordinal);
+
+    internal void BeginScopeAnnotation(string taskId, AttemptScopeAnnotation annotation) =>
+        _scopeAnnotations[taskId] = annotation;
+
+    internal void EndScopeAnnotation(string taskId) => _scopeAnnotations.TryRemove(taskId, out _);
+
+    private AttemptRecord Annotate(TaskNode task, AttemptRecord record) =>
+        _scopeAnnotations.TryGetValue(task.Id, out AttemptScopeAnnotation? scope)
+            ? record with
+            {
+                ScopeRevertedPaths = scope.RevertedPaths is { Count: > 0 } reverted ? reverted : record.ScopeRevertedPaths,
+                WriteScopeNotChecked = scope.NotChecked ?? record.WriteScopeNotChecked
+            }
+            : record;
+
+    /// <summary>
     /// <paramref name="observer"/> defaults to <see cref="IRunObserver.Null"/> so the existing
     /// direct-construction call sites in tests (which exercise journal behavior, not observer
     /// forwarding) keep compiling unchanged.
@@ -162,7 +185,7 @@ internal sealed class AttemptJournaler
         // later resume compares the current definition against it and halts on drift instead of skipping.
         // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
+            task.Id, record = Annotate(task, record), JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
             bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
@@ -174,7 +197,7 @@ internal sealed class AttemptJournaler
         // model; a prompt whose cost wasn't reported says exactly that.
         string costSegment = task.Action.Kind == ActionKind.Script
             ? "; no LLM used (script)"
-            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+            : CostSegment(action);
 
         return new AttemptResult(new TaskResult
         {
@@ -185,6 +208,11 @@ internal sealed class AttemptJournaler
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
                       + costSegment
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
+                      // #773: a converged attempt whose runner REFUSED tool calls says so — green, but never silent.
+                      + (action.RefusedToolCalls.Count == 0
+                          ? ""
+                          : $"; {action.RefusedToolCalls.Count} tool call(s) refused by the runner: " +
+                            string.Join("; ", action.RefusedToolCalls.Take(5)))
         }, FeedbackPath: null);
     }
 
@@ -274,7 +302,7 @@ internal sealed class AttemptJournaler
 
         string costSegment = task.Action.Kind == ActionKind.Script
             ? "; no LLM used (script)"
-            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+            : CostSegment(action);
 
         // #196: carry the not-yet-journaled attempt data to the Scheduler's B1 settle. The settle
         // records a real AttemptRecord (built from these fields — the SAME shape the serial success
@@ -396,7 +424,7 @@ internal sealed class AttemptJournaler
             HarnessWrite = harnessWrite
         };
         _journal.RecordAttempt(
-            task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
+            task.Id, record = Annotate(task, record), isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
             bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
@@ -470,7 +498,7 @@ internal sealed class AttemptJournaler
             // never launched has a duration to report.
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -549,7 +577,7 @@ internal sealed class AttemptJournaler
             // hand-builds a kind cannot write an unrecognised token into run.json.
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -629,7 +657,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir,
             Provenance = provenance
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -685,7 +713,7 @@ internal sealed class AttemptJournaler
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -787,7 +815,7 @@ internal sealed class AttemptJournaler
             // guardrails failed anyway" is a materially different diagnosis from "nothing was written".
             HarnessWrite = harnessWrite
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -859,7 +887,7 @@ internal sealed class AttemptJournaler
             // same honesty rule. A duration here would time a phase that never started.
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -914,7 +942,7 @@ internal sealed class AttemptJournaler
         };
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending, bucket: BucketFor(task));
+        _journal.RecordAttempt(task.Id, record = Annotate(task, record), JournalTaskStatus.Pending, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
@@ -924,6 +952,22 @@ internal sealed class AttemptJournaler
             ActionExitCode = actionResult.ExitCode,
             Summary = "cancelled mid-attempt; journaled back to pending"
         }, FeedbackPath: null);
+    }
+
+    /// <summary>
+    /// A prompt attempt's spend in its summary line. A GATEWAY attempt (#782 §4) shows its token usage instead of the
+    /// cost it cannot have — never <c>$0.00</c>, never a blank: <c>"; 48.2k tok (gateway)"</c>.
+    /// </summary>
+    private static string CostSegment(ActionRun action)
+    {
+        if (action.Gateway is not null)
+        {
+            return action.Usage is { } usage
+                ? $"; {Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)} (gateway)"
+                : "; token usage not reported (gateway)";
+        }
+
+        return action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
     }
 }
 
@@ -972,4 +1016,8 @@ internal sealed record AttemptResult(
     bool ActionWasNoOp = false,
     string? GuardrailFailureFingerprint = null,
     string? ActionOutputFingerprint = null,
-    string? TransientResetHint = null);
+    string? TransientResetHint = null,
+    bool SilentStall = false,
+    bool ContextExhausted = false,
+    // #817: the failed action was diagnosed as context thrash, so the loop raises neither its turn budget nor its clock.
+    bool ContextThrash = false);

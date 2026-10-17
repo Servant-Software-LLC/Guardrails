@@ -142,7 +142,7 @@ public sealed class RunEventVocabularyTests
             TaskNode task = FlatTask("01-first");
 
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });
             stream.RunFinished(0, null);
 
@@ -282,7 +282,7 @@ public sealed class RunEventVocabularyTests
             };
 
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
             stream.AttemptFinished(task, attemptRecord);
             stream.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });

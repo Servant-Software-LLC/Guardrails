@@ -117,6 +117,7 @@ public sealed class ObserverForwardingSweepTests
         [
             (coreAssembly, "Guardrails.Core.Execution.RunEventStream"),
             (coreAssembly, "Guardrails.Core.Execution.ObserverProjection"),
+            (coreAssembly, "Guardrails.Core.Execution.FaultIsolatingObserver"),
             (cliAssembly, "Guardrails.Cli.Ui.OnTheFlyDiagramObserver"),
             (cliAssembly, "Guardrails.Cli.Ui.OnTheFlyLogSiteObserver"),
         ];

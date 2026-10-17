@@ -1298,8 +1298,119 @@ public static class DiagnosticCodes
     /// </summary>
     public const string DeliveringWaveMissingExitGate = "GR2079";
 
-    // CURRENT next-free code: GR2080. GR2079 (DeliveringWaveMissingExitGate) is the last taken code
-    // above; GR2077 is RESERVED BY NAME below (issue #587 check B) and is not free.
+    // --- the cursor prompt runner (#764, SSOT §9.9) --------------------------------------------------
+
+    /// <summary>
+    /// GR2080 (WARNING) — a <c>kind: "cursor"</c> prompt-runner block runs UNGOVERNED by the per-tool
+    /// controls a Claude block has (#764, SSOT §9.9). Cursor's print mode has no per-tool allowlist and cannot
+    /// load the Claude worktree-containment hook; the approval flag is the block's <c>approvalMode</c> (#767 —
+    /// <c>--force</c> by default, full write and shell access), and the message states what that mode grants.
+    /// <c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c> and <c>maxOutputTokens</c> —
+    /// and any <c>guardrailOverrides</c> of them — are IGNORED, and <c>maxCostUsd</c> cannot trip on it (Cursor
+    /// reports no cost). The message states what IS enforced (the worktree-only git-diff write-scope check, the
+    /// task-definition tamper check, the stale-verdict clear, the prompt-echo check, and exclusion from the
+    /// advisory profiles) and what is NOT (writes outside the worktree: the plan folder via <c>--add-dir</c>,
+    /// other worktrees, <c>git stash</c>). Fires ONCE PER cursor block, always, and names every one of those keys
+    /// the block (or its <c>guardrailOverrides</c>) declares, so a Claude block copied and flipped to
+    /// <c>kind: "cursor"</c> is told exactly what stopped applying.
+    /// <para>A WARNING, not an error: running a cursor block is a legitimate operator choice (the #764 recovery
+    /// path when Claude is quota-blocked). What must not happen is that choice being made silently.</para>
+    /// </summary>
+    public const string CursorRunnerUngoverned = "GR2080";
+
+    /// <summary>
+    /// GR2081 (ERROR) — a prompt-runner block's <c>approvalMode</c> (#767, SSOT §9.9) cannot be honoured: the
+    /// value is not one of <c>force</c> | <c>auto-review</c> | <c>none</c> (reported by the LOADER, which keeps
+    /// loading and leaves the mode unset rather than silently serving <c>force</c>), or the key sits on a block
+    /// whose kind is not <c>cursor</c> (reported by the VALIDATOR — a key that does nothing where it was
+    /// written is indistinguishable from one that works). Also a non-string value, and
+    /// <c>guardrailOverrides.approvalMode</c> (loader): the key is block-level only.
+    /// </summary>
+    public const string CursorApprovalModeInvalid = "GR2081";
+
+    /// <summary>
+    /// GR2082 (ERROR) — a <c>kind: "cursor"</c> block's <c>extraArgs</c> (base or <c>guardrailOverrides</c>)
+    /// carries one of Cursor's approval flags — <c>--force</c>, <c>--yolo</c> or <c>--auto-review</c> (#767,
+    /// SSOT §9.9). The approval flag is owned by <c>approvalMode</c>: a copy in <c>extraArgs</c> either
+    /// duplicates the mode or contradicts it, and one contradiction is fatal at launch — Cursor's CLI refuses
+    /// <c>--auto-review</c> combined with <c>--force</c>/<c>--yolo</c> ("pick one"). The message names the
+    /// <c>approvalMode</c> that expresses what the flag was reaching for.
+    /// </summary>
+    public const string CursorApprovalFlagInExtraArgs = "GR2082";
+
+    // GR2083 is RESERVED BY NAME for issue #544 (native local-inference actions, the approved
+    // docs/plans/544-local-inference-actions.charter.md) and is not yet allocated in master. #782 lands the
+    // reservation here and takes GR2084–GR2086 around it. Do not allocate GR2083 for anything else.
+
+    /// <summary>
+    /// GR2084 (ERROR) — a claude GATEWAY block (#782, SSOT §9.10) is malformed, or a gateway key is where it does
+    /// nothing: <c>baseUrl</c> not an absolute http/https URL, carrying userinfo or a query, or with a path ending
+    /// <c>/v1</c> or <c>/v1/messages</c> (Claude Code appends <c>/v1/messages</c> itself); <c>authTokenEnv</c> not a
+    /// valid environment-variable NAME (which rejects a pasted secret); a <c>backendModel</c> shorter than 4
+    /// characters; a gateway <c>contextTokens</c> below 1; a gateway key on a non-<c>claude</c> block, on a claude
+    /// block with no <c>baseUrl</c>, or under <c>guardrailOverrides</c>; a gateway block with no <c>model</c>; an
+    /// OWNED variable (<c>ANTHROPIC_BASE_URL</c>, <c>ANTHROPIC_AUTH_TOKEN</c>, the model-alias and subagent pins,
+    /// <c>CLAUDE_CODE_MAX_CONTEXT_TOKENS</c>, <c>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC</c>,
+    /// <c>CLAUDE_CONFIG_DIR</c>) in the block's <c>env</c>, compared case-insensitively; or <c>--settings</c> in
+    /// either spelling in the block's <c>extraArgs</c> or <c>guardrailOverrides.extraArgs</c> — on a gateway
+    /// dispatch the harness owns that flag.
+    /// </summary>
+    public const string ClaudeGatewayBlockInvalid = "GR2084";
+
+    /// <summary>
+    /// GR2085 (WARNING) — a Claude model name would reach a claude GATEWAY block (#782 §2, #570 trap 1): a string
+    /// containing <c>claude</c> anywhere (so <c>anthropic.claude-…</c> and <c>us.anthropic.claude-…</c> count) or
+    /// an alias (<c>sonnet</c>, <c>opus</c>, <c>haiku</c>, <c>fable</c>, <c>opusplan</c>, <c>default</c>), compared
+    /// case-insensitively after removing any <c>[1m]</c>-style suffix. Sources: the block's <c>model</c> (and
+    /// <c>guardrailOverrides.model</c>), an <c>action.model</c> pin dispatched to the block, and <c>--model</c> or
+    /// <c>--fallback-model</c> in its <c>extraArgs</c>. A warning, because a LiteLLM <c>model_list</c> may map the
+    /// name on purpose.
+    /// </summary>
+    public const string ClaudeModelNameToGateway = "GR2085";
+
+    /// <summary>
+    /// GR2086 (WARNING) — <c>maxParallelism &gt; 1</c> and two or more distinct models resolve to ONE gateway
+    /// (#782 §2, #570 trap 3), gateways compared after folding the loopback host spellings and a trailing
+    /// <c>/</c>. A single <c>llama-server</c> holds one model, so parallel dispatches can race it; the pre-DAG
+    /// backend-identity check is the halting half.
+    /// </summary>
+    public const string ClaudeGatewayModelsShareEndpoint = "GR2086";
+
+    /// <summary>
+    /// GR2087 (WARNING) — a <c>guardrailOverrides</c> sub-block on a NON-claude prompt runner carries a key that is not a
+    /// per-prompt setting and so does nothing there (#782 review): today the claude-gateway keys <c>baseUrl</c>,
+    /// <c>authTokenEnv</c>, <c>backendModel</c> and <c>contextTokens</c>. On a claude block the same keys are GR2084 (an
+    /// ERROR, because they would otherwise silently fail to redirect a gateway); on any other kind the block can never be a
+    /// gateway, so the finding is a warning that adds no error to a path unrelated to gateways.
+    /// </summary>
+    public const string GuardrailOverridesKeyIgnored = "GR2087";
+
+    /// <summary>
+    /// GR2088 (ERROR) — a prompt runner block's <c>stallTimeoutSeconds</c> is negative (#811). It bounds how long a
+    /// task action's session may produce no progress; <c>0</c> disables the bound and an absent key derives it from the
+    /// action timeout (SSOT §9), but a negative bound has no meaning.
+    /// </summary>
+    public const string StallTimeoutNegative = "GR2088";
+
+    /// <summary>
+    /// GR2089 (WARNING) — a prompt runner block's <c>guardrailOverrides</c> carries <c>stallTimeoutSeconds</c> (#811).
+    /// The stall bound is block-level and bounds task actions only; the override profile serves judges, which never
+    /// read it, so the key does nothing there.
+    /// </summary>
+    public const string StallTimeoutInGuardrailOverrides = "GR2089";
+
+    /// <summary>
+    /// GR2090 (WARNING) — a <c>writeScope</c> entry is a well-known extensionless FILE name (<c>Dockerfile</c>,
+    /// <c>Makefile</c>, <c>LICENSE</c>, <c>Jenkinsfile</c>, ...) with no <c>*</c> and no trailing <c>/</c> (#838). The matcher
+    /// reads an extensionless bare entry as a DIRECTORY prefix, so a write to the file itself is out of scope and the
+    /// attempt fails. The fix is <c>Name*</c>. Only a closed list of known names is reported: <c>src</c> is a legitimate
+    /// directory entry, and an unknown extensionless name cannot be told from one, so it is not flagged.
+    /// </summary>
+    public const string WriteScopeExtensionlessFile = "GR2090";
+
+    // CURRENT next-free code: GR2091. GR2090 (WriteScopeExtensionlessFile) is the last taken code
+    // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
+    // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the
     // plan — it reports the TOOL (issue #564). That is deliberate and not a precedent to widen: it
     // lives here because the codes are the greppable, test-assertable surface a reviewer already

@@ -43,9 +43,10 @@ public sealed record PromptInvocation
     public required TimeSpan Timeout { get; init; }
 
     /// <summary>
-    /// Kill the session when it has produced NO stream output for this long (issue #504). Null disables
-    /// stall detection, which is the default for ordinary task attempts — they already have a meaningful
-    /// wall clock, and their retry semantics differ.
+    /// Kill the session when it has produced NO PROGRESS for this long (issue #504; #811 narrowed "output" to
+    /// progress lines, see <see cref="StreamProgress"/>). Null disables stall detection. Breakdowns set it
+    /// (<c>WaveBreakdownInvoker.BreakdownStallBound</c>), and since #811 so do task actions
+    /// (<c>ActionStallBound</c>, SSOT §9); guardrail judges and the harness's advisory prompts leave it null.
     ///
     /// <para>This bounds SILENCE where <see cref="Timeout"/> bounds DURATION, and the two are not
     /// interchangeable. A caller that sets a stall bound should set <see cref="Timeout"/> to a generous
@@ -99,6 +100,23 @@ public sealed record PromptResult
     /// <summary>The terminal result's <c>is_error</c> flag (true = the agent reported an error).</summary>
     public required bool IsError { get; init; }
 
+    /// <summary>
+    /// A context-management failure the runner saw in its own stream (#811), such as a compaction that failed, or
+    /// null. Reported whatever the outcome; the harness surfaces it on a FAILED attempt, in the summary and in
+    /// <c>feedback.md</c>.
+    /// </summary>
+    public ContextManagementFailure? ContextManagement { get; init; }
+
+    /// <summary>
+    /// How often the session's context was compacted, and how many compactions failed (#817), or null when it compacted
+    /// nothing or the runner reports no compactions. Carried whatever the outcome: it is journalled on every attempt's
+    /// provenance, and the harness diagnoses context thrash from it on a failed one.
+    /// </summary>
+    public CompactionCounts? Compactions { get; init; }
+
+    /// <summary>What the stall watchdog concluded, set only when <see cref="FailureKind"/> is <see cref="PromptFailureKind.Stalled"/> (#811).</summary>
+    public StallReport? Stall { get; init; }
+
     /// <summary>The terminal result text (the agent's final message), if any.</summary>
     public string? ResultText { get; init; }
 
@@ -142,6 +160,21 @@ public sealed record PromptResult
     public string? ModelDigest { get; init; }
 
     /// <summary>
+    /// The gateway this dispatch went through (#782 §4) — the normalized <c>baseUrl</c>, never carrying userinfo —
+    /// set by a claude GATEWAY runner instance on every dispatch, and null for every other runner. Its presence is
+    /// also what tells a reader that <see cref="CostUsd"/> is null because no honest price exists, and that
+    /// <see cref="ObservedModel"/> is only the CLI's echo of the name it asked for.
+    /// </summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>
+    /// The backend identity behind <see cref="Gateway"/> (#782 §3.2) as the pre-DAG preflight resolved it — the
+    /// only field that makes a claim about what actually served the request — or <c>"unverified"</c> when it could
+    /// not be resolved. Null whenever <see cref="Gateway"/> is.
+    /// </summary>
+    public string? BackendModel { get; init; }
+
+    /// <summary>
     /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
     /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
     /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever
@@ -178,6 +211,64 @@ public sealed record PromptResult
     /// as a command. Empty for a runner that refuses no commands.
     /// </summary>
     public IReadOnlyList<string> RefusedCommands { get; init; } = [];
+
+    /// <summary>
+    /// Every tool call the runner's approval policy REFUSED this run, WITH the refusal's reason (#773), in the
+    /// order they happened — the operator- and agent-facing account of what was refused and why, rendered into
+    /// the attempt summary and <c>feedback.md</c>. Distinct from <see cref="BlockedWritePaths"/>, which is the
+    /// de-duplicated TARGET list the permission-wall tracker routes on. Filled today by the Cursor runner, whose
+    /// stream carries a per-call <c>rejected</c> result with a reason; empty for a runner whose denials carry
+    /// no separable reason (Claude's are read by <see cref="ClaudePermissionScanner"/> into the target lists).
+    /// </summary>
+    public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// Tool calls still RUNNING when a session that produced no terminal result was stopped — killed by the harness
+    /// (timeout, stall, cancel) or crashed (#778). NOT refusals: nothing refused them, their results simply never came
+    /// back, so they never feed <see cref="RefusedToolCalls"/>, the wall lists or the every-shell-refused verdict.
+    /// Named in the summary and, under a neutral heading, in <c>feedback.md</c>. Filled today by the Cursor runner.
+    /// </summary>
+    public IReadOnlyList<InFlightToolCall> InFlightToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// True when the session attempted shell and NOT ONE shell call ran — every one was refused by the runner's
+    /// approval policy (#773). The session could build, test and run git in no way at all, whatever its terminal
+    /// result said. For an ACTION the run still counts as completed and the task's guardrails decide (outcome-aware,
+    /// the WEAK-4 rule); if they fail, the harness settles the task needs-human at once with
+    /// <see cref="RunnerConfigurationRemedy"/>, because a retry runs under the same policy. A JUDGE in this state
+    /// is not completed at all (it fails closed, see <c>GuardrailRunner</c>).
+    /// </summary>
+    public bool AllShellRefused { get; init; }
+
+    /// <summary>
+    /// The operator-facing remedy for a runner-configuration problem the runner detected (#767 / #773) — the
+    /// refused commands, their reasons and the per-mode <c>approvalMode</c> advice — or null when there is none.
+    /// Set with <see cref="AllShellRefused"/>; read when the harness settles the task needs-human.
+    /// </summary>
+    public string? RunnerConfigurationRemedy { get; init; }
+}
+
+/// <summary>
+/// One tool call a runner's approval policy refused (#773): the tool (<c>shell</c>, <c>edit</c>…), what it
+/// targeted (the command line, or the path), and the reason the runner gave — never empty: a refusal that
+/// carried no reason says so in words.
+/// </summary>
+public sealed record ToolRefusal(string Tool, string Target, string Reason)
+{
+    /// <summary>The one-line rendering every surface uses: <c>shell `git status` — refused by …</c>.</summary>
+    public override string ToString() => $"{Tool} `{Target}` — {Reason}";
+}
+
+/// <summary>
+/// One tool call still running when its session was stopped with no terminal result (#778) — see
+/// <see cref="PromptResult.InFlightToolCalls"/>. Not a refusal.
+/// </summary>
+/// <param name="Tool">The tool (<c>shell</c>, <c>edit</c>, …).</param>
+/// <param name="Target">What it ran on: the command, or the path.</param>
+public sealed record InFlightToolCall(string Tool, string Target)
+{
+    /// <summary>The one-line rendering every surface uses: <c>shell `dotnet test`</c>.</summary>
+    public override string ToString() => $"{Tool} `{Target}`";
 }
 
 /// <summary>
