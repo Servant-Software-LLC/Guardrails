@@ -2015,24 +2015,25 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// operator's checkout is shadowed by a link; otherwise the refusal detail, one line per link (or one line
     /// naming a detection failure). Reuses #826's <see cref="LinkSafeTree.IsLink(string)"/> no-follow read.
     /// <para>
-    /// The touched set is <c>git diff --name-only --no-renames HEAD...&lt;planRef&gt;</c>: every path added,
-    /// modified or deleted by the plan side, with a rename listed as BOTH its old path (deleted) and its new
-    /// path (written) — so a rename into or out of a linked directory is caught from either end. FAILS CLOSED:
-    /// a diff that cannot be computed, or a link read that throws, refuses the delivery and says why.
+    /// The touched set (<see cref="LinkCheckTouchedPaths"/>) is every path added, modified or deleted by the plan
+    /// side AND by the merge result itself (so a user-side rename the merge follows is covered), with a rename
+    /// listed as BOTH its old path (deleted) and its new path (written). FAILS CLOSED: a diff or merge-tree that
+    /// cannot be computed, or a link read that throws, refuses the delivery and says why. The check and the
+    /// merge are NOT atomic: a link created in the window between them is not seen (accepted residual TOCTOU).
     /// </para>
     /// </summary>
     private string? LinkShadowRefusal(string planRef)
     {
         try
         {
-            var (diff, exit) = TryGitIn(_repoPath, "diff", "--name-only", "--no-renames", "-z", $"HEAD...{planRef}", "--");
-            if (exit != 0)
+            (IReadOnlyCollection<string>? touched, string? failure) = LinkCheckTouchedPaths(planRef);
+            if (touched is null)
             {
-                return $"could not compute the paths this merge would touch (git diff exited {exit}), so link safety cannot be proven";
+                return $"{failure}, so link safety cannot be proven";
             }
 
             IReadOnlyDictionary<string, List<string>> shadowed =
-                FindShadowingLinks(_repoPath, SplitNulSeparated(diff), IsTrackedSymlinkAtHead);
+                FindShadowingLinks(_repoPath, touched, IsTrackedSymlinkAtHead);
             if (shadowed.Count == 0)
             {
                 return null;
@@ -2051,6 +2052,59 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         {
             return $"link detection failed ({ex.GetType().Name}: {ex.Message}), so link safety cannot be proven";
         }
+    }
+
+    /// <summary>
+    /// Every path the delivery of <paramref name="planRef"/> could write into (or delete from) the operator's
+    /// checkout, or null plus the reason when it cannot be established. Computed from the ACTUAL merge result, not
+    /// just the plan side's diff: a non-fast-forward merge also writes paths that exist only through the USER's
+    /// side (the operator renamed <c>a</c> to <c>b</c> on the delivery branch while the plan modified <c>a/f</c>;
+    /// ort writes <c>b/f</c>, which <c>HEAD...plan</c> never lists). So: <c>git merge-tree --write-tree HEAD
+    /// &lt;ref&gt;</c> builds the merged tree without touching the checkout and <c>git diff --name-only
+    /// --no-renames HEAD &lt;tree&gt;</c> lists what the merge would change; that is UNIONED with the three-dot
+    /// diff. When the merge conflicts (exit 1) or this git has no <c>--write-tree</c> (exit 129, git before 2.38)
+    /// the union of the three-dot diff and <c>HEAD..&lt;ref&gt;</c> is used instead - a superset of every path the
+    /// merge can write. Any other failure fails closed.
+    /// </summary>
+    private (IReadOnlyCollection<string>? Paths, string? Failure) LinkCheckTouchedPaths(string planRef)
+    {
+        var touched = new HashSet<string>(StringComparer.Ordinal);
+
+        var (threeDot, threeExit) = TryGitIn(_repoPath, "diff", "--name-only", "--no-renames", "-z", $"HEAD...{planRef}", "--");
+        if (threeExit != 0)
+        {
+            return (null, $"could not compute the paths this merge would touch (git diff HEAD...ref exited {threeExit})");
+        }
+
+        touched.UnionWith(SplitNulSeparated(threeDot));
+
+        var (mergeOut, mergeExit) = TryGitIn(_repoPath, "merge-tree", "--write-tree", "HEAD", planRef);
+        if (mergeExit == 0)
+        {
+            string tree = mergeOut.Split('\n', 2)[0].Trim();
+            var (resultDiff, resultExit) = TryGitIn(_repoPath, "diff", "--name-only", "--no-renames", "-z", "HEAD", tree, "--");
+            if (resultExit != 0)
+            {
+                return (null, $"could not diff the merge result against HEAD (git diff exited {resultExit})");
+            }
+
+            touched.UnionWith(SplitNulSeparated(resultDiff));
+            return (touched, null);
+        }
+
+        if (mergeExit is 1 or 129)
+        {
+            var (twoDot, twoExit) = TryGitIn(_repoPath, "diff", "--name-only", "--no-renames", "-z", "HEAD", planRef, "--");
+            if (twoExit != 0)
+            {
+                return (null, $"could not compute the paths this merge could touch (git diff HEAD ref exited {twoExit})");
+            }
+
+            touched.UnionWith(SplitNulSeparated(twoDot));
+            return (touched, null);
+        }
+
+        return (null, $"could not compute the merge result (git merge-tree exited {mergeExit})");
     }
 
     /// <summary>
@@ -2111,7 +2165,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     private enum PrefixKind { Link, Directory, NotADirectory }
 
     /// <summary>True when <c>HEAD</c> tracks <paramref name="path"/> as a symlink (mode 120000).</summary>
-    private bool IsTrackedSymlinkAtHead(string path)
+    internal bool IsTrackedSymlinkAtHead(string path)
     {
         var (listing, exit) = TryGitIn(_repoPath, "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path);
         return exit == 0 && listing.StartsWith("120000 ", StringComparison.Ordinal);

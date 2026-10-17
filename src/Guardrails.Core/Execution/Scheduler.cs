@@ -3685,6 +3685,13 @@ public sealed class Scheduler
             }
         }
 
+        if (outcome == Journal.DeliveryOutcome.LinkShadowed)
+        {
+            // #835: keyed on the structured outcome, not on the detail's prose.
+            return "Remove each link named above (the link ENTRY only: Windows `rmdir <link>`, never `rmdir /s`; "
+                + "Unix `rm <link>`, never `rm -r`), then resume.";
+        }
+
         return "Resolve the condition named above, then resume.";
     }
 

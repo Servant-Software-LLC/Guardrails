@@ -1036,7 +1036,14 @@ plan's files in the folder it points at, outside the repo — an added file land
 tracked file rewrites the external copy. The two operator-tree deliveries — the run-end
 `MergePlanBranchIntoUserBranch` and the per-wave `PromoteTrialDelivery` (§14.12) — therefore run a link check
 **before any merge, and ahead of the dirty-path gate** (on Unix a link over a tracked directory also reads as dirt;
-the link is the root cause). The touched set is `git diff --name-only --no-renames -z HEAD...<plan ref>` — adds,
+the link is the root cause). The touched set is taken from the ACTUAL merge result, not just the plan side's diff
+(a non-fast-forward merge also writes paths that exist only through the operator's side — e.g. the operator
+renamed `a` to `b` and linked `b` out while the plan modified `a/f`; ort writes `b/f`, which `HEAD...plan` never
+lists): the UNION of `git diff --name-only --no-renames -z HEAD...<plan ref>` and `git diff --name-only
+--no-renames -z HEAD <tree>` where `<tree>` is `git merge-tree --write-tree HEAD <plan ref>` (builds the merged
+tree without touching the checkout). When the merge conflicts (merge-tree exit 1) or the installed git predates
+`--write-tree` (exit 129, git < 2.38) the union of the three-dot diff and `git diff --name-only --no-renames -z
+HEAD <plan ref>` — a superset of anything the merge can write — is used; any other failure fails closed. Adds,
 modifies, deletes, and a rename listed as both endpoints. For each path every prefix (ancestor directories, then the
 path itself) is read once with #826's no-follow `LinkSafeTree.IsLink`; the outermost link on the chain shadows the
 path. A path that is itself a symlink the repository TRACKS (mode `120000` at `HEAD`) is exempt — git replaces such
@@ -1047,7 +1054,11 @@ an entry, it never writes through it. Any shadowed path REFUSES the delivery wit
 a manual merge; the run-end CLI banner says so and names the remedy (move the link ENTRY out of the way). The remedy
 and the outcome are selected by the token, never by prefix-matching the detail prose (#742). The check FAILS CLOSED:
 a diff that cannot be computed, or a link read that throws, refuses with `link safety cannot be proven` rather than
-merging. Unlike a Guardrails diagnostic this is a run-time delivery outcome, not a validation/loading failure, so it
+merging. "Fails closed" means an unprovable check refuses; it is NOT TOCTOU-proof: the check and the merge are not
+atomic and the checkout is not locked in between, so a link created in that window is not seen (accepted residual
+race). A wave-barrier refusal halts the run at that wave (`DeliveryRefused`), and its remedy line — selected by the
+`link-shadowed` outcome token — tells the operator to remove each named link ENTRY (`rmdir <link>` / `rm <link>`,
+never recursively) and resume. Unlike a Guardrails diagnostic this is a run-time delivery outcome, not a validation/loading failure, so it
 carries no `GR` code (the catalogue's next-free `GR` number is unchanged). The other merges in the harness
 (segment → integration, the refresh merge, AI-merge, the trial worktree, the fast-forward onto a segment) run in
 harness-owned worktrees and are not operator-tree writes.

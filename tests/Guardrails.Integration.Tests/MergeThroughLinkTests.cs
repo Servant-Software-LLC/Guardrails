@@ -218,6 +218,142 @@ public sealed class MergeThroughLinkTests : IDisposable
         Assert.Equal(["operator-link"], found.Keys);
     }
 
+    [Fact]
+    public void ANonFastForwardDelivery_UnderALink_IsRefused()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ) =
+            PlanWith(wt => File.WriteAllText(Path.Combine(wt, "assets", "added.txt"), "plan output\n"));
+        // The operator advances the delivery branch (a different file), so the delivery is a real merge, not a fast-forward.
+        File.WriteAllText(Path.Combine(_repo, "user.txt"), "user work\n");
+        Git(_repo, "add", "user.txt");
+        Git(_repo, "commit", "-q", "--no-verify", "-m", "user advance");
+        Assert.Throws<InvalidOperationException>(() => Git(_repo, "merge-base", "--is-ancestor", "HEAD", integ.PlanBranchName));
+        ReplaceAssetsWithLink();
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.LinkShadowed, result);
+        Assert.False(File.Exists(Path.Combine(_outside, "added.txt")));
+        Assert.Contains("assets/added.txt", provider.LastMergeOnSuccessDetail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The bypass the three-dot diff alone misses: the operator renamed <c>assets</c> to <c>store</c> on the delivery
+    /// branch (and linked <c>store</c> out) while the plan modified <c>assets/keep.txt</c>. The merge (ort follows the
+    /// user-side rename) writes <c>store/keep.txt</c> - through the link - yet <c>HEAD...plan</c> lists only
+    /// <c>assets/keep.txt</c>, which no longer exists. The touched set comes from the merge RESULT, so this is caught.
+    /// </summary>
+    [Fact]
+    public void AUserSideRename_ToALinkedDirectory_IsRefused_ThoughThePlanSideDiffNeverNamesIt()
+    {
+        (GitWorktreeProvider provider, IntegrationHandle integ) =
+            PlanWith(wt => File.WriteAllText(Path.Combine(wt, "assets", "keep.txt"), "rewritten by the plan\n"));
+        Git(_repo, "mv", "assets", "store");
+        Git(_repo, "commit", "-q", "--no-verify", "-m", "operator renames assets to store");
+        Directory.Move(Path.Combine(_repo, "store"), _outside);
+        TestLinks.DirectoryLink(Path.Combine(_repo, "store"), _outside);
+        Assert.Equal("assets/keep.txt", Git(_repo, "diff", "--name-only", $"HEAD...{integ.PlanBranchName}").Trim());
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.LinkShadowed, result);
+        Assert.Equal("original\n", File.ReadAllText(Path.Combine(_outside, "keep.txt")));
+        Assert.Contains("'store'", provider.LastMergeOnSuccessDetail, StringComparison.Ordinal);
+        Assert.Contains("store/keep.txt", provider.LastMergeOnSuccessDetail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PerWavePromotion_UnderALink_IsRefused_AndNothingIsWrittenToTheTarget()
+    {
+        ReplaceAssetsWithLink();
+        (GitWorktreeProvider provider, IntegrationHandle integ) =
+            PlanWith(wt => File.WriteAllText(Path.Combine(wt, "assets", "added.txt"), "plan output\n"));
+        TrialDelivery trial = provider.CreateTrialDelivery(integ, "wave-01", CancellationToken.None);
+        Assert.Null(trial.Refusal);
+        string headBefore = Git(_repo, "rev-parse", "HEAD").Trim();
+
+        MergeOnSuccessResult result = provider.PromoteTrialDelivery(integ, trial, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.LinkShadowed, result);
+        Assert.False(File.Exists(Path.Combine(_outside, "added.txt")));
+        Assert.Equal(headBefore, Git(_repo, "rev-parse", "HEAD").Trim());
+        Assert.Contains("assets/added.txt", provider.LastMergeOnSuccessDetail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheLinkRefusal_PreemptsTheDirtyWorkingTreeGate()
+    {
+        ReplaceAssetsWithLink();
+        File.WriteAllText(Path.Combine(_repo, "assets", "keep.txt"), "my uncommitted WIP\n"); // dirt on a path the plan touches
+        Assert.NotEmpty(Git(_repo, "status", "--porcelain", "--untracked-files=no").Trim());
+        (GitWorktreeProvider provider, IntegrationHandle integ) =
+            PlanWith(wt => File.WriteAllText(Path.Combine(wt, "assets", "keep.txt"), "rewritten by the plan\n"));
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.LinkShadowed, result);
+        Assert.Equal("my uncommitted WIP\n", File.ReadAllText(Path.Combine(_outside, "keep.txt")).Replace("\r\n", "\n"));
+    }
+
+    /// <summary>Commit a symlink ENTRY (mode 120000) without needing symlink privilege on disk.</summary>
+    private void CommitSymlinkEntry(string path, string target)
+    {
+        string blob = Path.Combine(_base, "symlink-blob.txt");
+        File.WriteAllText(blob, target); // a symlink blob is the target text, no newline
+        string sha = Git(_repo, "hash-object", "-w", blob).Trim();
+        Git(_repo, "update-index", "--add", "--cacheinfo", $"120000,{sha},{path}");
+        Git(_repo, "commit", "-q", "--no-verify", "-m", $"track symlink {path}");
+    }
+
+    [Fact]
+    public void IsTrackedSymlinkAtHead_ReadsTheRealMode_NotJustExistence()
+    {
+        CommitSymlinkEntry("lnk", "target.txt");
+        var provider = new GitWorktreeProvider(_repo, _root);
+
+        Assert.True(provider.IsTrackedSymlinkAtHead("lnk"));
+        Assert.False(provider.IsTrackedSymlinkAtHead("README.md"));
+        Assert.False(provider.IsTrackedSymlinkAtHead("assets"));
+        Assert.False(provider.IsTrackedSymlinkAtHead("assets/keep.txt"));
+        Assert.False(provider.IsTrackedSymlinkAtHead("lnk/x"));
+        Assert.False(provider.IsTrackedSymlinkAtHead("missing"));
+    }
+
+    [Fact]
+    public void ATrackedSymlink_ReplacedByARegularFileInThePlan_IsNotRefusedAsAShadowedPath()
+    {
+        CommitSymlinkEntry("lnk", "target.txt");
+        // The operator's checkout carries the link at the tracked-symlink path (a dir link: junction / symlink).
+        Directory.CreateDirectory(Path.Combine(_base, "lnk-target"));
+        TestLinks.DirectoryLink(Path.Combine(_repo, "lnk"), Path.Combine(_base, "lnk-target"));
+        (GitWorktreeProvider provider, IntegrationHandle integ) = PlanWith(wt =>
+        {
+            File.Delete(Path.Combine(wt, "lnk")); // removes the entry itself (a link is never written through)
+            File.WriteAllText(Path.Combine(wt, "lnk"), "now a regular file\n");
+        });
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        // The exemption applied: git replaces a tracked symlink entry, it never writes through it. (What the
+        // later gates decide - the operator's tree reads as dirty here - is their business, not the link guard's.)
+        Assert.NotEqual(MergeOnSuccessResult.LinkShadowed, result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_base, "lnk-target")));
+    }
+
+    [Fact]
+    public void ADirectoryPlacedUnderATrackedSymlink_IsStillRefused_Conservatively()
+    {
+        string store = TestLinks.OutsideFolder(_base, "conservative-target", files: 1);
+        TestLinks.DirectoryLink(Path.Combine(_repo, "lnk"), store);
+
+        IReadOnlyDictionary<string, List<string>> found = GitWorktreeProvider.FindShadowingLinks(
+            _repo, ["lnk", "lnk/x"], p => p == "lnk");
+
+        // `lnk` itself is exempt (a tracked symlink); `lnk/x` has the link as an ANCESTOR, which is never exempt.
+        Assert.Equal(["lnk"], found.Keys);
+        Assert.Equal(["lnk/x"], found["lnk"]);
+    }
+
     /// <summary>
     /// NEGATIVE CONTROL: the same shape handed straight to <c>git merge</c> — what every delivery did before #835 —
     /// writes through the junction into the external store. If this ever stops showing the write, the refusals above
