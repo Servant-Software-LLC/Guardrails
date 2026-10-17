@@ -968,6 +968,68 @@ might still be offered), bounds that growth: writing attempt `N`'s ref deletes t
 refs for `M <= N - SalvageRefRetentionPerTask`. Refs are throwaway bookkeeping; the per-attempt
 `prior-attempt.patch` files in the log dirs are unaffected and remain the durable record.
 
+**Teardown never follows a link (issue #826).** A harness teardown deletes nothing outside the tree it tears
+down. Measured on Windows (git 2.53): `git worktree remove --force` on a worktree holding a directory
+**junction** deletes every file in the junction's TARGET (a 21-file outside fixture went to 0), while `git
+clean -fd[x]` and .NET's recursive delete remove only the link entry — but .NET's `AllDirectories` enumeration
+DOES walk into a junction. A link can sit anywhere a task, build or package manager put it — under an ignored
+`node_modules/` (`npm link` / pnpm point at the developer's own package source), or created without changing a
+tracked path — where no write-scope diff (§3.4, #816) ever sees it. **The harness never runs `git worktree
+remove`.** Every worktree teardown — segment `Discard` (the end-of-run green sweep), the trial-delivery and
+revalidate worktrees, the stale-run and stale-segment prunes, the `--fresh` plan-branch teardown, and the
+completion reclaim / startup GC (#407) — is: (1) the link-safe `SafeDelete` of the worktree directory, whose
+walk NEVER follows a link (lstat semantics — `LinkTarget` on the entry itself, the reparse-point attribute
+gating it on Windows; never enumerating into a link target) and removes every link ENTRY — directory symlink,
+file symlink, junction, dangling link, including inside a nested repository's `.git/` — non-recursively,
+IMMEDIATELY before .NET's recursive delete (which does not follow links either, measured), so no window opens
+between a sweep and a link-following delete; then (2) `git worktree prune` for git's bookkeeping (prune deletes
+no working-tree file; it drops the registration of the now-missing directory, so the branch can be deleted and
+the path re-added — batched sweeps prune once, #450). Accepted side effect: `git worktree prune` is repo-wide, so
+it may also drop the registration of one of the OPERATOR's own worktrees whose directory is unreachable at that
+moment (an unmounted drive, a moved folder); `git worktree repair <path>` restores it. `SafeDelete` is the harness's ONE recursive delete (every
+other recursive `Directory.Delete` / `DirectoryInfo.Delete` routes through it): it disarms links in the same
+single walk that clears read-only attributes (#109), removes only the link when handed a link, and never touches
+anything reached through one. The orphaned-`_integration` sweep uses the same no-follow walk.
+
+**`git reset --hard` and `git clean` are guarded the same way.** An attempt that replaced a TRACKED directory
+with a junction to an outside folder had the retry reset's `reset --hard` write the tracked file INTO that folder
+and `clean -fd` delete the folder's files as untracked content (measured 21 → 1). So every rewrite of a
+HARNESS-OWNED tree — the retry `ResetSegment` (`reset --hard` + `clean -fd`), the AI-merge resolver's failure
+reset (the same `ResetSegment`), the integration worktree's merge rollback, plan-branch rewind and auto-supply
+rollback — first removes every link in the tree (the same walk; only `<worktree>/.git` itself is skipped), and
+when a link cannot be removed NEITHER command runs: a `LinkRemovalException` ("refused to reset …") takes the
+call's existing failure path (a retry reset faults the run with the message; the supply rollback reports through
+`CleanupFailed`). A tree the operator may own — the serial-mode supplied-drain rollback and a plan branch checked
+out in their own checkout (`RewindPlanBranch`) — never has a link removed. A hard reset WRITES every path tracked
+at the target and DELETES every path tracked in the index (or at HEAD) that the target lacks, so when a link has a
+path beneath it at the TARGET, at HEAD, or in the INDEX, only HEAD and the index move (`git reset -q`, which writes
+no working-tree file) and the refusal has its own message: HEAD and the index are now at the target, the working
+tree was left as it was (files from the undone change remain on disk, untracked or modified), which of the
+operator's links shadow tracked paths, and that `git reset --hard <target>` is safe once they are moved out of the
+way. (Measured: a path at HEAD but not in the index is left alone by git; the HEAD probe is belt-and-braces.) A
+link with nothing tracked under it (an ignored `node_modules/` entry) does not block. The same guard covers the
+other link-following rewrites: the auto-supply path `checkout` in the integration worktree disarms links first,
+and the write-scope revert's `checkout` / `rm` run only on paths that are neither links themselves nor under a
+linked ancestor — a link at the LEAF (a tracked file replaced by a junction reads to git as a directory, and git
+deletes recursively THROUGH it when replacing it: measured 21 → 0) is handled by mode like an ancestor, removed and
+named in worktree mode BEFORE any git batch, refused and left in place in serial mode (#816 + #826 final review).
+
+**A link that cannot be removed REFUSES the teardown** (`LinkRemovalException`, naming each link and telling the
+operator to remove the ENTRY by hand — `rmdir <link>` / `rm <link>`, never recursively): the worktree, its
+registration and its branch are left in place, and the refusal is reported, never swallowed — the live and plain
+consoles print `[worktree] <task>: worktree LEFT IN PLACE — …` (via `IRunObserver.CleanupFailed`), the reclaim/GC
+log prints `WARNING:`, `reset` / `run --fresh` print `WARNING:` on stderr and say a worktree was left in place
+instead of "all worktrees torn down", and a run-start stale-run prune that cannot finish stops the run (a stale
+segment must not be mistaken for integrated work). A source-level TRIPWIRE (not a proof) flags the literal,
+common shapes of a regression: a recursive delete outside `SafeDelete`, any `git worktree remove`, and a
+link-following git rewrite (`reset --hard/--merge/--keep`, `clean`, `checkout`, `restore`, `stash`, `rm`,
+`switch`, `read-tree`) with neither a link-guard CALL earlier in the same method body nor a substantive
+`// #826 link-guard: <why>` justification (≥ 3 words, ≥ 20 characters) on the line above. It does not prove the
+guard dominates every path to the call or see a verb built at run time; the guards themselves are reviewed
+invariants.
+Cost: one directory listing per real directory in the tree — the listings the delete makes anyway — and nothing
+inside any link target.
+
 ### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
 The terminal whole-repo integration gate is the final soundness boundary, run once on the fully merged
@@ -1155,13 +1217,17 @@ forbids (it would skip the write-scope check and let the task write anywhere), s
 now explicit and reviewable (this also closes the #375 Q2 loophole where a no-`writeScope` task could
 silently edit its own `guardrails/`). **Runtime fail-closed (belt-and-suspenders behind validate):** a
 validated plan never reaches the check with a null scope, but the check nonetheless coalesces a null scope
-to an EMPTY one in worktree mode (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
+to an EMPTY one (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
 any write is offending — rather than passing. **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
 the deleted path must be in scope. The ENFORCED scope is rendered into the action prompt and the violation
 feedback (issue #706, below) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
 workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020**, warning;
-`plan-breakdown` emits a real surface or `[]`, never a vacuous `**`). **TDD test-protection:** a
+`plan-breakdown` emits a real surface or `[]`, never a vacuous `**`). **An extensionless bare entry is a
+DIRECTORY prefix (#838):** `Dockerfile` normalizes to `Dockerfile/**` and never claims the file `Dockerfile`;
+write `Dockerfile*` (dotfiles such as `.dockerignore` are matched literally, #262). `validate` warns
+(**GR2090**) on a closed list of well-known extensionless file names (`Dockerfile`, `Makefile`, `LICENSE`,
+`Jenkinsfile`, ...); other extensionless names are not flagged because they cannot be told from directories. **TDD test-protection:** a
 test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
 the test files, so the check deterministically enforces "the implementation may not write the tests"
 (the replacement for the `captureHashes`/`tests-untouched`/`restoreOnRetry` triad **that this same
@@ -1201,6 +1267,113 @@ here and either `GR2068`/`GR2069` there is meeting one underlying pull twice, no
 CONTRACT rather than prose, which pushes toward the same one-task-per-collaborator split this paragraph
 already asks for).
 
+**The check runs at the end of EVERY attempt, in both modes (issue #816).** Phase 1 above runs only after an
+action that SUCCEEDED. Every other attempt ending used to return before it — a failed action, a `timeout`, a
+`max-turns` stop, a stall, a cancel, a staging failure, a rejected fragment or harness write — and its out-of-scope
+writes were carried forward unchecked: in serial mode straight into the next attempt (the workspace is never reset
+and the timeout/max-turns feedback says to CONTINUE from the partial work), in worktree mode into the salvage stash
+(§3.2, #306) the next attempt is pointed at. A dogfood implement task rewrote its upstream task's tests across
+attempts that each ended in a timeout or a turn cap, and ended up grading itself against them. Now:
+- **End-of-attempt check.** Any attempt that does not reach phase 1 runs the SAME `WriteScopeCheck.Check`, #705
+  patch capture (`out-of-scope.patch`) and `ScopedRevert` at its end — before the salvage stash, before a
+  transient pause re-runs it, and (serial mode only) before a cancelled attempt is journaled back to pending, since
+  a resume continues from the serial workspace as it stands. It never fails an attempt by itself (the attempt has
+  already failed for its own reason); the attempt keeps its outcome (`max-turns`, `timeout`, …), its summary gains
+  `; out-of-scope write(s) reverted: <paths>`, and its `feedback.md` gains a SEPARATE
+  `## Out-of-scope writes were reverted` section (`RetryPolicy.ForOutOfScopeWritesReverted`) naming each reverted
+  path, the enforced scope, the kept copy (for a human, not the agent) and, for a prompt action, the `needsHuman`
+  route — appended after the failure-specific text, which is left as it was. A git error there is best-effort (no
+  offense can be named from an undiffable tree), and a failed revert is reported rather than thrown. The paths are
+  recorded for #707's repeat rule, so the same out-of-scope path on a second attempt halts `needs-human`
+  (`write-scope-violation`) even when every attempt ended in a timeout or a turn cap — rule 1 only; rule 2 judges an
+  attempt's COMPLETE work, which an attempt stopped mid-way does not have. A needs-human escalation, a permission
+  wall halt and the #764 tamper halt are terminal and reach a human; they are not given the end-of-attempt revert
+  (a worktree escalation's salvage is already scope-filtered, #554).
+- **Serial mode is checked.** A serial run used to run NO write-scope check at all (`enforcedWriteScope` was
+  non-null only for a real segment). Serial mode has no segment and no `taskBase`, so the base is a SNAPSHOT
+  (`ScopeDiffBase`): immediately before each attempt the harness stages the workspace into a PRIVATE index
+  (`GIT_INDEX_FILE`, seeded from the real index for its stat cache, under the system temp dir) and writes it as a
+  tree; phase 1, phase-1 revert and the end-of-attempt check then re-stage that private index and diff it against
+  that tree. The verdict therefore names exactly what changed DURING the attempt — never an earlier serial task's
+  uncommitted work or the operator's own pending changes — and the operator's real index is never read for the
+  verdict or written. The plan's own `logs/` and `state/` (when the plan folder is inside the workspace) are
+  dropped from that diff by prefix (git refuses an exclude pathspec naming a `.gitignore`d directory). Phase 2
+  (the post-guardrail strip) and #707 rule 2 (commit trailers) stay worktree-only: serial mode commits nothing per
+  task. **Line endings (second review):** the snapshot and every diff run in NORMAL mode, exactly like worktree
+  mode — the repo's own `core.autocrlf`/`.gitattributes` apply — so a stat-clean tracked file (whose seeded blob is
+  the normalised one) and a re-hashed one agree, and an identical-bytes re-save is never an offense. A TRACKED file
+  is reverted through git's normal checkout (the repo's own smudge); a REGULAR file (mode 100644/100755, read from
+  `ls-files -s -z`) the real index did NOT track at snapshot time has its RAW bytes captured then (`git hash-object
+  -w --no-filters`, path → blob id + executable bit held with the snapshot) and a revert writes those bytes back
+  verbatim (`git cat-file blob`), restoring the exec bit on Unix. Symlinks (120000) and gitlinks (160000 — an
+  untracked nested repository such as a Claude Code worktree) are never captured and revert through the normal
+  path; a revert never writes THROUGH a link (a link now standing at the path is removed first). The capture is
+  fault-tolerant per path (a failed batch is bisected): one unhashable or vanished file loses only its own
+  byte-exact restore (listed in `write-scope-check.log`), never the snapshot. **Linked ancestors (fourth review):**
+  in BOTH modes, every revert — raw restore, `git checkout`, `git rm` — first walks the path's ancestor directories
+  from the workspace root, and a directory on the way that is now a symlink or a Windows junction (git follows a
+  junction as a directory, so even its own checkout of a tracked file writes through — measured) is handled by
+  MODE. **Worktree mode** removes THE LINK ENTRY itself (never its target; at most 16 removals per path) and restores
+  the path inside the segment, NAMING every removed link in the attempt summary (`removed link(s) out of the
+  worktree before reverting under them: …`) and `write-scope-check.log` — the segment is the task's own tree, and
+  leaving the link was measured to be worse: every later git operation on it (the segment commit, a retry's reset,
+  `git worktree remove --force`) deletes or rewrites the outside files through it. **Serial mode never removes a
+  link**: the workspace is the operator's own checkout, where the link may be theirs (a pre-existing junction to a
+  shared folder), so the path is REFUSED — left on disk, the link left in place, reported like any failed revert
+  and naming both the path and the link. A link that cannot be removed in worktree mode is refused the same way. Removals run FIRST, so a symlink that replaced a directory (which git
+  sees as a new path) is removed before its former children are recreated. A phase-2 (post-guardrail) strip that
+  cannot finish is reported loudly on the attempt (`write scope NOT checked this attempt: …`) and never aborts the
+  run as a fault. Detection reads `LinkTarget` only — not the ReparsePoint attribute, which non-link reparse points
+  (OneDrive Files-On-Demand folders) also carry. (A raw-bytes snapshot mode was tried and
+  removed: seeding the private index from the real one mixed normalised and raw blobs, so a revert de-CRLF'd
+  tracked files and an identical re-save read as a change.) Every scope git
+  call (both modes) goes through one runner (`ScopeGit`) that drains stdout and stderr CONCURRENTLY (reading one to
+  its end first deadlocked once `core.autocrlf=true` line-ending warnings filled the stderr pipe, ~35 files), adds
+  `core.safecrlf=false` and `core.quotePath=false`, lists changes with `-z`, hands git at most 100 paths per
+  child, and is bounded by a timeout plus the attempt's cancellation. **Shared checkout (review Q1):** editing the
+  checkout during a serial run is NOT supported but is LOUD — `guardrails run` prints a run-start `Note:` that
+  anything changing during an attempt outside the running task's writeScope is reverted whoever changed it (bytes
+  kept in `out-of-scope.patch`), and the serial revert text, summary clause (`changed during the attempt outside
+  writeScope, reverted: <paths>`) and the #707 halt say the list may include edits made outside the agent.
+  **Serial halts revert too (review Q2a):** in serial mode the needs-human escalation, the #764 tamper halt, the
+  permission-wall halts and the pre-guardrail wall halts also run the end-of-attempt revert — BEFORE the halt is
+  journaled — and append the `## Out-of-scope writes were reverted` section to their `feedback.md` and the paths to
+  their summary. **The halts that settle an UNFINISHED action do it in BOTH modes (#817):** the #767/#773
+  runner-configuration halt, the #800/#817 repeated-context-pressure halts and the #815 repeated-silent-stall halt run
+  the end-of-attempt check in worktree mode as well as serial (an unfinished attempt never reaches the phase-1 check,
+  so nothing else would), BEFORE any escalation stash so the stash never carries an out-of-scope write; the offending
+  bytes go to `out-of-scope.patch`, the record carries `scopeRevertedPaths`, `feedback.md` gets the section exactly
+  once, and the summary names the paths. Every attempt record built after an end-of-attempt revert carries it as
+  `attempts[].scopeRevertedPaths`, and one whose check could not run carries `attempts[].writeScopeNotChecked` (§7),
+  so run.json and the live `AttemptFinished` row see them, not only text written afterwards.
+  **Interrupted attempts (second review):** the snapshot tree is journaled as `tasks.<id>.scopeSnapshotTree` (§7)
+  when a serial attempt starts and cleared when it ends (and by every settle). At RUN START, before any dispatch,
+  every task still carrying one — an attempt that never ended (kill, crash, host sleep) — is handled once: in
+  serial mode the workspace is diffed against that tree and the out-of-scope differences are REPORTED, NOT
+  reverted (the harness cannot tell that attempt's writes from a human's post-crash fix or a `git pull`): kept as
+  `out-of-scope.patch` in the task's log dir, announced loudly (`IRunObserver.InterruptedAttemptChangesFound`, on
+  both consoles) and handed to that task's first attempt as `interrupted-attempt-scope.md` ("do not build on them;
+  if they block you, write needsHuman"), COMBINED with that task's latest recorded feedback, never replacing it.
+  The field is cleared in every mode; `guardrails reset` drops it too. **Plainly: report-only resume leaves a
+  crashed attempt's out-of-scope edits IN PLACE as the next attempt's baseline** — announced and handed to the
+  agent, but not enforced (the next attempt's snapshot starts from them, so they are not offenses of that
+  attempt), and not fed to #707's repeat rule. There is no interactive prompt; reverting them is the human's call
+  (the kept patch names them).
+  **Loud when not checked (review WEAK 6):** a
+  snapshot that fails, an end-of-attempt git error or a failed revert is reported on the console
+  (`IRunObserver.WriteScopeNotChecked`, plain and live), in `write-scope-check.log` and in the attempt summary
+  (`write scope NOT checked this attempt: <reason>`). **The limit:** the snapshot needs the workspace to be the top level of a git work tree. Where it is not,
+  no retrospective check runs, and that is LOUD: `guardrails run` prints a run-start `Note:` line, and each
+  attempt's log dir carries `write-scope-check.log` saying the scope was NOT checked and why. The write-time hook
+  below still applies there.
+- **Write-time denial.** For a prompt action on a runner that loads hooks (`NeedsContainmentHook(kind)` — Claude,
+  including a §9.10 gateway block, whose composed settings merge it), the harness installs a second `PreToolUse`
+  hook (`WriteScopeHook`, §9.4) in BOTH modes that refuses `Write`/`Edit`/`MultiEdit`/`NotebookEdit` on a path
+  INSIDE the effective workspace but outside the enforced scope, with a message naming the scope and the
+  `needsHuman` route. It always allows `.guardrails-agent-io/` (the staged `GUARDRAILS_STATE_OUT`, §9.5),
+  `.guardrails-staging/` (§3.5) and anything outside the workspace. Bash is not policed by it (builds and test runs
+  write outside the scope legitimately); the retrospective check stays the backstop for every route it cannot see.
+
 When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
 authorize), not the pre-move staging writes — the surface the check protects (what reaches the
@@ -1222,7 +1395,9 @@ without. Both surfaces come from the enforced array, never from author prose, so
 verdict — before this the only statement of scope an agent saw was a hand-copied paragraph, and plans 39 and
 40 shipped 48 prompts whose paragraph read "Write only to the path(s) listed above" and listed nothing. An
 EMPTY scope is stated in words (`writeScope` is EMPTY) on both surfaces, never rendered as a heading or lead-in
-over no entries. Serial mode renders no section: no check runs there, so "harness-enforced" would be false.
+over no entries. The section is rendered whenever the retrospective check can run — worktree mode, and since #816
+serial mode in a git top level; a serial workspace that is not a git top level renders none, because no check
+runs there and "harness-enforced" would be false.
 
 **A write-scope gap the PLAN caused halts `needs-human` instead of retrying (issue #707).** Every retry is
 handed the same scope, so no retry can clear a gap in it; plan 40's task 20 spent four attempts, two overwatch
@@ -2110,6 +2285,22 @@ round-trip non-ASCII faithfully and match the harness's own UTF-8-no-BOM writes
 (`AtomicFile`). For prompt processes, the same information is *embedded in the
 composed prompt* (agents read instructions, not env vars).
 
+**Exit, timeout and output drain (#723).** The harness waits on the child PROCESS, not on its pipes.
+A child that exits on its own is reported with its **real exit code** and is never a timeout, even
+when a background process it started still holds the inherited `stdout`/`stderr`. A child still
+running at `timeoutSeconds` has its process tree killed and is reported as timed out (exit `-1`); a
+child still running when the caller cancels (Ctrl-C, an abort) is killed the same way. Either way the
+remaining output is then drained until both pipes close, **bounded by idleness, not by a fixed
+grace**: the drain gives up after **30 s with no new line**, never later than **120 s** in total, and
+within **2 s** once the caller has cancelled. Output still arriving keeps it waiting, because a loaded
+machine can take seconds to deliver a fast child's output; a grandchild that escaped the tree kill, or
+outlived a child that exited, cannot hold the harness past those bounds. When the drain gives up, the
+capture is truncated, the result says so (`ProcessResult.OutputDrainIncomplete`), and the captured
+`stderr` ends with a line that states the fact and claims no cause: `[guardrails] output truncated:
+the process <exited | timed out | was killed on cancellation>, and its output pipes were not closed
+within Ns. A process it started may still hold them. An unterminated last line and any later output
+were not captured.
+
 **On Windows, a script launched THROUGH BASH sees `GUARDRAILS_*` path values in forward-slash form**
 (issue #263) — `C:/Users/...`, a straight backslash→forward-slash swap of the same absolute path, not
 the MSYS `/c/Users/...` mount form. .NET absolute paths on Windows are backslash-separated; bash's own
@@ -2870,6 +3061,12 @@ fails the write, loudly, with a message naming the likely cause.
                                      //   the preflight's resolved identity "<backend base> <loaded model>"
                                      //   (§9.10.3), or "unverified" — the ONLY field that claims what served it.
                                      //   The same two fields ride `judge` below for a judge on a gateway block
+            // OPTIONAL context-compaction counts (#817, §9 "Context thrash"). Both ABSENT when the session
+            // compacted nothing, when its runner reports no compactions, and in every pre-#817 journal.
+            "compactions": 9,       // compaction EPISODES from the runner's stream — Claude Code repeats its
+                                     //   `compacting` status line while one compaction runs, so this is not a
+                                     //   line count
+            "compactionFailures": 1, // how many of them reported `compact_result: failed`; ABSENT when none did
             // OPTIONAL verifier route that graded this attempt (#201/#229, DoR §12.4 + §6.5) — the
             // `AttemptJudge` record. It hangs HERE, on `provenance`, and never on the attempt record —
             // see "The verifier route" below (D32). ABSENT ENTIRELY when no judge resolved through routing
@@ -2933,6 +3130,15 @@ fails the write, loudly, with a message naming the likely cause.
       // reset, block, or resume load — a marker from a previous process describes an attempt nobody runs).
       // ABSENT (never null noise) whenever nothing is in flight — which is the shape of this example task,
       // shown populated here only to document it — and in every journal written before the field existed.
+      // #816: "scopeSnapshotTree": "<tree sha>" — OPTIONAL, serial mode only: the write-scope snapshot of the
+      //   task's current attempt (§3.4), set when it starts and removed when it ends or any settle is recorded.
+      //   Kept by the resume load (unlike inFlightAttempt), because a value surviving into a later process marks
+      //   an attempt that never ended; the next run REPORTS (never reverts) its out-of-scope differences at run
+      //   start and clears it, in every mode. Dropped by `guardrails reset`. ABSENT otherwise and in older journals.
+      // #816: attempts[] also gain two OPTIONAL write-scope fields — "scopeRevertedPaths": ["path", …] (paths the
+      //   END-OF-ATTEMPT check reverted on an attempt that never reached the ordinary check) and
+      //   "writeScopeNotChecked": "<reason>" (the snapshot failed, the check hit a git error, or a revert failed).
+      //   Both ABSENT in the ordinary case and in older journals.
       "inFlightAttempt": {
         "attempt": 4,               // the JOURNAL number: one past the highest recorded attempt, so it continues
                                     //   across resumes and `guardrails reset`. The same N as this attempt's
@@ -5076,7 +5282,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `attempt-started` | `AttemptStarting` | `attempt` (the JOURNAL number — the same value as this attempt's `attempt-finished` row and its `attempt-N` log dir; before #798 it was the per-run index, so the two rows of one resumed attempt disagreed), `runAttempt` (#798: this attempt's 1-based position within this run's budget, which restarts at 1 on a resume), `budget`. **A row WITHOUT `runAttempt` predates #798, and its `attempt` is the per-run index, not the journal number** — and because a resume appends a new bracket to the same file, one `runId` can hold both shapes after a cross-version resume, so a consumer keys the meaning of `attempt` on the presence of `runAttempt`, per row |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-stalled` | `AttemptStalled` | `attempt`, `boundSeconds`, `silentSeconds`, `suspends` (host suspends the watchdog discounted, #517), and when the session's context management failed `contextManagement` (`compaction-failed`) with the runner's error text in `detail` (#811, §9). Written before the same attempt's `attempt-finished` row |
-| `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
+| `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `compactions` and `compactionFailures` (#817: copied from the attempt's provenance, absent when the session compacted nothing, §9), `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `host-slept` | `IRunObserver.HostSlept` | `from`, `to` (the checks either side of the sleep), `sleptForSeconds`, and `inFlight` (`<task>/attempt-<N>` for each attempt that was running; omitted when none was). No `taskId`: the host sleeps for the whole run (#810, §7) |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
@@ -6102,8 +6308,69 @@ success.
   than an error, and filter build and test output. It is rollback-aware, carries the salvage section like a timeout,
   and names any tool call still running (#778).
 - **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174 short-circuit
-  shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
+  shape; since #817 a CONTEXT THRASH attempt counts too, below); any other attempt outcome resets the count, which lives in memory for one run invocation. A breakdown
   session reports it as `context-exhausted`.
+
+**Compactions are counted, and heavy compaction is diagnosed as CONTEXT THRASH (issue #817).** Claude Code can keep
+going long after its context is too small for the task: it compacts, drops the files the agent read, the agent
+re-reads them ("Wasted call — file unchanged" replies), and the context fills again. Nothing fails until the turn cap
+or the clock does, and before #817 the harness then blamed the budget and raised it.
+
+- **Counted in episodes.** The Claude stream parser counts compaction EPISODES (`CompactionCounts`): one opens on the
+  first `{"type":"system","subtype":"status","status":"compacting"}` line, which Claude Code repeats as a keep-alive
+  while the compaction runs, and closes on its `compact_result` status line (success or failure) or its
+  `system/compact_boundary`, whichever comes first; the other one, arriving straight after, is the same compaction. A
+  close with no open episode still counts one; an episode still open when the stream ends counts. The #817 dogfood
+  attempt with 114 `compacting` lines compacted 7 times. Failures are the `compact_result: failed` lines.
+- **Recorded on every attempt.** The counts ride `PromptResult.Compactions` → `ActionRun.Compactions` and are folded
+  onto the attempt's provenance (`provenance.compactions`, `provenance.compactionFailures`, §7) whatever the outcome,
+  on the same D32 terms as `modelDigest`; `attempt-finished` copies them (§8.1) and the bundle SUMMARY shows them
+  (§17.4). Both keys are absent when the session compacted nothing, so a non-compacting or pre-#817 attempt is
+  unchanged.
+- **The diagnosis (`ContextThrash`).** A FAILED prompt action whose kind is max-turns, timeout, stalled or a generic
+  action error is context thrash when it compacted **at least 3 times** AND **at least once per 12 turns**
+  (`compactions × 12 ≥ turns`). The turns are the runner's `num_turns`; when a stream ends without a result line (a
+  timeout or a stall) they are an ESTIMATE, the distinct top-level assistant `message.id`s in the stream (a subagent's
+  excluded). The estimate is a LOWER bound: on the #817 dogfood streams it ran 0.35–1.0× the reported count (within
+  one on 2 of 5, about half on the other 3), and undercounting pushes toward thrash. It is never journalled and is
+  always shown as one (`in about 30 turns (estimated)`), and **a verdict on estimated turns is ADVISORY**: it changes
+  the feedback and summary text, but it does not stop the turn-budget raise or the clock extension, and it does not
+  count toward the two-in-a-row halt below. Only when neither count exists does the floor of 3 decide alone (also
+  advisory, for the same reason). An
+  output cap, a context overflow, #800's context exhaustion, a transient pause and a runner-configuration fault each keep
+  their own, more specific diagnosis.
+  **The calibration rests on few samples from ONE plan on a 64K window** (the #817 dogfood, counted in episodes): the
+  attempt that ran out of turns after 9 compactions in 76 turns must be diagnosed, and one that compacted twice in 36
+  turns and succeeded must not. The other nearby points do not calibrate it: 8 in 81 was a #800 give-up (context
+  exhaustion, excluded above), and 3 in 51 ended at the turn cap, so it is not an example of normal work either. Revisit
+  both constants when more runs have been measured.
+- **What changes when it fires.** For a max-turns, timeout or stall stop, `feedback.md` gets `## CONTEXT THRASH: the
+  attempt spent its budget re-reading what compaction dropped` IN PLACE of the text that kind would otherwise get (which
+  blames the budget): the counts, why more budget would not help, #800's bounded-read advice, an instruction to write
+  `needsHuman` if the working set cannot fit, and the operator's levers; it is rollback-aware and carries the salvage
+  section. For a generic action ERROR the runner's own feedback (its result text, refused tool calls) is KEPT and the
+  thrash section is APPENDED to it, because the error may have a cause of its own. The `## Context management failed`
+  section is not appended either way (the thrash text names the failures). The attempt summary, which is the needs-human
+  / final reason, reads `… — CONTEXT THRASH (9 compactions in 76 turns, 1 failed): the context window is too small for
+  this task's working set; raising maxTurns will not help, so it was not raised further.` followed by the #800 levers
+  (the block's `contextTokens` with its value on a local block, splitting the task, narrowing the Bash grant). It names
+  only the budget that kind of stop hit: the clock for a timeout (`extending the timeout will not help, so it was not
+  extended further`), neither for a stall or an error. "Further", because an earlier non-thrash attempt may already
+  have raised it. The failed-compaction count appears once, in the thrash clause, not again as `— context compaction
+  failed (…)`. The journal outcome is unchanged (`max-turns`, `timeout`, `action-failed`): it records how the attempt
+  ended; the diagnosis records why.
+- **No budget raise.** A thrash verdict on a RUNNER-REPORTED turn count does not count toward the #129 turn-budget
+  raise or the #119 timeout extension (an advisory, estimated verdict does, and its text says the budget was still
+  raised), so the retry runs on the same `maxTurns` and clock. Raising either lets the same working set
+  compact more times (each compaction on a local backend re-reads the whole window, minutes at a time), which is the
+  #817 evidence: the retry "thrashed the same way with more turns". #800 made the same call for context exhaustion.
+- **Two consecutive context-pressure attempts settle `needs-human`.** #800's give-up and #817's thrash share ONE count
+  of consecutive attempts that ran out of context (a thrash verdict counts only on a runner-reported turn count), so
+  any two in a row (thrash then thrash, thrash then #800, #800 then thrash) settle the task `needs-human` with the
+  levers, and neither kind resets the other's count; any other outcome
+  does. The second attempt keeps its own journal outcome, and a thrash halt names the counts (an error-kind thrash
+  halt also keeps the runner's own feedback). Without it a frozen budget
+  would repeat the same thrash until the retries ran out.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
 returns, before its attempt settles, which writes the §8.1 `attempt-stalled` row (and an `AttemptStalled` line in
@@ -6630,7 +6897,8 @@ result by another route and the deliverable landed. **It is also SCOPE-AWARE (#7
 INSIDE the scope the attempt is enforced against — the declared `writeScope` plus the implicit `stagingOutputs`
 destinations (§3.4/§3.5) — can be this task's deliverable, because the write-scope check would reject any other
 one anyway; so only such a path is a write wall, and a refused path outside that scope is auxiliary exactly like
-a refused command. With NO enforced scope (serial mode, where no write-scope check runs) every path INSIDE the
+a refused command. With NO enforced scope (a serial workspace that is not a git top level, where no write-scope check runs — since
+#816 a serial run in a git top level HAS an enforced scope) every path INSIDE the
 workspace stays a wall; one outside it never is, scope or no scope. The comparison resolves SPELLINGS, not just
 separators: the refusal is reported however the refused tool call named it, while the workspace may be the #383
 short junction (`C:\.a\…`) or a macOS `/var` alias (#452), so a lexical miss is retried over both sides'
@@ -6844,8 +7112,24 @@ runtime boundary: for every worktree-mode prompt invocation (action OR guardrail
 is still an agent that can call `Write`/`Edit`/`Bash`), the harness generates a Claude Code
 **PreToolUse hook** and injects it via `claude -p --settings <path>` (session-scoped — never touches
 the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`). `--settings` is
-**absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to.
+**absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to —
+except that since #816 a serial prompt ACTION gets the write-scope hook below, alone, under its own settings file.
 
+- **The write-scope hook (issue #816).** A sibling `PreToolUse` hook, `Guardrails.Core.Prompts.WriteScopeHook`,
+  enforces the task's **enforced `writeScope`** (§3.4: declared scope + implicit staging destinations) at write
+  time for prompt ACTIONS (not guardrails), in BOTH modes, gated on the same `NeedsContainmentHook(kind)`. Matcher
+  `Write|Edit|MultiEdit|NotebookEdit` — NOT `Bash` (builds and test runs write outside the scope legitimately; the
+  retrospective check covers Bash). A target resolved (same `.`/`..` collapse and accepted-root list as below, no
+  symlink resolution) INSIDE the effective workspace (the segment, or the serial plan workspace) and not matched by
+  the scope is refused (exit 2) with `BLOCKED by Guardrails write-scope hook: '<rel>' is outside this task's
+  writeScope: <entries>. …` naming the `needsHuman` route. Always allowed: a target outside the workspace
+  (containment's question, not this hook's), `.guardrails-agent-io/` (§9.5) and `.guardrails-staging/` (§3.5). The
+  scope test is `WriteScope.IsInScope`'s rule compiled ONCE in C# to anchored, case-insensitive patterns
+  (`WriteScope.ToAnchoredPatterns`, the common subset of POSIX ERE and .NET regex) baked into the OS-picked script
+  (`write-scope-hook.ps1`/`.sh`) as data — the scripts never interpret a glob, and `WriteScopePatternTests` proves
+  the patterns agree with `IsInScope`. In worktree mode it is composed into `containment-settings.json` as a SECOND
+  matcher group (a runner receives exactly one `--settings`); in serial mode it is written alone as
+  `write-scope-settings.json`. The retrospective check (§3.4) stays the backstop.
 - **The splice is conditioned on `PromptRunnerKinds.NeedsContainmentHook(kind)` (plan 28 §3.5/§3.6,
   issue #223).** `ActionRunner` and `GuardrailRunner` both gate the injection on
   `isWorktreeMode && NeedsContainmentHook(kind)` — for a kind whose runner offers none of
@@ -7315,6 +7599,7 @@ rather than by rule.)*
 | `GR2085` | warning | `ClaudeModelNameToGateway` (§9.10, issue #782, #570 trap 1) — a Claude model name would reach a gateway block: a string containing `claude` anywhere (so `anthropic.claude-…` and `us.anthropic.claude-…` count) or an alias (`sonnet`, `opus`, `haiku`, `fable`, `opusplan`, `default`), compared case-insensitively after removing any trailing `[…]` suffix such as `[1m]`. Sources scanned — THE reach set (`ClaudeGatewayReach`), the same pairs the preflight probes: the gateway block's `model` and `guardrailOverrides.model`, and a task's `action.model` pin when that task's action dispatches to the block (`action.runner`, else the effective default). A `routing` tier or a judge's `runner:` pin resolves to the block's OWN `model`, which the first source already covers. A model flag in a gateway block's `extraArgs` is `GR2084`, not this. A WARNING, because a LiteLLM `model_list` may map that name on purpose |
 | `GR2087` | warning | `GuardrailOverridesKeyIgnored` (§9.10, issue #782 review) — a `guardrailOverrides` sub-block on a NON-`claude` prompt runner carries a key that is not a per-prompt setting and so does nothing there: today the gateway keys `baseUrl`, `authTokenEnv`, `backendModel` and `contextTokens`. On a `claude` block the same keys are `GR2084` (an error, since they would silently fail to redirect a gateway); on any other kind the block can never be a gateway, so the finding adds no error to a path unrelated to gateways |
 | `GR2088` | error | `StallTimeoutNegative` (§9, issue #811) — a prompt runner block's `stallTimeoutSeconds` is negative. `0` disables the task-action stall bound and an absent key derives it from the action timeout; a negative bound has no meaning |
+| `GR2090` | warning | `WriteScopeExtensionlessFile` (§3.4, issue #838) — a `writeScope` entry is a well-known extensionless FILE name (`Dockerfile`, `Containerfile`, `Makefile`, `GNUmakefile`, `LICENSE`, `LICENCE`, `COPYING`, `Jenkinsfile`, `Procfile`, `Vagrantfile`, `Gemfile`, `Rakefile`, `Brewfile`, `Justfile`, `Pipfile`, `Tiltfile`, `Caddyfile`, `Podfile`, `CODEOWNERS`; case-insensitive) with no `*` and no trailing `/`. The matcher reads a bare entry with no extension as a DIRECTORY prefix (`Dockerfile` → `Dockerfile/**`), so the file itself is out of scope. Fix: `Dockerfile*` (or `Dockerfile/` if it really is a directory). Closed list by design: `src` is a legitimate directory entry and an unknown extensionless name cannot be told from one, so it is NOT flagged (a limit, not a guarantee) |
 | `GR2089` | warning | `StallTimeoutInGuardrailOverrides` (§9, issue #811 review) — `stallTimeoutSeconds` appears under a block's `guardrailOverrides`. The bound is block-level and applies to task actions only; judges never read it, so the key does nothing there |
 | `GR2086` | warning | `ClaudeGatewayModelsShareEndpoint` (§9.10, issue #782, #570 trap 3) — `maxParallelism > 1`, and two or more distinct model strings (from the same sources as `GR2085`) reach one gateway. Gateways are compared by an endpoint key: scheme, host and port lower-cased, `localhost` / `127.0.0.1` / `::1` folded to one loopback host, the path kept, a trailing `/` dropped. A single `llama-server` holds one model, so parallel dispatches can race it. This is the static half; the preflight's backend-identity check (§9.10) is the halting half |
 | `GR2068` | warning | `HandoffPathUnreachable` — a handoff row names a resolvable path that **no task's** `writeScope` covers, so the row cannot be delivered under any implementation. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **warning** in v1 only because `RunCommand.RunAsync` refuses to run a plan whose validation emits any error, and a correct shipped plan can carry a stale cell (plan 28 row 3) — an ERROR would be a retroactive run-blocking gate. **Promotion to ERROR** when a hand-run of this code alone across every plan carrying the convention produces only genuine defects |
@@ -8044,8 +8329,8 @@ never as a retryable blip.
   subprocesses get the child's environment. For a local gateway without authentication the token is the harmless
   placeholder. For a remote gateway with a real token, any command the model runs can read it under either name.
 - **Session transcripts can hold the token.** `guardrails bundle` scrubs the gateway token from session
-  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text`,
-  §17.6.5); the loopback log viewer (§12) does neither.
+  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text` or
+  `--no-redact`, §17.6.5); the loopback log viewer (§12) does neither.
 
 #### 9.10.2 The preflight
 
@@ -9727,7 +10012,7 @@ unsatisfiable-guardrail family and #459
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
 the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
-`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), **`GR2080`** by #764's `CursorRunnerUngoverned` (a `kind: "cursor"` block runs with no tool allowlist or containment hook, §9.9), **`GR2081`** by #767's `CursorApprovalModeInvalid` and **`GR2082`** by its `CursorApprovalFlagInExtraArgs` (a cursor `approvalMode` that cannot be honoured, and an approval flag in a cursor block's `extraArgs`, §9.9), **`GR2084`** by #782's `ClaudeGatewayBlockInvalid`, **`GR2085`** by its `ClaudeModelNameToGateway` and **`GR2086`** by its `ClaudeGatewayModelsShareEndpoint` (a malformed claude gateway block, a Claude model name reaching a gateway, and two models sharing one gateway under parallelism, §9.10), **`GR2087`** by the #782 review's `GuardrailOverridesKeyIgnored` (a non-claude block's `guardrailOverrides` carrying a key that does nothing there, §9.10), **`GR2088`** by #811's `StallTimeoutNegative` (a negative `stallTimeoutSeconds`, §9), **`GR2089`** by its `StallTimeoutInGuardrailOverrides` (the key under `guardrailOverrides`, §9), so an unrelated new code should take **`GR2090`** — `GR2083` is RESERVED BY NAME for #544 (native local-inference actions) and `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), **`GR2080`** by #764's `CursorRunnerUngoverned` (a `kind: "cursor"` block runs with no tool allowlist or containment hook, §9.9), **`GR2081`** by #767's `CursorApprovalModeInvalid` and **`GR2082`** by its `CursorApprovalFlagInExtraArgs` (a cursor `approvalMode` that cannot be honoured, and an approval flag in a cursor block's `extraArgs`, §9.9), **`GR2084`** by #782's `ClaudeGatewayBlockInvalid`, **`GR2085`** by its `ClaudeModelNameToGateway` and **`GR2086`** by its `ClaudeGatewayModelsShareEndpoint` (a malformed claude gateway block, a Claude model name reaching a gateway, and two models sharing one gateway under parallelism, §9.10), **`GR2087`** by the #782 review's `GuardrailOverridesKeyIgnored` (a non-claude block's `guardrailOverrides` carrying a key that does nothing there, §9.10), **`GR2088`** by #811's `StallTimeoutNegative` (a negative `stallTimeoutSeconds`, §9), **`GR2089`** by its `StallTimeoutInGuardrailOverrides` (the key under `guardrailOverrides`, §9), and **`GR2090`** by #838's `WriteScopeExtensionlessFile` (§3.4), so an unrelated new code should take **`GR2091`** — `GR2083` is RESERVED BY NAME for #544 (native local-inference actions) and `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
@@ -10454,13 +10739,17 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--max-size <MB>` | `20` | Cap on the **finished zip**, in MiB (§17.7). GitHub accepts attachments up to 25 MB. |
 | `--lean` | off | Withholds every **full**-class entry (§17.3), leaving only the harness-written evidence set. For a public issue when the code is private. |
 | `--include-worktree-diff` | off | Adds the full `git diff` of the integration worktree and of each selected segment. It is source code, so it is **refused with `--lean`**. |
-| `--without-agent-text` | off | The only way past the D1 refusal (§17.6.5). Ships the bundle with **all agent-derived free text removed, run-wide**. |
+| `--without-agent-text` | off | Clears the D1 refusal (§17.6.5) without the token value. Ships the bundle with **all agent-derived free text removed, run-wide**. |
 | `--keep-paths` | off | Disables path anonymization (§17.6.3). Anonymization is the default. |
-| `--no-redact` | off | Skips the credential passes (§17.6.8). Never for a public issue. |
+| `--no-redact` | off | Skips ALL credential scrubbing (§17.6.8), so it also clears the D1 refusal. The output's name **always** gets `-UNREDACTED`, an explicit `--out`/`--dir` included. Only for a bundle that stays private; never for a public issue. |
 
 **The file name.** `<plan>` is the plan folder's name. `[-<task>]` is appended only when **exactly one**
 `--task` is given; with two or more, the suffix is `-tasks-<N>` (N = the number of distinct ids given).
-`--no-redact` appends `-UNREDACTED` before `.zip`. The default directory `~/guardrails-bundles/` is created
+`--no-redact` appends `-UNREDACTED` before `.zip`, and it **always** marks the output (#814): an explicit
+`--out` gets `-UNREDACTED` inserted before its extension (`run.zip` → `run-UNREDACTED.zip`; no extension: appended),
+and a `--dir` folder gets it appended to its last segment, unless that file or folder name already contains
+`-UNREDACTED`. Every destination check (the non-empty `--dir` refusal, §17.8) sees the marked path, and the
+printed path is the marked one. The default directory `~/guardrails-bundles/` is created
 when absent. An existing zip at the destination is **replaced** (the bundle is regenerable; the write is a
 temp file then a move, like every harness write). An existing `--dir` destination must be **absent or
 empty**, otherwise the verb refuses (exit `1`): it never merges into, or deletes from, a directory it did not
@@ -10469,7 +10758,9 @@ create.
 **Argument refusals** (all exit `1`, all **before anything is read**): `--out` together with `--dir`;
 `--lean` together with `--include-worktree-diff`; a `--task` id the plan does not declare (named); a
 `--run` value that is not a single path segment (a separator, `.`/`..`, a rooted value, an invalid file-name
-character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty
+character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; an `--out` or
+`--dir` whose last segment is a root (`C:\`, `C:`, `\\srv\share\`, `/`, or a path resolving to one) or `.`/`..`,
+redacted or not, since it has no name to write or to mark `-UNREDACTED` (#814); a non-empty
 existing `--dir`; a destination under the plan directory or the worktree root (§17.8, refused **even with
 `--force-path`**); and the path refusal of §17.8.
 
@@ -10672,9 +10963,10 @@ Then six numbered blocks, always in this order:
 3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6; the loaded task's
    definition hash against the journal's `definitionHash`); then one row per
    **journaled** attempt: number, outcome, duration, exit code, provenance `summary`, and model requested vs
-   served. Each attempt the host slept through adds `Host slept <d> during attempt <N>`, and an in-flight one
-   `Host slept <d> during in-flight attempt <N>` (#810, from `sleptSeconds`). Then the **in-flight attempt**: taken
-   from #798's per-task in-flight marker in `run.json`
+   served. When the attempt's provenance records compactions (§9, #817) the outcome cell carries them:
+   `max-turns (9 compactions in 76 turns, 1 failed)` (the turns part only when the journal has a turn count, the
+   failed part only when one failed). They come from the journal, so the determinism check does not mask them. Each attempt the host slept through adds `Host slept <d> during attempt <N>`, and an in-flight one
+   `Host slept <d> during in-flight attempt <N>` (#810, from `sleptSeconds`). Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
    (attempt number, `startedAt`, phase) when present; otherwise **inferred** from disk vs journal:
    *"attempt-4/ exists on disk and is not in the journal: in flight, or the run died during it (liveness:
    …)"*. Both paths are contract: the bundle must not require #798.
@@ -10962,12 +11254,21 @@ events, which can split a value across lines. Two rules cover that:
 #### 17.6.5 Pass 5 — D1: refuse when this shell cannot see a run token (run-scoped)
 
 If **any** runner block the plan declares names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in
-the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable and gives
-the remedy, e.g.:
+the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable, telling
+**unset** (the name is absent from the environment) from **set but empty** (in zsh a bare `export NAME` with
+no `=value` exports it empty, which D1 still refuses; in bash it stays unset), then offers three remedies
+(#814), e.g.:
 
 ```text
-export LITELLM_MASTER_KEY in this shell and re-run `guardrails bundle`
+  LITELLM_MASTER_KEY is not set: export LITELLM_MASTER_KEY=<value> in this shell and re-run `guardrails bundle`
+  JUDGE_API_KEY is set but EMPTY (did you run `export JUDGE_API_KEY` without `=value`?): export JUDGE_API_KEY=<value> in this shell and re-run `guardrails bundle`
+  Or pass --without-agent-text to ship the bundle with all agent-derived free text removed, run-wide.
+  Or pass --no-redact to skip ALL credential scrubbing, only if this bundle stays private (its name gets -UNREDACTED; never attach it to a public issue).
 ```
+
+`--no-redact` clears D1 because it skips pass 5 altogether (§17.6.8); it is the remedy for a bundle that stays
+with its author (moving a run between two machines to debug it), where `--without-agent-text` would strip the
+very evidence being debugged.
 
 The check is **run-scoped**, not per file, because attributing a token to individual files is unsound: a
 prompt judge picks its own block (`TierResolver.ResolveJudge` with the judge's frontmatter `runner`);
@@ -11045,8 +11346,8 @@ failure that matters; over-redaction is the accepted, counted cost.
 
 Skips passes **1, 2, 4 and 5**, so there is **no D1 refusal**: nothing is claimed scrubbed. Path
 anonymization (pass 3) still runs unless `--keep-paths` is given, and `--without-agent-text`, when given,
-still removes what it removes. The rest of `claude-config/` stays excluded regardless. The file name gets the
-`-UNREDACTED` suffix, REDACTIONS.md becomes the single line `NOT REDACTED: do not post publicly`, and that
+still removes what it removes. The rest of `claude-config/` stays excluded regardless. The output's name always
+gets the `-UNREDACTED` suffix, an explicit `--out` or `--dir` included (§17.2), REDACTIONS.md becomes the single line `NOT REDACTED: do not post publicly`, and that
 warning is printed to stderr **before and after** the write.
 
 ### 17.7 Size budget — tail caps, trim order, and the protected core

@@ -184,7 +184,7 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   reach a gateway block; WARNING) and **GR2086** (ClaudeGatewayModelsShareEndpoint — two models share one
   gateway under `maxParallelism > 1`; WARNING) are TAKEN by #782/SSOT §9.10. **GR2083 is RESERVED BY NAME
   for #544** (native local-inference actions) and is NOT free: #782 took the codes around it.
-  Next free: **GR1011 / GR2090** (GR2089 = StallTimeoutInGuardrailOverrides, GR2088 = StallTimeoutNegative, #811; GR2087 = GuardrailOverridesKeyIgnored, #782; GR2083 reserved for #544) — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  Next free: **GR1011 / GR2091** (GR2090 = WriteScopeExtensionlessFile, #838; GR2089 = StallTimeoutInGuardrailOverrides, GR2088 = StallTimeoutNegative, #811; GR2087 = GuardrailOverridesKeyIgnored, #782; GR2083 reserved for #544) — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
@@ -273,7 +273,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   in-worktree write, #464; adding a spelling is a data change, not a control-flow one) + a `containment-settings.json` into the attempt's log dir (never
   inside the segment — must not pollute `git status`); `ActionRunner`/`GuardrailRunner` append
   `--settings <path>` to `PromptRunnerSettings.ExtraArgs` ONLY when a real segment worktree is
-  present (`worktreeRoot` param non-null; null in serial mode — no `--settings` there). The hook's
+  present (`worktreeRoot` param non-null; null in serial mode — where, since #816, a prompt ACTION still gets
+  `--settings` for the write-scope hook alone). The hook's
   path-escape decision REUSES `WorkspaceContainment.Escapes`'s rule (re-expressed in shell/PowerShell
   since the hook runs as a Claude-spawned OS process, not a .NET callback) — any future change to the
   escape rule must be made in `WorkspaceContainment.Escapes` (unit-tested) AND both script templates
@@ -284,6 +285,22 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   a `## Worktree safety` advisory section with the stash-free alternative. `WorktreeContainmentHookWiringTests`
   (Integration.Tests) proves the end-to-end plumbing (settings file generated + `--settings` actually
   reaches a fake-CLI's argv) through a real worktree-mode run.
+- **Write-scope hook + end-of-attempt check (`WriteScopeHook`, `ScopeDiffBase`, issue #816, SSOT §3.4/§9.4)**:
+  the scope test in the hook scripts is NEVER a second glob implementation — `WriteScope.ToAnchoredPatterns`
+  compiles `IsInScope`'s rule to anchored ERE/.NET-common patterns and the scripts only apply them
+  (`WriteScopePatternTests` pins agreement, including a seeded generative corpus); a change to the matcher must
+  keep that test green. Worktree mode composes the hook into `containment-settings.json` (one `--settings`);
+  serial mode writes `write-scope-settings.json` alone. The retrospective check takes a `ScopeDiffBase`: the
+  segment's taskBase in worktree mode, or in serial mode a per-attempt snapshot tree staged through a PRIVATE
+  `GIT_INDEX_FILE` (never the operator's index) — the plan's `logs/`/`state/` are dropped by PREFIX in
+  `WriteScopeCheck.Check`, NOT by an exclude pathspec (git refuses an exclude naming a `.gitignore`d dir, which
+  faulted the whole run when tried). `WriteScopeHookTests` runs the real generated script like the containment tests.
+  **Every scope/staging git call goes through `ScopeGit`** (drains stdout+stderr concurrently, timeout +
+  cancellation, `core.safecrlf=false`, `core.quotePath=false`; NORMAL conversion mode always — a raw-bytes
+  snapshot mixed normalised seeded blobs with raw re-hashed ones and de-CRLF'd tracked files on revert; line-ending
+  tests must use NON-RACY fixtures, mtime set back before `git add`, or they cannot see that). Never read a
+  child's stdout to its end before draining stderr: under Git for Windows' system `core.autocrlf=true`, `git add`
+  emits a warning per LF file and ~35 of them filled the stderr pipe and deadlocked the snapshot (#816 review).
 - **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
   injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
   `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches
@@ -368,6 +385,19 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   onto. Reproduce by running the suspect test INSIDE a large parallel batch (several hundred tests in
   one testhost); and prefer a dedicated `Thread` over `Task.Run` in any test that BLOCKS its worker,
   so the outcome cannot depend on the scheduler.
+- **Three shapes for ORDERING a fake against a bound without a sleep (#828).** Each replaced a race that
+  went red only under full-suite load:
+  - *A fake that must stay stuck* parks on a test-owned `TaskCompletionSource`, released only after the
+    teardown under test returns (`WebhookEventSinkTests.ParkedTransport`), with the teardown awaited under a
+    minutes-long hung-test guard. A fixed `Task.Delay(10s)` "park" is a race: a busy runner outlasts it.
+  - *A line that must be written before a timeout starts*: print it BEFORE reading stdin and send a prompt far
+    larger than any pipe buffer. `ProcessRunner` arms the timeout only after its stdin write completes, which
+    cannot happen until the fake has printed (`AutocompactThrashSessionTests`). A competing session bound is
+    removed through a dialect seam (`StreamJsonCliDialect.ThrashGrace`), not out-waited.
+  - *A drain bound that must not beat the reader*: inject a `DrainPolicy.Clock` that holds still until the
+    `stdoutLineSink` has seen the line (`ProcessRunnerDrainBoundTests.ClockHeldUntilLine`). A 1 s idle grace
+    on a free clock lost already-written output whenever the reader went unscheduled for a second;
+    thread-pool starvation (queue `ProcessorCount * 8` blocking work items) reproduces it every time.
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.
@@ -385,6 +415,20 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     "absent from the remote" is byte-identical to "work lost". Ask `git log origin/master --oneline
     --grep '#<issue>'` or `git branch --merged master` first — the question is whether the COMMITS are on
     master, never whether the branch still exists.
+- **Never write a recursive delete, `git worktree remove`, or an unguarded `git reset --hard` / `git clean` (#826).**
+  Use `SafeDelete.DeleteDirectory` (link-safe + #109 read-only), `GitWorktreeProvider.RemoveWorktreeLinkSafe`,
+  `ResetSegment` / `ResetHardLinkSafe` (harness trees) or `ResetHardInOperatorTree` (a tree the operator may own);
+  `LinkSafeDeleteTests.Source_EveryRecursiveDeleteAndGitRewrite_GoesThroughTheLinkSafePrimitive` fails otherwise
+  (it knows positional `Delete(p, true)`, `DirectoryInfo.Delete(true)`, `ArgumentList.Add("--hard")` and one-string
+  `"git …` forms of reset --hard/--merge/--keep / clean / checkout / restore / stash / rm / switch / read-tree, and
+  requires a guard CALL earlier in the SAME method body — or a substantive `// #826 link-guard: <why>` line, >= 3 words
+  and >= 20 chars, directly above the call). It is a TRIPWIRE for literal shapes, not a proof: #826's final review
+  found a leaf-link hole (`WriteScopeCheck.Safe()` checked ancestors only) behind a justification it accepted —
+  a justification must state an invariant that is actually true.
+  Measured: git follows a Windows junction on `worktree remove`, and `Directory.EnumerateFiles(…, AllDirectories)`
+  walks into one — any tree walk that may meet a link uses `LinkSafeTree` (no-follow). Link fixtures for tests:
+  `tests/Guardrails.Core.Tests/TestSupport/TestLinks.cs` (junction on Windows, symlink on Unix; linked into the
+  integration project).
 - **A mutation proof must REBUILD — `--no-build` INVERTS its result.** `dotnet test --no-build` on
   `Guardrails.Integration.Tests` runs against the `Guardrails.Core.dll` already sitting in that
   project's output, so a mutation just made to Core is not in it: the test exercises UNMUTATED code

@@ -202,7 +202,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
     /// Claude's session dialect: the <c>claude</c> summary label. Its #86/#104 permission scanner
     /// (whose denial phrasing IS Claude's) is handed to the session per run.
     /// </summary>
-    private static readonly StreamJsonCliDialect Dialect = new()
+    internal static readonly StreamJsonCliDialect Dialect = new()
     {
         Label = "claude",
         RecognizesAutocompactThrash = true

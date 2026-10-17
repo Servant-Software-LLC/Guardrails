@@ -164,7 +164,7 @@ public sealed class InterpreterScriptSyntaxProbe : IScriptSyntaxProbe
         }
         finally
         {
-            try { Directory.Delete(dir, recursive: true); }
+            try { Io.SafeDelete.DeleteDirectory(dir); }
             catch (IOException) { /* best-effort temp cleanup */ }
             catch (UnauthorizedAccessException) { /* best-effort temp cleanup */ }
         }

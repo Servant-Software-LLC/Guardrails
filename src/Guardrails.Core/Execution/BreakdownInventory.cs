@@ -393,7 +393,7 @@ public sealed class BreakdownInventory
             TryCreateDirectory(Path.GetDirectoryName(target)!);
             if (Directory.Exists(target))
             {
-                Directory.Delete(target, recursive: true);
+                Io.SafeDelete.DeleteDirectory(target);
             }
 
             Directory.Move(source, target);

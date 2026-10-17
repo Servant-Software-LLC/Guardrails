@@ -56,6 +56,14 @@ internal sealed record StreamJsonCliDialect
     /// (<see cref="ClaudeSignalClassifier.IsAutocompactGiveUp"/>). False for Cursor, whose final text must never trip it.
     /// </summary>
     public bool RecognizesAutocompactThrash { get; init; }
+
+    /// <summary>
+    /// How long the session waits after the #800 give-up before ending it (<see cref="StreamJsonCliSession.ThrashGrace"/>,
+    /// which no production dialect overrides). A TEST seam (#828): a test that must see the give-up meet the TIMEOUT
+    /// sets it to <see cref="Timeout.InfiniteTimeSpan"/>, so which bound ended the session is fixed by construction
+    /// rather than by how fast a loaded runner started the fake CLI.
+    /// </summary>
+    internal TimeSpan ThrashGrace { get; init; } = StreamJsonCliSession.ThrashGrace;
 }
 
 /// <summary>
@@ -244,7 +252,7 @@ internal static class StreamJsonCliSession
                     {
                         try
                         {
-                            await Task.Delay(ThrashGrace, graceToken).ConfigureAwait(false);
+                            await Task.Delay(dialect.ThrashGrace, graceToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException)
                         {
@@ -393,13 +401,14 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.ContextExhausted,
                     ContextManagement = thrashing,
+                    Compactions = result.Compactions,
                     BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
                     RefusedCommands = permissionScanner?.RefusedCommands ?? [],
                     Summary =
                         "context exhausted — Claude Code reported that autocompact is thrashing: the context refilled to " +
                         "the limit right after each compaction, so no further turn could make progress" +
                         (Volatile.Read(ref thrashAbortFired)
-                            ? $"; the CLI did not exit, so the harness ended the session after a {ThrashGrace.TotalSeconds:F0} s grace period"
+                            ? $"; the CLI did not exit, so the harness ended the session after a {dialect.ThrashGrace.TotalSeconds:F0} s grace period"
                             : string.Empty)
                 };
             }
@@ -423,6 +432,7 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Stalled,
                     ContextManagement = result.CompactionFailure,
+                    Compactions = result.Compactions,
                     Stall = new StallReport(stall.Bound, silentFor, stall.SuspendsObserved, stall.Beats),
                     Summary =
                         $"STALLED — no progress (model output, reasoning, a tool call, heartbeat or result) for {silentFor.TotalMinutes:F1}m " +
@@ -461,6 +471,7 @@ internal static class StreamJsonCliSession
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Error,
                     ContextManagement = result.CompactionFailure,
+                    Compactions = result.Compactions,
                     BlockedWritePaths = permissionScanner.BlockedWritePaths,
                     RefusedCommands = permissionScanner.RefusedCommands,
                     Summary =
@@ -513,6 +524,7 @@ internal static class StreamJsonCliSession
 
                 // #811: a failed compaction, carried whatever the outcome; the harness names it on a failed attempt.
                 ContextManagement = result.CompactionFailure,
+                Compactions = result.Compactions,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
                 RefusedCommands = permissionScanner?.RefusedCommands ?? [],

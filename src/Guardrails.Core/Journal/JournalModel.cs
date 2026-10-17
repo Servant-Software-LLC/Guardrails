@@ -672,6 +672,20 @@ public sealed record TaskJournalEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public InFlightAttemptRecord? InFlightAttempt { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>tasks.&lt;id&gt;.scopeSnapshotTree</c> (issue #816): the git tree id of the serial-mode write-scope
+    /// snapshot taken as this task's CURRENT attempt started — present only while that attempt has not ended
+    /// normally. An attempt that ends (settled, retried, cancelled) clears it after its own end-of-attempt check, and
+    /// every settle clears it too; a value that survives into a later process therefore marks an attempt that never
+    /// ended — the harness was killed, crashed, or the host slept — and the next run REPORTS (never reverts) the
+    /// out-of-scope differences against it at run start, then clears it in every mode. Deliberately NOT on
+    /// <see cref="InFlightAttempt"/>: the resume rules drop that marker at load (it belongs to the previous
+    /// process), which is exactly when this is needed. ABSENT in worktree mode, when no snapshot was taken, and in
+    /// every journal written before this field existed — a resume then simply skips the check.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScopeSnapshotTree { get; init; }
 }
 
 /// <summary>
@@ -913,6 +927,23 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HarnessWriteRecord? HarnessWrite { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].scopeRevertedPaths</c> (issue #816): the paths outside the task's writeScope that the
+    /// END-OF-ATTEMPT check reverted — on an attempt that never reached the ordinary write-scope check (a timeout,
+    /// a turn cap, a failed action, a halt …). Absent when nothing was reverted that way, and in older journals. A
+    /// phase-1 violation is recorded by its outcome (<c>write-scope-violation</c>), not here.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? ScopeRevertedPaths { get; init; }
+
+    /// <summary>
+    /// SSOT §7 <c>attempts[].writeScopeNotChecked</c> (issue #816): why this attempt's writeScope was NOT fully
+    /// checked or enforced — the serial snapshot failed, the check hit a git error, or a revert failed. Absent on
+    /// every attempt whose check ran normally, and in older journals.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteScopeNotChecked { get; init; }
 }
 
 /// <summary>
@@ -1255,6 +1286,22 @@ public sealed record AttemptProvenance
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? BackendModel { get; init; }
+
+    /// <summary>
+    /// How many times the attempt's session compacted its context (#817), counted in EPISODES from the runner's stream
+    /// (Claude Code repeats its <c>compacting</c> status line while one compaction runs; see
+    /// <see cref="Prompts.CompactionCounts"/>). Absent when the session compacted nothing, when its runner reports no
+    /// compactions, and in every journal written before #817, so an old run loads unchanged. Rides the provenance on
+    /// the same D32 terms as <see cref="ModelDigest"/>: a fact learned after launch that must reach both settle paths.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Compactions { get; init; }
+
+    /// <summary>
+    /// How many of <see cref="Compactions"/> reported <c>"compact_result":"failed"</c> (#817). Absent when none did.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompactionFailures { get; init; }
 
     /// <summary>
     /// Whether the attempt's resolved route was already WARM (plan 30 §3.4) when it launched. <c>bool?</c>

@@ -214,6 +214,9 @@ public sealed class RunEventStream : IRunObserver
             Tokens = record.Usage is { } usage ? (long)usage.InputTokens + usage.OutputTokens : null,
             Gateway = record.Provenance?.Gateway,
             Turns = record.Turns,
+            // #817: absent when the session compacted nothing.
+            Compactions = record.Provenance?.Compactions,
+            CompactionFailures = record.Provenance?.CompactionFailures,
             Model = record.Provenance?.Model,
             Tier = record.Provenance?.Tier,
             Runner = record.Provenance?.Runner,
@@ -339,6 +342,14 @@ public sealed class RunEventStream : IRunObserver
     /// <inheritdoc/>
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         _inner.OutOfScopeStripped(task, stripped);
+
+    /// <inheritdoc/>
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    /// <inheritdoc/>
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
 
     /// <inheritdoc/>
     public void DecisionRecorded(DecisionEntry entry) => _inner.DecisionRecorded(entry);
@@ -594,6 +605,12 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Turns"/>.</summary>
         public int? Turns { get; init; }
+
+        /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>Compactions</c> (#817).</summary>
+        public int? Compactions { get; init; }
+
+        /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>CompactionFailures</c> (#817).</summary>
+        public int? CompactionFailures { get; init; }
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Provenance"/>'s <c>Model</c>.</summary>
         public string? Model { get; init; }

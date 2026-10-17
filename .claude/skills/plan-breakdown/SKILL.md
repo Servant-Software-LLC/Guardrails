@@ -1537,6 +1537,11 @@ upstream task that creates it:
     still declares its surface EXPLICITLY (name the directories), never a vacuous `**`.
   `validate` rejects a scope that escapes the workspace (**GR2019**, error) and **warns** on a
   vacuous/over-broad scope (**GR2020**) — so emit a real surface or `[]`, never omit and never `**`.
+  **An extensionless file entry is read as a DIRECTORY (#838).** `"writeScope": ["Dockerfile"]` means
+  `Dockerfile/**` and the task's write to the file `Dockerfile` is out of scope. Write `"Dockerfile*"`
+  (same for `Makefile*`, `LICENSE*`, `Jenkinsfile*`, `Procfile*`, `CODEOWNERS*`); keep a real directory as `src/`
+  with the trailing slash. `validate` warns **GR2090** on the well-known names only, so an unfamiliar
+  extensionless file (not on its list) is on you.
 
   **Action prompt for both tasks.** The declared scope is injected into the action prompt as
   advisory context, but the harness ALSO enforces it mechanically — so every test-author prompt

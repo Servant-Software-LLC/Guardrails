@@ -261,6 +261,12 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
         _inner.OutOfScopeStripped(task, stripped);
 
+    public void WriteScopeNotChecked(TaskNode task, int attempt, string reason) =>
+        _inner.WriteScopeNotChecked(task, attempt, reason);
+
+    public void InterruptedAttemptChangesFound(TaskNode task, IReadOnlyList<WriteScopeOffense> paths, string? patchPath) =>
+        _inner.InterruptedAttemptChangesFound(task, paths, patchPath);
+
     public void WaveStarting(WaveNode wave, int index, int total) => _inner.WaveStarting(wave, index, total);
 
     // #469: forwarded EXPLICITLY. The interface default is an empty body, so a decorator that omits these

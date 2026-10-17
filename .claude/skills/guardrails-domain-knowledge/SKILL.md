@@ -406,8 +406,57 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
   boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **Teardown never deletes through a link (#826, SSOT 3.2).** `git worktree remove --force` follows a Windows
+  junction and deletes its whole target (measured), so EVERY worktree teardown (segment Discard, trial/revalidate
+  trees, stale-run/segment prune, `--fresh` plan-branch teardown, completion reclaim + startup GC) is the link-safe
+  `SafeDelete` (its no-follow walk removes each link ENTRY -- symlink, junction, dangling, even inside a nested
+  `.git/` -- right before .NET's non-following delete) + `git worktree prune`; the harness NEVER runs `git worktree
+  remove`. `git reset --hard` / `clean -fd` on a harness tree (retry `ResetSegment`, AI-merge failure reset,
+  integration rollback/rewind) disarm links first too -- a junction replacing a tracked dir was written INTO and
+  cleaned out (21 -> 1); on a tree the operator may own (serial supplied-drain rollback, `RewindPlanBranch`) links
+  are never removed and a reset that would write or delete through one (a path under it at the target, HEAD, or in
+  the index) is narrowed to HEAD+index, with a message saying the working tree was left as it was. The write-scope
+  revert checks the LEAF too, not only ancestors: a tracked file replaced by a junction is removed (worktree) or
+  refused (serial) before any `git checkout`/`rm` batch -- git deletes through a leaf junction (21 -> 0). A link that cannot be
+  removed REFUSES (`LinkRemovalException`): tree + registration + branch left in place, reported loudly (console
+  `[worktree] … LEFT IN PLACE`, reclaim-log / reset `WARNING:`, a retry reset faults the run), never risked.
+- **writeScope is enforced at the end of EVERY attempt, in BOTH modes (#816, SSOT 3.4/9.4).** An attempt that
+  never reaches the phase-1 check (failed action, timeout, max-turns, stall, staging/fragment/harness-write
+  rejection, a serial cancel, a transient pause's re-run) gets the SAME check + #705 `out-of-scope.patch` +
+  scoped revert at its end, BEFORE the salvage stash; its outcome is unchanged, its summary gains
+  `; out-of-scope write(s) reverted: ...`, and its feedback gains a separate `## Out-of-scope writes were
+  reverted` section. The reverted paths feed #707's REPEAT rule, so the same out-of-scope path on a second
+  attempt halts `needs-human` even when every attempt timed out. **Serial mode is now checked** against a
+  per-attempt git SNAPSHOT of the workspace (`ScopeDiffBase`: private `GIT_INDEX_FILE`, plan `logs/`+`state/`
+  ignored), so the prompt shows `## Write scope (harness-enforced)` there too; it needs the workspace to be a git
+  top level, else no retrospective check runs and that is loud (run-start `Note:` + per-attempt
+  `write-scope-check.log`). **Write-time denial:** a prompt action on a hook-capable runner (claude, incl.
+  gateway) also gets the `WriteScopeHook` PreToolUse hook in both modes, refusing an out-of-scope
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the workspace (never Bash; `.guardrails-agent-io/` and
+  `.guardrails-staging/` always allowed), naming the scope and the needsHuman route. Review follow-ups: the serial
+  snapshot runs in NORMAL mode like worktree mode (tracked files revert through the repo's own smudge; files
+  untracked at snapshot time have their raw bytes captured and written back verbatim); editing the checkout
+  mid-serial-run is unsupported but LOUD (run-start Note; revert text says the changes may not be the agent's);
+  serial needs-human/tamper/wall halts revert too, BEFORE journaling, and `attempts[].scopeRevertedPaths` /
+  `writeScopeNotChecked` ride run.json; the snapshot tree is journaled (`tasks.<id>.scopeSnapshotTree`) and a
+  leftover one is REPORTED at run start (never reverted — so a crashed attempt's out-of-scope edits stay as the next
+  baseline, announced but not enforced) and handed to that task's first attempt; raw-byte capture covers regular
+  untracked files only (never symlinks/gitlinks) and a single bad path never fails the snapshot; a check that
+  could not run says `write scope NOT checked this attempt` in the summary and on both consoles.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
+- **Context thrash (#817, SSOT §9)**: every prompt attempt's compaction EPISODES (not `compacting` status lines,
+  which Claude Code repeats while one compaction runs) and failed compactions ride `provenance.compactions` /
+  `provenance.compactionFailures` (absent when zero), `attempt-finished`, and the bundle SUMMARY outcome cell. A
+  failed max-turns / timeout / stall / generic-error attempt with >= 3 compactions AND >= 1 per 12 turns is CONTEXT
+  THRASH (turns = `num_turns`, else an ESTIMATE from distinct assistant message ids, else the floor alone; the ratio
+  rests on few samples from one 64K plan). Its feedback replaces the budget-blaming text (a generic error keeps its
+  own feedback and gets the thrash section appended), its summary names the block's `contextTokens` and "split the
+  task", and it does NOT raise the next attempt's `maxTurns` or clock. #800 exhaustion and #817 thrash share one
+  consecutive count: two in a row, any mix, settle needs-human. A verdict on ESTIMATED turns (a lower bound, 0.35-1.0x
+  of reported) is advisory: text only, the budget is still raised and it does not count toward the halt. The
+  runner-config / repeat-context / repeat-silent-stall halts run the end-of-attempt scope check in BOTH modes. The
+  journal outcome stays `max-turns`/`timeout`/`action-failed`.
 - **Retry salvage / incremental retries (#195 -> #306)**: the harness STASHES a non-final worktree-mode
   rollback instead of pure discard, and exposes it to the retry as a first-class, AGENT-CONTROLLED input.
   Immediately BEFORE the F2 reset above, the attempt's full working tree (including uncommitted writes) is
@@ -1582,12 +1631,15 @@ evidence badly (#791 omitted the token actually sent; #797 omitted what explaine
   per file with a share-everything handle, `run.json` first (section 17.2). So bundle a stuck run BEFORE
   killing it.
 - **Full by default; `--lean` withholds proprietary content.** Credentials are always scrubbed (unless
-  `--no-redact`, which names the file `-UNREDACTED`); prompts, transcripts, stream logs, gateway sessions and
+  `--no-redact`, which ALWAYS names the output `-UNREDACTED`, an explicit `--out`/`--dir` included; #814); prompts, transcripts, stream logs, gateway sessions and
   patches are INCLUDED under a loud stderr warning. Redaction removes credentials, not IP: for private code
   on a public issue, pass `--lean`. `--include-worktree-diff` adds source and is refused with `--lean`.
 - **D1 refusal, run-wide.** If ANY runner block names an `authTokenEnv`/`apiKeyEnv` unset or empty in the
-  bundling shell, it refuses (exit 1, nothing written) and names each variable. Remedy: export it and re-run,
-  or `--without-agent-text` (all agent-derived free text removed, run-wide). There is no per-file attribution.
+  bundling shell, it refuses (exit 1, nothing written) and names each variable, telling unset from set-but-empty
+  (in zsh a bare `export NAME` exports it empty; in bash it stays unset; #814). Remedies, in refusal order:
+  `export NAME=<value>` and re-run; `--without-agent-text` (all agent-derived free text removed, run-wide); or
+  `--no-redact` only for a bundle that stays private (skips ALL scrubbing incl. pass 5, name gets `-UNREDACTED`).
+  There is no per-file attribution.
 - **Destination.** Default `~/guardrails-bundles/<plan>-<runId>[-<task>].zip`; `--out`/`--dir` override
   (mutually exclusive). EVERY destination inside a git working tree is refused unless `--force-path`.
 - **Size.** `--max-size` (default 20 MiB) caps the finished zip; fixed trim tiers never touch the protected
