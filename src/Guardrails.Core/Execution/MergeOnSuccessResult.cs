@@ -60,5 +60,17 @@ public enum MergeOnSuccessResult
     /// the plan branch for a manual merge — the SAFE failure direction.
     /// </para>
     /// </summary>
-    BranchMoved
+    BranchMoved,
+
+    /// <summary>
+    /// The delivery was REFUSED before git touched anything (issue #835) because a junction or symlink in the
+    /// operator's checkout shadows a path the merge would write: a link at an ancestor directory of a touched
+    /// path, or at the path itself. <c>git merge</c> writes through such a link into whatever folder it points
+    /// at (outside the repository), so a path ADDED under it lands in the external store and a tracked file
+    /// MODIFIED under it rewrites the external copy. Nothing was merged; the verified work is left on the plan
+    /// branch for a manual merge. The link and the touched paths beneath it travel to the CLI via
+    /// <see cref="IWorktreeProvider.LastMergeOnSuccessDetail"/>. The gate FAILS CLOSED: when link detection
+    /// itself errors, the delivery is refused with the error named.
+    /// </summary>
+    LinkShadowed
 }

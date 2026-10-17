@@ -289,6 +289,15 @@ public sealed class LinkSafeDeleteTests : IDisposable
     [InlineData("X.cs", "void M() { Run(\"git switch --force main\"); }")]
     [InlineData("X.cs", "void M() { GitIn(wt, \"read-tree\", \"-u\", \"--reset\", t); }")]
     [InlineData("X.cs", "void M() { Run(\"git read-tree -u -m HEAD\"); }")]
+    // #835: a merge writes the incoming paths through a link in the tree it runs in.
+    [InlineData("X.cs", "void M() { GitIn(wt, \"merge\", \"--ff-only\", b); }")]
+    [InlineData("X.cs", "void M() { Git(\"merge\", \"--no-commit\", b); }")]
+    [InlineData("X.cs", "void M() { psi.ArgumentList.Add(\"merge\"); }")]
+    [InlineData("X.cs", "void M() { Run(\"git merge --ff-only main\"); }")]
+    [InlineData("X.cs", "void M() { TryGitIn(wt, \"merge\", \"--abort\"); }")]
+    // The wrong-method / wrong-guard shapes also fail for merge.
+    [InlineData("X.cs", "void A()\n{\n    LinkShadowRefusal(r);\n}\n\nvoid B()\n{\n    GitIn(wt, \"merge\", b);\n}")]
+    [InlineData("X.cs", "void B()\n{\n    GitIn(wt, \"merge\", b);\n    LinkShadowRefusal(r);\n}")]
     // The #826 review BLOCKER as it shipped in c17a7b1f: an unguarded reset + clean.
     [InlineData("GitWorktreeProvider.cs",
         "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
@@ -300,6 +309,9 @@ public sealed class LinkSafeDeleteTests : IDisposable
     [InlineData("GitWorktreeProvider.cs", "public static void ResetSegment(string worktreePath, string taskBase)\n{\n    DisarmLinksBeforeGitRewrite(worktreePath);\n    if (x) { y(); }\n    GitIn(worktreePath, \"reset\", \"--hard\", taskBase);\n    GitIn(worktreePath, \"clean\", \"-fd\");\n}")]
     [InlineData("Scheduler.cs", "static void C(string d)\n{\n    GitWorktreeProvider.DisarmLinksBeforeGitRewrite(d);\n    psi.ArgumentList.Add(\"checkout\");\n}")]
     [InlineData("X.cs", "void B()\n{\n    // #826 link-guard: every path passed Safe() above\n    var args = new List<string> { \"checkout\", b, \"--\" };\n}")]
+    [InlineData("GitWorktreeProvider.cs", "MergeOnSuccessResult M()\n{\n    if (LinkShadowRefusal(p) is { } s) { return x; }\n    Git(\"merge\", \"--ff-only\", p);\n    Git(\"merge\", \"--abort\");\n}")]
+    [InlineData("X.cs", "void B()\n{\n    // #826 link-guard: harness-owned worktree, never the operator's checkout\n    GitIn(wt, \"merge\", b);\n}")]
+    [InlineData("X.cs", "var c = new Command(\"merge\", \"Merge a plan branch.\");")] // a CLI subcommand name is not a git call
     [InlineData("X.cs", "// a comment may say git reset --hard or Directory.Delete(p, true)\n/// <c>git clean -fd</c>\nstring s = \"`git stash` is repo-wide\";")]
     public void Scanner_AcceptsGuardedCallsAndMentions(string file, string code) =>
         Assert.Empty(LinkSafetyScan.Violations(file, code));
@@ -329,14 +341,17 @@ public sealed class LinkSafeDeleteTests : IDisposable
         // ("git stash pop"). Prose that merely mentions a verb (`git stash` in a prompt) is not a call.
         private static readonly Regex GitRewrite = new(
             @"""--(hard|merge|keep|discard-changes)""|""(clean|checkout|restore|stash|rm|switch|read-tree)""\s*[,)]"
-            + @"|""git (reset --(hard|merge|keep)|clean -[a-z]*f|checkout|restore|stash|rm |switch|read-tree)");
+            // #835: `merge` writes the incoming paths into the working tree, through any link over them. The
+            // lookbehind keeps the CLI's `new Command("merge", ...)` subcommand declaration out of the rule.
+            + @"|(?<!Command\()""merge""\s*[,)]"
+            + @"|""git (reset --(hard|merge|keep)|clean -[a-z]*f|checkout|restore|stash|rm |switch|read-tree|merge )");
 
         private const int MinReasonWords = 3;
         private const int MinReasonChars = 20;
 
         // A CALL of a guard — never its definition (a parameter list follows a definition's name).
         private static readonly Regex RewriteGuard = new(
-            @"\b(DisarmLinksBeforeGitRewrite|LinksShadowingTrackedPaths)\((?!\s*string\s)");
+            @"\b(DisarmLinksBeforeGitRewrite|LinksShadowingTrackedPaths|LinkShadowRefusal)\((?!\s*string\s)");
 
         private static readonly Regex DeleteGuard = new(@"\bLinkSafeTree\.RemoveLinks\((?!\s*string\s)");
 
