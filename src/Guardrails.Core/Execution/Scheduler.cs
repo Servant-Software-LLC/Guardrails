@@ -1442,6 +1442,7 @@ public sealed class Scheduler
         string? detail = outcome is MergeOnSuccessResult.HookRejected
             or MergeOnSuccessResult.DirtyWorkingTree
             or MergeOnSuccessResult.BranchMoved
+            or MergeOnSuccessResult.LinkShadowed
             ? _worktreeProvider.LastMergeOnSuccessDetail
             : null;
 
@@ -3437,6 +3438,7 @@ public sealed class Scheduler
         // coincidence a later change could break.
         string message = $"Refreshed-From: {integ.DeliveryTarget}\nGuardrails-Run: {_journal.RunId}";
         (int exitCode, _) = RunGitInDir(
+            // #826 link-guard: integrationPath is the harness-owned integration worktree, never the operator's checkout.
             integrationPath, "merge", "--no-ff", "--no-verify", "-m", message, upstreamSha);
 
         if (exitCode != 0)
@@ -3444,6 +3446,7 @@ public sealed class Scheduler
             // Best-effort: leave no half-finished merge behind. Never touches the untracked file that
             // blocked it — deleting or overwriting it to force the merge through is exactly what this
             // fault path exists to refuse.
+            // #826 link-guard: aborting inside the harness-owned integration worktree, never the operator's checkout.
             RunGitInDir(integrationPath, "merge", "--abort");
 
             IReadOnlyList<string> untracked = GitCaptureLines(integrationPath, "ls-files", "--others", "--exclude-standard");
@@ -3585,6 +3588,7 @@ public sealed class Scheduler
         MergeOnSuccessResult.DirtyWorkingTree => Journal.DeliveryOutcome.DirtyWorkingTree,
         MergeOnSuccessResult.HookRejected => Journal.DeliveryOutcome.HookRejected,
         MergeOnSuccessResult.BranchMoved => Journal.DeliveryOutcome.BranchMoved,
+        MergeOnSuccessResult.LinkShadowed => Journal.DeliveryOutcome.LinkShadowed,
         _ => throw new ArgumentOutOfRangeException(nameof(result), result, "unhandled MergeOnSuccessResult")
     };
 
@@ -3679,6 +3683,13 @@ public sealed class Scheduler
             {
                 return "The change is already on the plan side of the next trial — resume.";
             }
+        }
+
+        if (outcome == Journal.DeliveryOutcome.LinkShadowed)
+        {
+            // #835: keyed on the structured outcome, not on the detail's prose.
+            return "Remove each link named above (the link ENTRY only: Windows `rmdir <link>`, never `rmdir /s`; "
+                + "Unix `rm <link>`, never `rm -r`), then resume.";
         }
 
         return "Resolve the condition named above, then resume.";
@@ -5123,6 +5134,7 @@ public sealed class Scheduler
             StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
             StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
+        // #826 link-guard: workingDir is a harness-owned segment worktree fed from the integration worktree, never the operator's checkout.
         psi.ArgumentList.Add("merge");
         psi.ArgumentList.Add("--ff-only");
         psi.ArgumentList.Add(commitSha);
@@ -5134,6 +5146,7 @@ public sealed class Scheduler
         if (proc.ExitCode != 0)
         {
             throw new InvalidOperationException(
+                // #826 link-guard: error text only - it names the harness-owned segment worktree merge above.
                 $"git merge --ff-only {commitSha} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}{stdout}");
         }
     }

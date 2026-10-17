@@ -2537,6 +2537,7 @@ public static class RunCommand
         MergeOnSuccessResult.DirtyWorkingTree => DeliveryOutcome.DirtyWorkingTree,
         MergeOnSuccessResult.HookRejected => DeliveryOutcome.HookRejected,
         MergeOnSuccessResult.BranchMoved => DeliveryOutcome.BranchMoved,
+        MergeOnSuccessResult.LinkShadowed => DeliveryOutcome.LinkShadowed,
         _ => DeliveryOutcome.NotAttempted
     };
 
@@ -3136,6 +3137,25 @@ public static class RunCommand
                         "branch was refused because your working tree has uncommitted changes. Commit or " +
                         "stash them, then merge `" + planBranch + "` manually.");
                 }
+                break;
+
+            case MergeOnSuccessResult.LinkShadowed:
+                // Issue #835: a junction/symlink in the operator's checkout would have made git write the
+                // merge into a folder OUTSIDE the repo. Name every link and the paths beneath it (the
+                // provider's detail, one entry per line) so the operator can see exactly what is at stake.
+                output.WriteLine(
+                    $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                    "branch was REFUSED because a junction or symlink in your checkout would make git write " +
+                    "the incoming files into a folder outside the repository:");
+                foreach (string line in (report.MergeOnSuccessDetail ?? string.Empty)
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    output.WriteLine($"  {line.TrimEnd()}");
+                }
+                output.WriteLine(
+                    "  Nothing was merged and your checkout is unchanged. Move the link out of the way (remove the " +
+                    "link ENTRY only: Windows `rmdir <link>`, never `rmdir /s`; Unix `rm <link>`, never `rm -r`), or " +
+                    "merge `" + planBranch + "` manually and review where the files land.");
                 break;
 
             case MergeOnSuccessResult.BranchMoved:

@@ -484,6 +484,44 @@ public sealed class WaveDeliveryWiringTests
         Assert.Empty(observer.Calls);
     }
 
+    /// <summary>
+    /// Issue #835: a wave promotion refused because an operator link shadows a merge path is a NON-transient refusal -
+    /// the wave's <c>delivered</c> record reads <c>refused</c> with the structured <c>link-shadowed</c> outcome (also in
+    /// <c>run.json</c> on disk), the run HALTS at that wave under <see cref="WaveHaltKind.DeliveryRefused"/>, and the
+    /// halt's remedy is the link remedy (selected by the outcome token, not the detail's prose).
+    /// </summary>
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ALinkShadowedPromotion_HaltsTheRun_WithTheStructuredOutcomeInRunJson()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip);
+        const string detail = "link 'assets' shadows 1 path(s) the merge would write: assets/new.txt";
+        provider.PromoteBuilders["wave-01-deliver"] = _ => (MergeOnSuccessResult.LinkShadowed, detail);
+
+        RunReport report = await NewScheduler(plan, new WaveFakeExecutor(), journal, provider).RunAsync(plan, Ct);
+
+        WaveDeliveredRecord? delivered = WaveEntryOnDisk(journal, "wave-01-deliver")?.Delivered;
+        Assert.NotNull(delivered);
+        Assert.Equal(WaveDeliveryStatus.Refused, delivered!.Status);
+        Assert.Equal(DeliveryOutcome.LinkShadowed, delivered.Outcome);
+        Assert.Equal(detail, delivered.Detail);
+        Assert.Contains("\"outcome\": \"link-shadowed\"", File.ReadAllText(journal.JournalPath), StringComparison.Ordinal);
+
+        Assert.NotNull(report.WaveHalt);
+        Assert.Equal(WaveHaltKind.DeliveryRefused, report.WaveHalt!.Kind);
+        Assert.Equal("wave-01-deliver", report.WaveHalt.WaveDir);
+        Assert.Contains("link-shadowed", report.WaveHalt.Headline, StringComparison.Ordinal);
+        Assert.Contains("rmdir <link>", report.WaveHalt.Detail, StringComparison.Ordinal);
+        Assert.Null(report.DeliveredToBranch);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // 7. A suppressed delivery never touches the trial primitive
     // ─────────────────────────────────────────────────────────────────────────────────────────

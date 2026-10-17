@@ -809,6 +809,51 @@ public sealed class MergeOnSuccessTests
     // merge's path set (src/, tests/, one doc) and git merged them by hand with zero conflicts.
     // ═════════════════════════════════════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// Issue #835, end to end through the Scheduler: the operator linked <c>assets/</c> to an external store; the
+    /// plan's task adds <c>assets/plan.txt</c>. The run-end delivery is REFUSED with the structured
+    /// <see cref="MergeOnSuccessResult.LinkShadowed"/> outcome, the detail (the channel the CLI banner prints from)
+    /// names the link and the path, nothing reaches the store, the branch is untouched and the plan branch is kept.
+    /// <c>run.json</c> records the <c>link-shadowed</c> token.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_OperatorLinkOverAPlanPath_RefusesWithLinkShadowed_AndCarriesTheDetail()
+    {
+        using var repo = new TempGitRepo();
+        CommitTrackedFile(repo, "assets/keep.txt", "original\n");
+        string store = Path.Combine(Path.GetDirectoryName(repo.RepoPath)!, "external-store");
+        Directory.Move(Path.Combine(repo.RepoPath, "assets"), store);
+        Guardrails.TestSupport.TestLinks.DirectoryLink(Path.Combine(repo.RepoPath, "assets"), store);
+        string headBefore = repo.HeadSha();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "assets/plan.txt", taskFileContent: "plan output");
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithProviderAsync(planDir, provider, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded, string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+        Assert.Equal(MergeOnSuccessResult.LinkShadowed, report.MergeOnSuccessOutcome);
+        Assert.Null(report.DeliveredToBranch);
+        Assert.NotNull(report.MergeOnSuccessDetail);
+        Assert.Contains("'assets'", report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+        Assert.Contains("assets/plan.txt", report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(store, "plan.txt")), "nothing may be written through the link");
+        Assert.Equal(headBefore, repo.HeadSha());
+        // The CLI stamps run.json's `delivery` section from this report (DescribeDelivery), so the token lands there.
+        DeliverySection delivery = RunCommand.DescribeDelivery(report, terminalGatePassed: true, planDir);
+        Assert.False(delivery.Delivered);
+        Assert.Equal(DeliveryOutcome.LinkShadowed, delivery.Outcome);
+        Assert.Contains(
+            "\"outcome\": \"link-shadowed\"",
+            System.Text.Json.JsonSerializer.Serialize(new JournalDocument { RunId = "r", PlanHash = "sha256:x", Delivery = delivery }, JournalJson.Options),
+            StringComparison.Ordinal);
+        // Disarm before TempGitRepo's own (link-following) teardown runs.
+        Guardrails.Core.Io.LinkSafeTree.TryRemoveLink(Path.Combine(repo.RepoPath, "assets"));
+        Guardrails.TestSupport.TestLinks.Cleanup(store);
+    }
+
     /// <summary>Commit a tracked file into the repo so a later uncommitted edit to it counts as TRACKED dirt.</summary>
     private static void CommitTrackedFile(TempGitRepo repo, string relPath, string content)
     {

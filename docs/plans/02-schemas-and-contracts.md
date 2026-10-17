@@ -1024,9 +1024,44 @@ segment must not be mistaken for integrated work). A source-level TRIPWIRE (not 
 common shapes of a regression: a recursive delete outside `SafeDelete`, any `git worktree remove`, and a
 link-following git rewrite (`reset --hard/--merge/--keep`, `clean`, `checkout`, `restore`, `stash`, `rm`,
 `switch`, `read-tree`) with neither a link-guard CALL earlier in the same method body nor a substantive
-`// #826 link-guard: <why>` justification (≥ 3 words, ≥ 20 characters) on the line above. It does not prove the
-guard dominates every path to the call or see a verb built at run time; the guards themselves are reviewed
-invariants.
+`// #826 link-guard: <why>` justification (≥ 3 words, ≥ 20 characters) on the line above. (#835 added `merge` to
+the verb set, and `LinkShadowRefusal` to the accepted guard calls: every `git merge` / `merge --abort` is either in
+the operator-tree delivery methods behind that guard, or justified as running in a harness-owned worktree.) It does
+not prove the guard dominates every path to the call or see a verb built at run time; the guards themselves are
+reviewed invariants.
+
+**Delivery never merges through an operator link (issue #835).** `git merge` writes the incoming tracked paths into
+the working tree, so a junction/symlink the operator put over a directory (or a tracked file) would receive the
+plan's files in the folder it points at, outside the repo — an added file lands in the external store, a modified
+tracked file rewrites the external copy. The two operator-tree deliveries — the run-end
+`MergePlanBranchIntoUserBranch` and the per-wave `PromoteTrialDelivery` (§14.12) — therefore run a link check
+**before any merge, and ahead of the dirty-path gate** (on Unix a link over a tracked directory also reads as dirt;
+the link is the root cause). The touched set is taken from the ACTUAL merge result, not just the plan side's diff
+(a non-fast-forward merge also writes paths that exist only through the operator's side — e.g. the operator
+renamed `a` to `b` and linked `b` out while the plan modified `a/f`; ort writes `b/f`, which `HEAD...plan` never
+lists): the UNION of `git diff --name-only --no-renames -z HEAD...<plan ref>` and `git diff --name-only
+--no-renames -z HEAD <tree>` where `<tree>` is `git merge-tree --write-tree HEAD <plan ref>` (builds the merged
+tree without touching the checkout). When the merge conflicts (merge-tree exit 1) or the installed git predates
+`--write-tree` (exit 129, git < 2.38) the union of the three-dot diff and `git diff --name-only --no-renames -z
+HEAD <plan ref>` — a superset of anything the merge can write — is used; any other failure fails closed. Adds,
+modifies, deletes, and a rename listed as both endpoints. For each path every prefix (ancestor directories, then the
+path itself) is read once with #826's no-follow `LinkSafeTree.IsLink`; the outermost link on the chain shadows the
+path. A path that is itself a symlink the repository TRACKS (mode `120000` at `HEAD`) is exempt — git replaces such
+an entry, it never writes through it. Any shadowed path REFUSES the delivery with the structured outcome
+`MergeOnSuccessResult.LinkShadowed` (journal token `link-shadowed`, §7 `delivery.outcome` and a wave's
+`delivered.outcome`), its `detail` one line per link: `link '<link>' shadows N path(s) the merge would write: …`
+(first five named). Nothing is merged, the operator's link is never touched, and the plan branch is left in place for
+a manual merge; the run-end CLI banner says so and names the remedy (move the link ENTRY out of the way). The remedy
+and the outcome are selected by the token, never by prefix-matching the detail prose (#742). The check FAILS CLOSED:
+a diff that cannot be computed, or a link read that throws, refuses with `link safety cannot be proven` rather than
+merging. "Fails closed" means an unprovable check refuses; it is NOT TOCTOU-proof: the check and the merge are not
+atomic and the checkout is not locked in between, so a link created in that window is not seen (accepted residual
+race). A wave-barrier refusal halts the run at that wave (`DeliveryRefused`), and its remedy line — selected by the
+`link-shadowed` outcome token — tells the operator to remove each named link ENTRY (`rmdir <link>` / `rm <link>`,
+never recursively) and resume. Unlike a Guardrails diagnostic this is a run-time delivery outcome, not a validation/loading failure, so it
+carries no `GR` code (the catalogue's next-free `GR` number is unchanged). The other merges in the harness
+(segment → integration, the refresh merge, AI-merge, the trial worktree, the fast-forward onto a segment) run in
+harness-owned worktrees and are not operator-tree writes.
 Cost: one directory listing per real directory in the tree — the listings the delete makes anyway — and nothing
 inside any link target.
 
@@ -2450,7 +2485,8 @@ into the user's original branch (ff-only when possible, else a real merge whose 
 **AI-merge is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
 intact — never a force-overwrite. Opting out (`false` / `--no-merge-on-success`) leaves the plan branch
 for the user to review and merge. The merge-back outcome is reported as `MergeOnSuccessResult`
-(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved`); a dirty
+(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved` /
+`LinkShadowed` — an operator junction/symlink over a path the merge would write, §3.2, #835); a dirty
 user working tree is refused **before any git merge runs** (the harness never runs git over uncommitted
 user work) and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that
 re-drains green after a prior run already delivered re-issues an ff-only merge that git reports "Already
@@ -3323,6 +3359,7 @@ fails the write, loudly, with a message naming the likely cause.
                                       // which outcome tokens count as success
     "outcome": "not-attempted",       // not-attempted | fast-forwarded | merged | conflict |
                                       // dirty-working-tree | hook-rejected | branch-moved |
+                                      // link-shadowed (#835, §3.2: an operator link over a merge path) |
                                       // partially-delivered (§14.12 — some wave delivered at its own
                                       // barrier while this run-end delivery was held or refused;
                                       // `delivered` stays false)
@@ -3502,7 +3539,8 @@ absent — never null — on every other wave (a later paragraph below enumerate
   suppressing decision with `--merge-on-success` (§5.3, #597) additionally carries `detail` naming the
   overridden decision.
 - **`refused`** — the trial merge could not be built or could not be promoted. Carries `outcome` —
-  `conflict` | `dirty-working-tree` | `hook-rejected` | `branch-moved` | `trial-gate-failed` — and `detail`.
+  `conflict` | `dirty-working-tree` | `hook-rejected` | `branch-moved` | `link-shadowed` (#835, §3.2) |
+  `trial-gate-failed` — and `detail`.
   `trial-gate-failed` (the wave's own exit gate failing on the trial tree, §14.12) is the one outcome whose
   `detail` names every failing check PLUS the user's tip the trial was built from PLUS the range
   `git log <plan-tip-sha>..<user-tip-sha>` — the exact commits the trial merged, keyed on the two shas

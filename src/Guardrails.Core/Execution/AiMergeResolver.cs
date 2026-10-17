@@ -54,6 +54,7 @@ internal sealed class AiMergeResolver
             if (attempt > 0)
             {
                 // Re-establish the merge conflict for the retry after the previous reset.
+                // #826 link-guard: worktreePath is the harness-owned integration worktree, never the operator's checkout.
                 TryGitIn(worktreePath, "merge", "--no-commit", "--no-ff", segmentBranch);
             }
 

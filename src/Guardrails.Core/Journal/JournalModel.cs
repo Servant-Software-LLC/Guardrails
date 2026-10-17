@@ -394,7 +394,15 @@ public enum DeliveryOutcome
     /// to the <c>partially-delivered</c> token in both directions via <see cref="JournalJson"/>'s converter.
     /// </para>
     /// </summary>
-    PartiallyDelivered
+    PartiallyDelivered,
+
+    /// <summary>
+    /// The delivery was refused because a junction or symlink in the operator's checkout shadows a path the
+    /// merge would write, so git would have written through the link into a folder outside the repository
+    /// (issue #835). Nothing was merged; the work stays on the plan branch. Token <c>link-shadowed</c>; the
+    /// <c>detail</c> names each link and the touched paths beneath it.
+    /// </summary>
+    LinkShadowed
 }
 
 /// <summary>
