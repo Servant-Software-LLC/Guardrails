@@ -187,7 +187,8 @@ public sealed class RunFinishedExitPathTests
             Reason = WorktreeModeReason.SerialByConfiguration,
         };
 
-        object?[] arguments = [plan, observer, null, null, null, null, serialMode, CancellationToken.None];
+        // #810 added the host services (the keep-awake assertion and the host-sleep monitor): the production set.
+        object?[] arguments = [plan, observer, null, null, null, null, serialMode, CancellationToken.None, Guardrails.Cli.RunHostServices.Production];
 
         // …and the comment above is the whole reason for this guard. #596's parameter arrived here as
         // "TargetParameterCountException : Parameter count mismatch" — an error that names neither the
