@@ -290,6 +290,10 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,
             "committed with the feature it produced — not a clean pre-run tree"),
+        new("docs/plans/guardrails-lite", "d6bd05d2", 0, 0,
+            "waved, wave 2 stubbed for JIT at the pre-run commit. Registered by hand after the breakdown " +
+            "commit (the row needs that commit's own sha). The PR carrying this folder must NOT be " +
+            "squash-merged, or d6bd05d2 is rewritten and this row points at a sha that no longer resolves"),
         new("docs/plans/harden-flaky-worktree-test", "d9c006d", 0, 0,
             "committed with the feature it produced — not a clean pre-run tree"),
         new("docs/plans/model-evidence-and-graduation", "0bddd55", 0, 0),
@@ -466,7 +470,11 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
         }
 
         int excluded = scripts.Count(s => ExcludedFromTheOldWalk.Any(e => IsUnder(s, "docs/plans/" + e.Folder)));
-        Assert.Equal(scripts.Length - excluded, oldWalkScripts.Length);
+        // Waved plans authored AFTER plan 33's sweep are outside the old walk for the same structural reason,
+        // but they are not part of §5.4's measured table, so they are counted separately rather than
+        // rewriting that historical list.
+        int wavedSince = scripts.Count(s => WavedSinceTheSweep.Any(f => IsUnder(s, "docs/plans/" + f)));
+        Assert.Equal(scripts.Length - excluded - wavedSince, oldWalkScripts.Length);
         Assert.True(excluded >= 317,
             $"the old walk dropped {excluded} scripts; §5.4's table totals 317, and these folders are " +
             "finished plans whose script counts only grow.");
@@ -487,6 +495,18 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
         ("model-tiering-stage-3", 78),
         ("salvage-advice-provisioning", 39),
         ("09-preflight-first-class", 11)
+    ];
+
+    /// <summary>
+    /// Waved plan folders committed after plan 33's sweep. They are outside the old top-level-<c>tasks/</c>
+    /// walk for the same structural reason as the five above, but they were never part of §5.4's measured
+    /// table, so they live here instead of being appended to that historical list. A NEW waved plan folder
+    /// adds its name here (alongside its <see cref="Corpus"/> row), or the old-walk equality above is off by
+    /// exactly that folder's script count.
+    /// </summary>
+    private static readonly string[] WavedSinceTheSweep =
+    [
+        "guardrails-lite"
     ];
 
     /// <summary>
